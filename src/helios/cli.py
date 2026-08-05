@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from decimal import Decimal
 
+from .client import Trading212Error
 from .config import load_settings
 from .dependencies import build_container
 from .schemas import Position
@@ -23,11 +25,11 @@ def main() -> int:
 async def _run_positions() -> int:
     settings = load_settings()
     container = build_container(settings)
-    await container.startup()
     try:
+        await container.startup()
         positions = await container.t212_service.get_positions()
-    except Exception as exc:
-        print(f"error|{exc}")
+    except Trading212Error as exc:
+        print(f"error|{exc}", file=sys.stderr)
         return 2
     finally:
         await container.shutdown()

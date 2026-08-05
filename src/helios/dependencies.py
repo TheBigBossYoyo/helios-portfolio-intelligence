@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from .client import Trading212Client
 from .config import Settings, load_settings
-from .db import create_engine, create_session_factory, initialize_database
+from .db import create_engine, create_session_factory, migrate_database
 from .raw_snapshots import RawSnapshotRepository
 from .services import Trading212Service
 
@@ -23,7 +23,7 @@ class Container:
     t212_service: Trading212Service
 
     async def startup(self) -> None:
-        await initialize_database(self.engine)
+        await migrate_database(self.settings)
 
     async def shutdown(self) -> None:
         await self.t212_client.aclose()

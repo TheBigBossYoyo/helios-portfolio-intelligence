@@ -18,9 +18,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         container = build_container(resolved_settings)
         configure_logging(container.settings)
-        await container.startup()
         app.state.container = container
         try:
+            await container.startup()
             yield
         finally:
             await container.shutdown()
