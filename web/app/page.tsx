@@ -1,7 +1,7 @@
 interface HealthResponse {
   status: string;
   trading212Configured: boolean;
-  sqlitePath: string;
+  databaseReady: boolean;
 }
 
 function parseHealth(data: unknown): HealthResponse | null {
@@ -9,12 +9,12 @@ function parseHealth(data: unknown): HealthResponse | null {
   const obj = data as Record<string, unknown>;
   if (typeof obj.status !== "string") return null;
   if (typeof obj.trading212Configured !== "boolean") return null;
-  if (typeof obj.sqlitePath !== "string") return null;
+  if (typeof obj.databaseReady !== "boolean") return null;
 
   return {
     status: obj.status,
     trading212Configured: obj.trading212Configured,
-    sqlitePath: obj.sqlitePath,
+    databaseReady: obj.databaseReady,
   };
 }
 
@@ -27,7 +27,10 @@ interface HealthResult {
 async function getHealth(): Promise<HealthResult> {
   const apiUrl = process.env.HELIOS_API_URL || "http://127.0.0.1:8000";
   try {
-    const res = await fetch(`${apiUrl}/health`, { cache: "no-store" });
+    const res = await fetch(`${apiUrl}/health`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(3_000),
+    });
     const timestamp = new Date().toISOString();
     if (!res.ok) {
       return { data: null, error: `HTTP ${res.status}`, timestamp };
@@ -107,8 +110,8 @@ export default async function Page() {
           />
           <StatusIndicator
             label="DATABASE"
-            active={!!data?.sqlitePath}
-            value={data?.sqlitePath || "UNAVAILABLE / STALE"}
+            active={data?.databaseReady === true}
+            value={data?.databaseReady ? "READY" : "UNAVAILABLE / STALE"}
             timestamp={timestamp}
           />
           <StatusIndicator
