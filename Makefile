@@ -15,7 +15,7 @@ typecheck:
 	mypy
 
 migrate:
-	alembic upgrade head
+	helios-migrate
 
 down:
 	$(DOCKER_COMPOSE) down --remove-orphans

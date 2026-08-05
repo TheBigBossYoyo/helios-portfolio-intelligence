@@ -36,6 +36,7 @@ dev = [
 
 [project.scripts]
 helios = "helios.cli:main"
+helios-migrate = "helios.db:migration_main"
 helios-worker = "helios.worker:main"
 
 [tool.setuptools]
