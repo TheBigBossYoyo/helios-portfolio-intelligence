@@ -37,8 +37,14 @@ async def test_token_bucket_waits_for_capacity() -> None:
 
 def test_history_endpoints_have_independent_policy_keys() -> None:
     assert endpoint_policy_key("/equity/history/orders") == "history_orders"
+    assert endpoint_policy_key("/api/v0/equity/history/orders?cursor=1") == "history_orders"
     assert endpoint_policy_key("/equity/history/dividends") == "history_dividends"
+    assert endpoint_policy_key("/api/v0/equity/history/dividends?cursor=2") == "history_dividends"
     assert endpoint_policy_key("/equity/history/transactions") == "history_transactions"
+    assert (
+        endpoint_policy_key("/api/v0/equity/history/transactions?cursor=abc")
+        == "history_transactions"
+    )
 
 
 @pytest.mark.asyncio

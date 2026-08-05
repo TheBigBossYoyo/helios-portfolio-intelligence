@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from helios.client import (
     Trading212Client,
@@ -61,8 +63,8 @@ class FakeClock(Clock):
 def make_settings() -> Settings:
     return Settings(
         t212_api_key="key",
-        t212_api_secret="secret",
-        data_dir="data",
+        t212_api_secret=SecretStr("secret"),
+        data_dir=Path("data"),
         t212_max_retries=2,
     )
 
@@ -186,3 +188,145 @@ async def test_client_retries_transport_errors() -> None:
 
     assert result == []
     assert clock.slept == [0.5]
+
+
+@pytest.mark.asyncio
+async def test_history_orders_follow_next_page_path_and_snapshot_each_page() -> None:
+    writer = MemorySnapshotWriter()
+    seen_urls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        if (
+            request.url.path == "/api/v0/equity/history/orders"
+            and request.url.params.get("cursor") == "1"
+        ):
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "fill": {
+                                "id": "fill-2",
+                                "quantity": "2.0",
+                                "price": "101.00",
+                                "filledAt": "2024-01-02T00:00:00Z",
+                                "type": "TRADE",
+                                "walletImpact": {"netValue": "202.00"},
+                            },
+                            "order": {
+                                "id": "order-2",
+                                "instrument": {"ticker": "AAPL_US_EQ", "currency": "USD"},
+                                "side": "SELL",
+                                "type": "MARKET",
+                            },
+                        }
+                    ],
+                    "nextPagePath": None,
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "fill": {
+                            "id": "fill-1",
+                            "quantity": "1.0",
+                            "price": "100.00",
+                            "filledAt": "2024-01-01T00:00:00Z",
+                            "type": "TRADE",
+                            "walletImpact": {"netValue": "100.00"},
+                        },
+                        "order": {
+                            "id": "order-1",
+                            "instrument": {"ticker": "AAPL_US_EQ", "currency": "USD"},
+                            "side": "BUY",
+                            "type": "MARKET",
+                        },
+                    }
+                ],
+                "nextPagePath": "/api/v0/equity/history/orders?cursor=1",
+            },
+        )
+
+    client = Trading212Client(
+        settings=make_settings(),
+        snapshot_writer=writer,
+        http_client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://demo.trading212.com/api/v0",
+        ),
+    )
+
+    items = await client.get_history_orders()
+
+    assert [item.fill.id for item in items] == ["fill-1", "fill-2"]
+    assert seen_urls == [
+        "https://demo.trading212.com/api/v0/equity/history/orders?limit=50",
+        "https://demo.trading212.com/api/v0/equity/history/orders?cursor=1",
+    ]
+    assert [call["endpoint"] for call in writer.calls] == [
+        "/equity/history/orders",
+        "/api/v0/equity/history/orders?cursor=1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_history_transactions_stops_on_nullable_terminal_next_page_path() -> None:
+    writer = MemorySnapshotWriter()
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "reference": "txn-1",
+                        "amount": "12.34",
+                        "currency": "EUR",
+                        "dateTime": "2024-02-03T04:05:06Z",
+                        "type": "DEPOSIT",
+                    }
+                ],
+                "nextPagePath": None,
+            },
+        )
+
+    client = Trading212Client(
+        settings=make_settings(),
+        snapshot_writer=writer,
+        http_client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://demo.trading212.com/api/v0",
+        ),
+    )
+
+    items = await client.get_history_transactions()
+
+    assert [item.reference for item in items] == ["txn-1"]
+    assert len(writer.calls) == 1
+    assert writer.calls[0]["endpoint"] == "/equity/history/transactions"
+
+
+@pytest.mark.asyncio
+async def test_pagination_rejects_external_next_page_url() -> None:
+    writer = MemorySnapshotWriter()
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"items": [], "nextPagePath": "https://attacker.example/steal"},
+        )
+
+    client = Trading212Client(
+        settings=make_settings(),
+        snapshot_writer=writer,
+        http_client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://demo.trading212.com/api/v0",
+        ),
+    )
+
+    with pytest.raises(Trading212ParseError, match="escaped the API origin"):
+        await client.get_history_orders()

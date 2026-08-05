@@ -147,20 +147,23 @@ def default_rate_limit_policies() -> dict[str, RateLimitPolicy]:
 
 
 def endpoint_policy_key(path: str) -> str:
-    if path == "/equity/account/summary":
+    normalized_path = path.split("?", 1)[0]
+    if normalized_path.startswith("/api/v0/"):
+        normalized_path = normalized_path[len("/api/v0") :]
+    if normalized_path == "/equity/account/summary":
         return "summary"
-    if path == "/equity/positions":
+    if normalized_path == "/equity/positions":
         return "positions"
-    if path.startswith("/equity/metadata/instruments"):
+    if normalized_path.startswith("/equity/metadata/instruments"):
         return "instruments"
-    if path.startswith("/equity/metadata/exchanges"):
+    if normalized_path.startswith("/equity/metadata/exchanges"):
         return "exchanges"
-    if path.startswith("/equity/history/exports"):
+    if normalized_path.startswith("/equity/history/exports"):
         return "exports"
-    if path.startswith("/equity/history/orders"):
+    if normalized_path.startswith("/equity/history/orders"):
         return "history_orders"
-    if path.startswith("/equity/history/dividends"):
+    if normalized_path.startswith("/equity/history/dividends"):
         return "history_dividends"
-    if path.startswith("/equity/history/transactions"):
+    if normalized_path.startswith("/equity/history/transactions"):
         return "history_transactions"
     return "default"

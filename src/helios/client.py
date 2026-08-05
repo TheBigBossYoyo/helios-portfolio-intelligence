@@ -16,7 +16,14 @@ from .rate_limit import (
     retry_delay_from_headers,
 )
 from .raw_snapshots import JsonValue, SnapshotWriter, encode_payload
-from .schemas import Position
+from .schemas import (
+    DividendItem,
+    HistoricalOrderItem,
+    HistoryPage,
+    InstrumentMetadata,
+    Position,
+    TransactionItem,
+)
 
 
 class Trading212Error(Exception):
@@ -54,6 +61,10 @@ class RequestResult:
 
 class Trading212Client:
     _positions_adapter = TypeAdapter(list[Position])
+    _instruments_adapter = TypeAdapter(list[InstrumentMetadata])
+    _history_orders_page_adapter = TypeAdapter(HistoryPage[HistoricalOrderItem])
+    _history_dividends_page_adapter = TypeAdapter(HistoryPage[DividendItem])
+    _history_transactions_page_adapter = TypeAdapter(HistoryPage[TransactionItem])
 
     def __init__(
         self,
@@ -68,6 +79,9 @@ class Trading212Client:
         self._snapshot_writer = snapshot_writer
         self._clock = clock or SystemClock()
         self._limiter = limiter or EndpointLimiter(self._clock, default_rate_limit_policies())
+        base_url = httpx.URL(settings.t212_base_url)
+        port = f":{base_url.port}" if base_url.port is not None else ""
+        self._api_origin = f"{base_url.scheme}://{base_url.host}{port}"
         self._owned_client = http_client is None
         self._http_client = http_client or httpx.AsyncClient(
             base_url=settings.t212_base_url,
@@ -85,6 +99,34 @@ class Trading212Client:
         except ValidationError as exc:
             raise Trading212ParseError("Failed to parse Trading 212 positions payload") from exc
 
+    async def get_instruments(self) -> list[InstrumentMetadata]:
+        payload = await self.request_json("GET", "/equity/metadata/instruments")
+        try:
+            return self._instruments_adapter.validate_python(payload)
+        except ValidationError as exc:
+            raise Trading212ParseError("Failed to parse Trading 212 instruments payload") from exc
+
+    async def get_history_orders(self) -> list[HistoricalOrderItem]:
+        return await self._get_history_items(
+            "/equity/history/orders",
+            self._history_orders_page_adapter,
+            "Failed to parse Trading 212 history orders payload",
+        )
+
+    async def get_history_dividends(self) -> list[DividendItem]:
+        return await self._get_history_items(
+            "/equity/history/dividends",
+            self._history_dividends_page_adapter,
+            "Failed to parse Trading 212 history dividends payload",
+        )
+
+    async def get_history_transactions(self) -> list[TransactionItem]:
+        return await self._get_history_items(
+            "/equity/history/transactions",
+            self._history_transactions_page_adapter,
+            "Failed to parse Trading 212 history transactions payload",
+        )
+
     async def request_json(
         self,
         method: str,
@@ -95,6 +137,26 @@ class Trading212Client:
         result = await self._request(method, path, params=params)
         return result.payload
 
+    async def _get_history_items[TItem](
+        self,
+        path: str,
+        adapter: TypeAdapter[HistoryPage[TItem]],
+        parse_error_message: str,
+    ) -> list[TItem]:
+        next_path: str | None = path
+        params: dict[str, str] | None = {"limit": "50"}
+        items: list[TItem] = []
+        while next_path is not None:
+            payload = await self.request_json("GET", next_path, params=params)
+            try:
+                page = adapter.validate_python(payload)
+            except ValidationError as exc:
+                raise Trading212ParseError(parse_error_message) from exc
+            items.extend(page.items)
+            next_path = page.next_page_path
+            params = None
+        return items
+
     async def _request(
         self,
         method: str,
@@ -103,17 +165,18 @@ class Trading212Client:
         params: dict[str, str] | None = None,
     ) -> RequestResult:
         if method.upper() != "GET":
-            raise Trading212MethodNotAllowedError("Helios Milestone 1 only permits GET requests")
+            raise Trading212MethodNotAllowedError("Helios only permits GET requests to Trading 212")
         credentials = self._settings.t212_credentials()
         if credentials is None:
             raise Trading212CredentialsError("Trading 212 credentials are not configured")
         endpoint_key = endpoint_policy_key(path)
+        request_url = self._resolve_request_url(path)
         for attempt in range(self._settings.t212_max_retries + 1):
             await self._limiter.acquire(endpoint_key)
             try:
                 response = await self._http_client.request(
                     method="GET",
-                    url=path,
+                    url=request_url,
                     params=params,
                     headers={"Authorization": build_basic_auth_header(credentials)},
                 )
@@ -156,6 +219,19 @@ class Trading212Client:
         if hinted_delay is not None:
             return float(min(hinted_delay, 30.0))
         return float(min(0.5 * (2**attempt), 8.0))
+
+    def _resolve_request_url(self, path: str) -> str:
+        if path.startswith("http://") or path.startswith("https://"):
+            url = httpx.URL(path)
+            origin = f"{url.scheme}://{url.host}"
+            if url.port is not None:
+                origin = f"{origin}:{url.port}"
+            if origin != self._api_origin or not url.path.startswith("/api/v0/"):
+                raise Trading212ParseError("Trading 212 pagination URL escaped the API origin")
+            return path
+        if path.startswith("/api/v0/"):
+            return f"{self._api_origin}{path}"
+        return path
 
 
 def build_basic_auth_header(credentials: T212Credentials) -> str:
