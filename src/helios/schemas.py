@@ -58,7 +58,7 @@ class HealthResponse(BaseModel):
 
     status: str
     trading212_configured: bool = Field(alias="trading212Configured")
-    sqlite_path: str = Field(alias="sqlitePath")
+    database_ready: bool = Field(alias="databaseReady")
 
 
 PositionsResponse = list[Position]

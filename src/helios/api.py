@@ -3,8 +3,10 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import SQLAlchemyError
 
 from .client import Trading212CredentialsError, Trading212Error, Trading212HTTPError
+from .db import ping
 from .dependencies import Container, get_container, get_t212_service
 from .schemas import HealthResponse, Position
 from .services import Trading212Service
@@ -14,10 +16,15 @@ router = APIRouter()
 
 @router.get("/health", response_model=HealthResponse)
 async def health(container: Annotated[Container, Depends(get_container)]) -> HealthResponse:
+    try:
+        await ping(container.engine)
+        database_ready = True
+    except SQLAlchemyError:
+        database_ready = False
     return HealthResponse(
-        status="ok",
+        status="ok" if database_ready else "degraded",
         trading212Configured=container.settings.t212_credentials() is not None,
-        sqlitePath=str(container.settings.sqlite_path),
+        databaseReady=database_ready,
     )
 
 

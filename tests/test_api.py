@@ -18,7 +18,7 @@ def test_health_reports_local_configuration(tmp_path: Path) -> None:
     assert response.json() == {
         "status": "ok",
         "trading212Configured": False,
-        "sqlitePath": str(tmp_path / "helios.sqlite3"),
+        "databaseReady": True,
     }
 
 
