@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "helios"
+version = "0.1.0"
+description = "Helios backend core"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "alembic>=1.13,<2.0",
+  "apscheduler>=3.10,<4.0",
+  "aiosqlite>=0.20,<1.0",
+  "fastapi>=0.115,<1.0",
+  "httpx>=0.27,<1.0",
+  "keyring>=25.2,<26.0",
+  "pydantic>=2.8,<3.0",
+  "pydantic-settings>=2.3,<3.0",
+  "sqlalchemy>=2.0.32,<3.0",
+  "sqlmodel>=0.0.22,<1.0",
+  "structlog>=24.4,<26.0",
+  "uvicorn>=0.30,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "hypothesis>=6.111,<7.0",
+  "mypy>=1.11,<2.0",
+  "pytest>=8.3,<9.0",
+  "pytest-asyncio>=0.24,<1.0",
+  "ruff>=0.6,<1.0",
+  "types-setuptools>=75.1,<76.0",
+]
+
+[project.scripts]
+helios = "helios.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "ASYNC", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "N802", "N803", "N806"]
+"alembic/env.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/helios", "tests"]
+strict = true
+mypy_path = ["src"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["apscheduler.*", "keyring.*", "structlog.*"]
+ignore_missing_imports = true
