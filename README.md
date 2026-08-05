@@ -16,11 +16,20 @@ Milestone 2 backend sync/runtime foundation.
 - `POST /api/v1/portfolio/sync?force_metadata=false`
 - `GET /api/v1/portfolio/data-quality`
 
+Example sync request:
+
+```bash
+curl -X POST \
+  -H "X-Helios-Local-Action: sync" \
+  "http://127.0.0.1:8000/api/v1/portfolio/sync?force_metadata=false"
+```
+
 ## Safety
 
 - Trading 212 access is read-only and GET-only.
 - No trades or account mutations are performed.
 - OpenFIGI use is optional and isolated from Trading 212 credentials.
+- Trading 212 cash transactions are not replayed into quantities; quantity-changing non-TRADE fills remain `UNSUPPORTED_ACTION`.
 
 ## Credentials
 

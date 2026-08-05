@@ -91,7 +91,10 @@ def test_portfolio_sync_endpoint_returns_summary_and_force_flag(tmp_path: Path) 
     app.dependency_overrides[get_portfolio_sync_service] = lambda: sync_service
 
     with TestClient(app) as client:
-        response = client.post("/api/v1/portfolio/sync?force_metadata=true")
+        response = client.post(
+            "/api/v1/portfolio/sync?force_metadata=true",
+            headers={"X-Helios-Local-Action": "sync"},
+        )
 
     assert response.status_code == 200
     assert response.json()["metadataFetched"] is True
@@ -112,7 +115,10 @@ def test_portfolio_sync_endpoint_maps_safe_errors(tmp_path: Path) -> None:
             error=error
         )
         with TestClient(app) as client:
-            response = client.post("/api/v1/portfolio/sync")
+            response = client.post(
+                "/api/v1/portfolio/sync",
+                headers={"X-Helios-Local-Action": "sync"},
+            )
         assert response.status_code == status_code
         assert response.json() == {"detail": detail}
 
@@ -126,10 +132,34 @@ def test_portfolio_sync_endpoint_rejects_missing_credentials_before_sync(tmp_pat
     )
 
     with TestClient(app) as client:
-        response = client.post("/api/v1/portfolio/sync")
+        response = client.post(
+            "/api/v1/portfolio/sync",
+            headers={"X-Helios-Local-Action": "sync"},
+        )
 
     assert response.status_code == 503
     assert response.json() == {"detail": "Trading 212 credentials are not configured"}
+
+
+def test_portfolio_sync_endpoint_requires_local_action_header(tmp_path: Path) -> None:
+    settings = Settings(data_dir=tmp_path, t212_api_key="key", t212_api_secret=SecretStr("secret"))
+    app = create_app(settings)
+    app.dependency_overrides[get_container] = lambda: SimpleNamespace(settings=settings)
+    app.dependency_overrides[get_portfolio_sync_service] = lambda: FakeSyncService(
+        error=AssertionError("should not run")
+    )
+
+    with TestClient(app) as client:
+        missing = client.post("/api/v1/portfolio/sync")
+        wrong = client.post(
+            "/api/v1/portfolio/sync",
+            headers={"X-Helios-Local-Action": "wrong"},
+        )
+
+    assert missing.status_code == 403
+    assert missing.json() == {"detail": "Missing required local action confirmation"}
+    assert wrong.status_code == 403
+    assert wrong.json() == {"detail": "Missing required local action confirmation"}
 
 
 def test_quality_report_endpoint_maps_found_and_not_found(tmp_path: Path) -> None:

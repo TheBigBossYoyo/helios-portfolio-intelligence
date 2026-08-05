@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
 
 from .client import (
@@ -36,13 +36,12 @@ async def health(container: Annotated[Container, Depends(get_container)]) -> Hea
         database_ready = True
     except SQLAlchemyError:
         database_ready = False
-    return HealthResponse.model_validate(
-        {
-            "status": "ok" if database_ready else "degraded",
-            "trading212Configured": container.settings.t212_credentials() is not None,
-            "databaseReady": database_ready,
-        }
-    )
+    payload = {
+        "status": "ok" if database_ready else "degraded",
+        "trading212Configured": container.settings.t212_credentials() is not None,
+        "databaseReady": database_ready,
+    }
+    return HealthResponse(**payload)
 
 
 @router.get("/api/v1/t212/positions", response_model=list[Position])
@@ -72,8 +71,14 @@ async def get_positions(
 async def run_portfolio_sync(
     container: Annotated[Container, Depends(get_container)],
     service: Annotated[PortfolioSyncService, Depends(get_portfolio_sync_service)],
+    local_action: Annotated[str | None, Header(alias="X-Helios-Local-Action")] = None,
     force_metadata: bool = False,
 ) -> PortfolioSyncSummary:
+    if local_action != "sync":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing required local action confirmation",
+        )
     if container.settings.t212_credentials() is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
