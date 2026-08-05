@@ -549,6 +549,69 @@ async def test_sync_respects_metadata_ttl_and_force(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_sync_uses_cached_metadata_when_ttl_skips_fetch(tmp_path: Path) -> None:
+    repository, session_factory = await _repository_and_session_factory(
+        tmp_path,
+        "cached_metadata.sqlite3",
+    )
+    synced_at = datetime(2024, 4, 1, tzinfo=UTC)
+    async with session_factory() as session:
+        async with session.begin():
+            session.add(
+                SyncStatus(
+                    endpoint=METADATA_ENDPOINT,
+                    last_attempt_at=synced_at,
+                    last_success_at=synced_at,
+                    last_status="success",
+                    item_count=1,
+                    last_error=None,
+                )
+            )
+            session.add(
+                Instrument(
+                    t212_ticker="TSLA_US_EQ",
+                    isin="US88160R1014",
+                    name="Tesla",
+                    currency_code="USD",
+                    instrument_type="STOCK",
+                    mapping_status="not_required",
+                )
+            )
+
+    client = FakeTrading212Client(
+        positions=[_position_payload(include_instrument_metadata=False)],
+        orders=[
+            _order_payload(
+                fill_id="fill-1",
+                order_id="order-1",
+                side="BUY",
+                include_instrument_metadata=False,
+            )
+        ],
+        dividends=[],
+        transactions=[_transaction_payload()],
+    )
+    resolver = StubResolver()
+    service = PortfolioSyncService(
+        settings=Settings(data_dir=tmp_path),
+        session_factory=session_factory,
+        client=client,
+        repository=repository,
+        resolver=resolver,
+        clock=FixedClock(synced_at),
+    )
+
+    await service.sync()
+
+    assert client.calls.count(METADATA_ENDPOINT) == 0
+    assert [request.t212_ticker for request in resolver.requests] == ["TSLA_US_EQ"]
+    assert resolver.requests[0].isin == "US88160R1014"
+    assert resolver.requests[0].currency_code == "USD"
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Instrument)) == 1
+
+
+@pytest.mark.asyncio
 async def test_sync_resolves_only_observed_instruments_and_caches_full_metadata(
     tmp_path: Path,
 ) -> None:
@@ -680,6 +743,7 @@ async def test_sync_failure_records_status_without_partial_domain_writes(tmp_pat
         failed_status = await session.get(SyncStatus, POSITIONS_ENDPOINT)
         assert failed_status is not None
         assert failed_status.last_status == "failed"
+        assert failed_status.item_count is None
         assert await session.scalar(select(func.count()).select_from(Instrument)) == 0
         assert await session.scalar(select(func.count()).select_from(PositionLive)) == 0
         assert await session.scalar(select(func.count()).select_from(Transaction)) == 0
@@ -887,15 +951,17 @@ def _instrument_metadata(ticker: str = "TSLA_US_EQ") -> InstrumentMetadata:
     )
 
 
-def _position_payload() -> Position:
+def _position_payload(*, include_instrument_metadata: bool = True) -> Position:
+    instrument_payload = {"ticker": "TSLA_US_EQ"}
+    if include_instrument_metadata:
+        instrument_payload |= {
+            "isin": "US88160R1014",
+            "name": "Tesla",
+            "currency": "USD",
+        }
     return Position.model_validate(
         {
-            "instrument": {
-                "ticker": "TSLA_US_EQ",
-                "isin": "US88160R1014",
-                "name": "Tesla",
-                "currency": "USD",
-            },
+            "instrument": instrument_payload,
             "quantity": "1.000",
             "quantityAvailableForTrading": "1.000",
             "quantityInPies": "0.100",
@@ -920,6 +986,7 @@ def _order_payload(
     side: str,
     fill_quantity: str = "1.000",
     order_filled_quantity: str = "1.000",
+    include_instrument_metadata: bool = True,
 ) -> HistoricalOrderItem:
     return HistoricalOrderItem.model_validate(
         {
@@ -950,9 +1017,15 @@ def _order_payload(
                 "quantity": "1.000",
                 "instrument": {
                     "ticker": "TSLA_US_EQ",
-                    "isin": "US88160R1014",
-                    "name": "Tesla",
-                    "currency": "USD",
+                    **(
+                        {
+                            "isin": "US88160R1014",
+                            "name": "Tesla",
+                            "currency": "USD",
+                        }
+                        if include_instrument_metadata
+                        else {}
+                    ),
                 },
                 "side": side,
                 "type": "MARKET",

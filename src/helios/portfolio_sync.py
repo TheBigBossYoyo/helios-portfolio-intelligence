@@ -9,7 +9,7 @@ from typing import Protocol
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .config import Settings
-from .models import OrderHistory, PositionLive, PositionReconciliation, SyncStatus
+from .models import Instrument, OrderHistory, PositionLive, PositionReconciliation, SyncStatus
 from .portfolio_repository import (
     METADATA_ENDPOINT,
     PortfolioRepository,
@@ -61,6 +61,7 @@ class ObservedInstrument:
     isin: str | None = None
     name: str | None = None
     currency_code: str | None = None
+    instrument_type: str | None = None
     metadata: InstrumentMetadata | None = None
 
 
@@ -283,7 +284,7 @@ class PortfolioSyncService:
                     name=item.name,
                     short_name=None,
                     currency_code=item.currency_code,
-                    instrument_type=None,
+                    instrument_type=item.instrument_type,
                     added_on=None,
                     extended_hours=None,
                     max_open_quantity=None,
@@ -304,14 +305,29 @@ class PortfolioSyncService:
         mapped_at: datetime,
     ) -> list[InstrumentSeed]:
         metadata_by_ticker = {item.ticker: item for item in metadata_items}
+        cached_by_ticker = await self._repository.get_cached_instruments_by_tickers(set(observed))
         enriched_observed = {
             ticker: ObservedInstrument(
                 t212_ticker=item.t212_ticker,
-                isin=item.isin or _metadata_field(metadata_by_ticker.get(ticker), "isin"),
-                name=item.name or _metadata_field(metadata_by_ticker.get(ticker), "name"),
+                isin=(
+                    item.isin
+                    or _metadata_field(metadata_by_ticker.get(ticker), "isin")
+                    or _cached_field(cached_by_ticker.get(ticker), "isin")
+                ),
+                name=(
+                    item.name
+                    or _metadata_field(metadata_by_ticker.get(ticker), "name")
+                    or _cached_field(cached_by_ticker.get(ticker), "name")
+                ),
                 currency_code=(
                     item.currency_code
                     or _metadata_field(metadata_by_ticker.get(ticker), "currency_code")
+                    or _cached_field(cached_by_ticker.get(ticker), "currency_code")
+                ),
+                instrument_type=(
+                    item.instrument_type
+                    or _metadata_field(metadata_by_ticker.get(ticker), "type")
+                    or _cached_field(cached_by_ticker.get(ticker), "instrument_type")
                 ),
                 metadata=metadata_by_ticker.get(ticker),
             )
@@ -435,6 +451,7 @@ def _collect_observed_instruments(
             currency_code=(
                 order_instrument.currency if order_instrument is not None else order.order.currency
             ),
+            instrument_type=None,
         )
     for dividend in dividends:
         dividend_instrument = dividend.instrument
@@ -449,6 +466,7 @@ def _collect_observed_instruments(
             currency_code=(
                 dividend_instrument.currency if dividend_instrument is not None else None
             ),
+            instrument_type=None,
         )
     return observed
 
@@ -460,6 +478,7 @@ def _merge_observation(
     isin: str | None,
     name: str | None,
     currency_code: str | None,
+    instrument_type: str | None = None,
 ) -> None:
     existing = observed.get(t212_ticker)
     if existing is None:
@@ -468,6 +487,7 @@ def _merge_observation(
             isin=isin,
             name=name,
             currency_code=currency_code,
+            instrument_type=instrument_type,
         )
         return
     observed[t212_ticker] = ObservedInstrument(
@@ -475,6 +495,7 @@ def _merge_observation(
         isin=existing.isin or isin,
         name=existing.name or name,
         currency_code=existing.currency_code or currency_code,
+        instrument_type=existing.instrument_type or instrument_type,
         metadata=existing.metadata,
     )
 
@@ -483,6 +504,15 @@ def _metadata_field(metadata: InstrumentMetadata | None, field_name: str) -> str
     if metadata is None:
         return None
     value = getattr(metadata, field_name)
+    if value is None:
+        return None
+    return str(value)
+
+
+def _cached_field(instrument: Instrument | None, field_name: str) -> str | None:
+    if instrument is None:
+        return None
+    value = getattr(instrument, field_name)
     if value is None:
         return None
     return str(value)

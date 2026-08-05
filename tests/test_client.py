@@ -330,3 +330,64 @@ async def test_pagination_rejects_external_next_page_url() -> None:
 
     with pytest.raises(Trading212ParseError, match="escaped the API origin"):
         await client.get_history_orders()
+
+
+@pytest.mark.asyncio
+async def test_pagination_rejects_repeat_next_page_path_cycle() -> None:
+    writer = MemorySnapshotWriter()
+    seen_urls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={"items": [], "nextPagePath": "/api/v0/equity/history/orders?cursor=1"},
+        )
+
+    client = Trading212Client(
+        settings=make_settings(),
+        snapshot_writer=writer,
+        http_client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://demo.trading212.com/api/v0",
+        ),
+    )
+
+    with pytest.raises(Trading212ParseError, match="pagination cycle"):
+        await client.get_history_orders()
+
+    assert seen_urls == [
+        "https://demo.trading212.com/api/v0/equity/history/orders?limit=50",
+        "https://demo.trading212.com/api/v0/equity/history/orders?cursor=1",
+    ]
+    assert len(writer.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_pagination_rejects_excessive_page_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    writer = MemorySnapshotWriter()
+    calls = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json={"items": [], "nextPagePath": f"/api/v0/equity/history/orders?cursor={calls}"},
+        )
+
+    monkeypatch.setattr("helios.client.MAX_HISTORY_PAGES", 2)
+    client = Trading212Client(
+        settings=make_settings(),
+        snapshot_writer=writer,
+        http_client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://demo.trading212.com/api/v0",
+        ),
+    )
+
+    with pytest.raises(Trading212ParseError, match="maximum page count"):
+        await client.get_history_orders()
+
+    assert calls == 2
+    assert len(writer.calls) == 2

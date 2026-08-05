@@ -59,6 +59,9 @@ class RequestResult:
     status_code: int
 
 
+MAX_HISTORY_PAGES = 1000
+
+
 class Trading212Client:
     _positions_adapter = TypeAdapter(list[Position])
     _instruments_adapter = TypeAdapter(list[InstrumentMetadata])
@@ -146,14 +149,22 @@ class Trading212Client:
         next_path: str | None = path
         params: dict[str, str] | None = {"limit": "50"}
         items: list[TItem] = []
+        seen_paths: set[str] = set()
+        page_count = 0
         while next_path is not None:
+            if next_path in seen_paths:
+                raise Trading212ParseError("Detected Trading 212 pagination cycle")
+            seen_paths.add(next_path)
             payload = await self.request_json("GET", next_path, params=params)
+            page_count += 1
             try:
                 page = adapter.validate_python(payload)
             except ValidationError as exc:
                 raise Trading212ParseError(parse_error_message) from exc
             items.extend(page.items)
             next_path = page.next_page_path
+            if next_path is not None and page_count >= MAX_HISTORY_PAGES:
+                raise Trading212ParseError("Trading 212 pagination exceeded maximum page count")
             params = None
         return items
 

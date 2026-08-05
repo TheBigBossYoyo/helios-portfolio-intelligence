@@ -84,7 +84,19 @@ class PortfolioRepository:
                     session.add(status)
                 status.last_attempt_at = attempted_at
                 status.last_status = "failed"
+                status.item_count = None
                 status.last_error = error_message
+
+    async def get_cached_instruments_by_tickers(self, tickers: set[str]) -> dict[str, Instrument]:
+        if not tickers:
+            return {}
+        async with self._session_factory() as session:
+            result = await session.scalars(
+                select(Instrument)
+                .where(Instrument.t212_ticker.in_(sorted(tickers)))
+                .order_by(Instrument.t212_ticker)
+            )
+            return {instrument.t212_ticker: instrument for instrument in result}
 
     async def acquire_portfolio_sync_lease(
         self,
