@@ -5,7 +5,7 @@ from pathlib import Path
 
 import keyring
 from keyring.errors import KeyringError
-from pydantic import SecretStr, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +26,18 @@ class Settings(BaseSettings):
     t212_keyring_username: str | None = None
     t212_timeout_seconds: float = 10.0
     t212_max_retries: int = 3
+
+    @field_validator(
+        "t212_api_key",
+        "t212_api_secret",
+        "t212_keyring_username",
+        mode="before",
+    )
+    @classmethod
+    def blank_credentials_are_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def resolve_keyring_secret(self) -> Settings:

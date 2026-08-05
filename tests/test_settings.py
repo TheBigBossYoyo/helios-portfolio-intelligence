@@ -33,3 +33,12 @@ def test_explicit_secret_beats_keyring(monkeypatch: MonkeyPatch) -> None:
     settings = Settings()
 
     assert settings.t212_api_secret == SecretStr("secret-from-env")
+
+
+def test_blank_environment_credentials_are_unconfigured(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("HELIOS_T212_API_KEY", "")
+    monkeypatch.setenv("HELIOS_T212_API_SECRET", "")
+
+    settings = Settings()
+
+    assert settings.t212_credentials() is None
