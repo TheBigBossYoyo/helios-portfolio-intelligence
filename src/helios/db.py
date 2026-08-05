@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+from pathlib import Path
 from typing import Any
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -12,7 +15,6 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from .config import Settings
-from .models import Base
 
 
 def _configure_sqlite(dbapi_connection: Any, _: Any) -> None:
@@ -32,9 +34,17 @@ def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessi
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
-async def initialize_database(engine: AsyncEngine) -> None:
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+def _upgrade_database(settings: Settings) -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    config = Config(str(project_root / "alembic.ini"))
+    config.set_main_option("script_location", str(project_root / "alembic"))
+    config.set_main_option("sqlalchemy.url", settings.sqlite_url.replace("+aiosqlite", ""))
+    command.upgrade(config, "head")
+
+
+async def migrate_database(settings: Settings) -> None:
+    settings.ensure_directories()
+    await asyncio.to_thread(_upgrade_database, settings)
 
 
 async def dispose_engine(engine: AsyncEngine) -> None:
@@ -52,9 +62,3 @@ async def ping(engine: AsyncEngine) -> None:
     async with engine.connect() as connection:
         await connection.execute(text("SELECT 1"))
 
-
-async def session_scope(
-    session_factory: async_sessionmaker[AsyncSession],
-) -> AsyncIterator[AsyncSession]:
-    async with session_factory() as session:
-        yield session

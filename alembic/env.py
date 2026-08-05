@@ -19,8 +19,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-settings = load_settings()
-config.set_main_option("sqlalchemy.url", settings.sqlite_url.replace("+aiosqlite", ""))
+if not config.get_main_option("sqlalchemy.url"):
+    settings = load_settings()
+    config.set_main_option("sqlalchemy.url", settings.sqlite_url.replace("+aiosqlite", ""))
 target_metadata = Base.metadata
 
 
