@@ -21,10 +21,12 @@ async def health(container: Annotated[Container, Depends(get_container)]) -> Hea
         database_ready = True
     except SQLAlchemyError:
         database_ready = False
-    return HealthResponse(
-        status="ok" if database_ready else "degraded",
-        trading212Configured=container.settings.t212_credentials() is not None,
-        databaseReady=database_ready,
+    return HealthResponse.model_validate(
+        {
+            "status": "ok" if database_ready else "degraded",
+            "trading212Configured": container.settings.t212_credentials() is not None,
+            "databaseReady": database_ready,
+        }
     )
 
 

@@ -146,4 +146,71 @@ class HealthResponse(DTOModel):
     database_ready: bool = Field(alias="databaseReady")
 
 
+class SyncEndpointSummary(DTOModel):
+    endpoint: str
+    fetched: bool
+    item_count: int | None = Field(default=None, alias="itemCount")
+
+
+class PortfolioSyncSummary(DTOModel):
+    as_of: datetime = Field(alias="asOf")
+    metadata_fetched: bool = Field(alias="metadataFetched")
+    endpoints: list[SyncEndpointSummary]
+
+
+class EndpointAttemptReport(DTOModel):
+    endpoint: str
+    last_attempt_at: datetime | None = Field(default=None, alias="lastAttemptAt")
+    last_success_at: datetime | None = Field(default=None, alias="lastSuccessAt")
+    last_status: str | None = Field(default=None, alias="lastStatus")
+    item_count: int | None = Field(default=None, alias="itemCount")
+    last_error: str | None = Field(default=None, alias="lastError")
+
+
+class MetadataFreshnessReport(DTOModel):
+    endpoint: str
+    fresh: bool
+    ttl_hours: int = Field(alias="ttlHours")
+    checked_at: datetime = Field(alias="checkedAt")
+    last_success_at: datetime | None = Field(default=None, alias="lastSuccessAt")
+
+
+class InstrumentMappingIssueReport(DTOModel):
+    t212_ticker: str = Field(alias="t212Ticker")
+    isin: str | None = None
+    yahoo_ticker: str | None = Field(default=None, alias="yahooTicker")
+    mapping_status: str = Field(alias="mappingStatus")
+    mapping_source: str | None = Field(default=None, alias="mappingSource")
+    mapping_details: dict[str, object] | None = Field(default=None, alias="mappingDetails")
+    mapped_at: datetime | None = Field(default=None, alias="mappedAt")
+
+
+class ReconciliationIssueReport(DTOModel):
+    t212_ticker: str = Field(alias="t212Ticker")
+    ts: datetime
+    replayed_quantity: Decimal = Field(alias="replayedQuantity")
+    live_quantity: Decimal = Field(alias="liveQuantity")
+    difference_quantity: Decimal = Field(alias="differenceQuantity")
+    tolerance_quantity: Decimal = Field(alias="toleranceQuantity")
+    status: str
+
+
+class QualityReport(DTOModel):
+    as_of: datetime = Field(alias="asOf")
+    overall_status: str = Field(alias="overallStatus")
+    endpoint_statuses: list[EndpointAttemptReport] = Field(alias="endpointStatuses")
+    metadata_freshness: MetadataFreshnessReport = Field(alias="metadataFreshness")
+    unresolved_instruments: list[InstrumentMappingIssueReport] = Field(
+        alias="unresolvedInstruments"
+    )
+    ambiguous_instruments: list[InstrumentMappingIssueReport] = Field(alias="ambiguousInstruments")
+    override_required_instruments: list[InstrumentMappingIssueReport] = Field(
+        alias="overrideRequiredInstruments"
+    )
+    reconciliation_mismatches: list[ReconciliationIssueReport] = Field(
+        alias="reconciliationMismatches"
+    )
+    unsupported_actions: list[ReconciliationIssueReport] = Field(alias="unsupportedActions")
+
+
 PositionsResponse = list[Position]
