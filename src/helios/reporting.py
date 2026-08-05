@@ -13,6 +13,10 @@ from .schemas import (
 )
 
 
+class NoQualityReportDataError(ValueError):
+    pass
+
+
 class PortfolioQualityReportService:
     def __init__(
         self,
@@ -28,7 +32,7 @@ class PortfolioQualityReportService:
         endpoint_statuses = await self._repository.list_endpoint_statuses()
         as_of = await self._repository.latest_report_timestamp()
         if as_of is None:
-            raise ValueError("No sync attempts recorded")
+            raise NoQualityReportDataError("No sync attempts recorded")
         checked_at = self._clock.utcnow()
         metadata_freshness = await self._repository.get_metadata_freshness(
             checked_at=checked_at,
