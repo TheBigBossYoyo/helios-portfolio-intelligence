@@ -65,6 +65,8 @@ class TokenBucket:
                 self.tokens = min(float(remaining_value), float(self.policy.capacity))
             except ValueError:
                 pass
+            else:
+                self.updated_at = self.clock.now()
         if reset_value is not None and (status_code == 429 or remaining_value == "0"):
             try:
                 reset_at = float(reset_value)

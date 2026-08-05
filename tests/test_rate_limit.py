@@ -39,3 +39,17 @@ def test_history_endpoints_have_independent_policy_keys() -> None:
     assert endpoint_policy_key("/equity/history/orders") == "history_orders"
     assert endpoint_policy_key("/equity/history/dividends") == "history_dividends"
     assert endpoint_policy_key("/equity/history/transactions") == "history_transactions"
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_headers_reset_refill_clock() -> None:
+    clock = FakeClock()
+    bucket = TokenBucket(policy=RateLimitPolicy(capacity=1, period_seconds=1.0), clock=clock)
+    await bucket.acquire()
+    clock.current = 0.5
+
+    bucket.apply_headers({"x-ratelimit-remaining": "0"}, status_code=200)
+    clock.current = 1.0
+    await bucket.acquire()
+
+    assert clock.slept == [0.5]
