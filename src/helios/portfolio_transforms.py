@@ -92,8 +92,6 @@ def transaction_from_dto(dto: TransactionItem) -> Transaction:
     return Transaction(
         reference=str(dto.reference),
         ts=dto.date_time,
-        t212_ticker=None,
-        isin=None,
         transaction_type=dto.type,
         currency_code=dto.currency,
         amount=dto.amount,

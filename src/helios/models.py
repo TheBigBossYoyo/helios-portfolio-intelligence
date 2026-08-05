@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
@@ -33,9 +33,28 @@ class Base(DeclarativeBase):
     pass
 
 
-QUANTITY_NUMERIC = Numeric(28, 10, asdecimal=True)
-MONEY_NUMERIC = Numeric(28, 10, asdecimal=True)
-FX_NUMERIC = Numeric(28, 10, asdecimal=True)
+class ExactDecimal(TypeDecorator[Decimal]):
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value: Decimal | None, dialect: object) -> str | None:
+        del dialect
+        if value is None:
+            return None
+        if not isinstance(value, Decimal):
+            raise TypeError("ExactDecimal requires Decimal values")
+        return format(value, "f")
+
+    def process_result_value(self, value: str | None, dialect: object) -> Decimal | None:
+        del dialect
+        if value is None:
+            return None
+        return Decimal(value)
+
+
+QUANTITY_NUMERIC = ExactDecimal()
+MONEY_NUMERIC = ExactDecimal()
+FX_NUMERIC = ExactDecimal()
 
 
 class RawSnapshot(Base):
@@ -105,8 +124,6 @@ class Transaction(Base):
 
     reference: Mapped[str] = mapped_column(String(128), primary_key=True)
     ts: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    t212_ticker: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    isin: Mapped[str | None] = mapped_column(String(32), nullable=True)
     transaction_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     amount: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
