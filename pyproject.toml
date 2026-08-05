@@ -35,6 +35,7 @@ dev = [
 
 [project.scripts]
 helios = "helios.cli:main"
+helios-worker = "helios.worker:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
