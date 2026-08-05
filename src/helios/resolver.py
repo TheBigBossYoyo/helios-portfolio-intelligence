@@ -19,6 +19,7 @@ MappingSource = Literal["override", "openfigi", "missing_isin"]
 # ticker is supported by at least one of these explicitly U.S. exchange codes;
 # otherwise we retain evidence and require manual intervention.
 ACCEPTED_US_EXCHANGE_CODES = frozenset({"US", "UA", "UN", "UQ", "UR", "UW"})
+MAX_CANDIDATE_EVIDENCE = 25
 
 
 class OverrideEntry(BaseModel):
@@ -229,7 +230,11 @@ class OpenFigiResolver:
                 status="unresolved",
                 source="openfigi",
                 yahoo_ticker=None,
-                details={"candidates": []},
+                details={
+                    "candidate_count": 0,
+                    "candidates": [],
+                    "evidence_truncated": False,
+                },
             )
 
         try:
@@ -242,7 +247,7 @@ class OpenFigiResolver:
                 details={"error": "invalid_candidate"},
             )
 
-        candidate_details = [candidate.as_details() for candidate in candidates]
+        evidence = _candidate_evidence(candidates)
         request_currency = (request.currency_code or "").upper()
 
         if request_currency in {"GBP", "GBX"}:
@@ -250,7 +255,7 @@ class OpenFigiResolver:
                 status="override_required",
                 source="openfigi",
                 yahoo_ticker=None,
-                details={"candidates": candidate_details},
+                details=evidence,
             )
 
         if request_currency != "USD":
@@ -258,15 +263,7 @@ class OpenFigiResolver:
                 status="override_required",
                 source="openfigi",
                 yahoo_ticker=None,
-                details={"candidates": candidate_details},
-            )
-
-        if any(candidate.exch_code in {"LN", "LSE"} for candidate in candidates):
-            return InstrumentMappingResult(
-                status="override_required",
-                source="openfigi",
-                yahoo_ticker=None,
-                details={"candidates": candidate_details},
+                details=evidence,
             )
 
         us_candidates = [
@@ -285,7 +282,7 @@ class OpenFigiResolver:
                 status="resolved",
                 source="openfigi",
                 yahoo_ticker=yahoo_ticker,
-                details={"candidates": candidate_details},
+                details=evidence,
             )
 
         if len(distinct_tickers) > 1:
@@ -293,7 +290,7 @@ class OpenFigiResolver:
                 status="ambiguous",
                 source="openfigi",
                 yahoo_ticker=None,
-                details={"candidates": candidate_details},
+                details=evidence,
             )
 
         all_distinct_tickers = {
@@ -304,7 +301,7 @@ class OpenFigiResolver:
                 status="ambiguous",
                 source="openfigi",
                 yahoo_ticker=None,
-                details={"candidates": candidate_details},
+                details=evidence,
             )
 
         if any(
@@ -316,14 +313,14 @@ class OpenFigiResolver:
                 status="override_required",
                 source="openfigi",
                 yahoo_ticker=None,
-                details={"candidates": candidate_details},
+                details=evidence,
             )
 
         return InstrumentMappingResult(
             status="unresolved",
             source="openfigi",
             yahoo_ticker=None,
-            details={"candidates": candidate_details},
+            details=evidence,
         )
 
     def _candidate_from_raw(self, raw: object) -> MappingCandidate:
@@ -349,3 +346,22 @@ def _as_optional_str(value: object) -> str | None:
     if isinstance(value, str):
         return value
     return str(value)
+
+
+def _candidate_evidence(candidates: list[MappingCandidate]) -> dict[str, object]:
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (
+            candidate.exch_code not in ACCEPTED_US_EXCHANGE_CODES,
+            candidate.ticker or "",
+            candidate.exch_code or "",
+            candidate.figi or "",
+        ),
+    )
+    return {
+        "candidate_count": len(candidates),
+        "candidates": [
+            candidate.as_details() for candidate in ordered[:MAX_CANDIDATE_EVIDENCE]
+        ],
+        "evidence_truncated": len(candidates) > MAX_CANDIDATE_EVIDENCE,
+    }

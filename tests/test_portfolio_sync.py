@@ -7,10 +7,11 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from helios.config import Settings
-from helios.db import create_engine, migrate_database
+from helios.db import migrate_database
 from helios.models import (
     Dividend,
     Instrument,
@@ -838,7 +839,7 @@ async def _repository_and_session_factory(
 ) -> tuple[PortfolioRepository, async_sessionmaker[AsyncSession]]:
     settings = Settings(data_dir=tmp_path, sqlite_filename=sqlite_filename)
     await migrate_database(settings)
-    engine = create_engine(settings)
+    engine = create_async_engine(settings.sqlite_url, poolclass=NullPool)
     return (
         PortfolioRepository(async_sessionmaker(engine, expire_on_commit=False)),
         async_sessionmaker(engine, expire_on_commit=False),

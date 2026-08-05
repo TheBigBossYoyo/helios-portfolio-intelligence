@@ -10,6 +10,7 @@ from pydantic import SecretStr
 from helios.config import Settings
 from helios.resolver import (
     ACCEPTED_US_EXCHANGE_CODES,
+    MAX_CANDIDATE_EVIDENCE,
     InstrumentResolutionRequest,
     OpenFigiResolver,
     load_instrument_overrides,
@@ -229,7 +230,11 @@ async def test_unique_us_candidate_resolves_despite_foreign_listings(tmp_path: P
                 {
                     "data": [
                         {"ticker": "TSLA", "exchCode": "UW"},
-                        {"ticker": "TL0", "exchCode": "GY"},
+                        {"ticker": "0R0X", "exchCode": "LN"},
+                        *[
+                            {"ticker": f"TSLA{index}", "exchCode": "GY"}
+                            for index in range(30)
+                        ],
                     ]
                 }
             ],
@@ -255,6 +260,13 @@ async def test_unique_us_candidate_resolves_despite_foreign_listings(tmp_path: P
 
     assert result.status == "resolved"
     assert result.yahoo_ticker == "TSLA"
+    assert result.details is not None
+    assert result.details["candidate_count"] == 32
+    assert result.details["evidence_truncated"] is True
+    candidates = result.details["candidates"]
+    assert isinstance(candidates, list)
+    assert len(candidates) == MAX_CANDIDATE_EVIDENCE
+    assert candidates[0]["exchCode"] == "UW"
 
 
 @pytest.mark.asyncio
