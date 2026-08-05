@@ -30,6 +30,7 @@ RUN python -m pip install /tmp/dist/*.whl \
 
 COPY alembic.ini ./
 COPY alembic ./alembic
+COPY config ./config
 COPY src ./src
 COPY docker/api-entrypoint.sh ./docker/api-entrypoint.sh
 

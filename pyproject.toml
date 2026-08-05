@@ -17,6 +17,7 @@ dependencies = [
   "keyring>=25.2,<26.0",
   "pydantic>=2.8,<3.0",
   "pydantic-settings>=2.3,<3.0",
+  "PyYAML>=6.0,<7.0",
   "sqlalchemy>=2.0.32,<3.0",
   "sqlmodel>=0.0.22,<1.0",
   "structlog>=24.4,<26.0",
@@ -70,4 +71,8 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["apscheduler.*", "keyring.*", "structlog.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["yaml", "yaml.*"]
 ignore_missing_imports = true

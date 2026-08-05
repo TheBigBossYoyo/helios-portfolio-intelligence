@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 import keyring
@@ -26,17 +27,43 @@ class Settings(BaseSettings):
     t212_keyring_username: str | None = None
     t212_timeout_seconds: float = 10.0
     t212_max_retries: int = 3
+    instrument_metadata_ttl_hours: int = 24
+    reconciliation_tolerance: Decimal = Decimal("0.001")
+    instrument_overrides_path: Path = Path("config/instrument_overrides.yaml")
+    openfigi_base_url: str = "https://api.openfigi.com/v3"
+    openfigi_api_key: SecretStr | None = None
+    resolver_timeout_seconds: float = 10.0
+    sync_cadence_minutes: int = 60
 
     @field_validator(
         "t212_api_key",
         "t212_api_secret",
         "t212_keyring_username",
+        "openfigi_api_key",
         mode="before",
     )
     @classmethod
     def blank_credentials_are_unset(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator(
+        "instrument_metadata_ttl_hours",
+        "resolver_timeout_seconds",
+        "sync_cadence_minutes",
+    )
+    @classmethod
+    def positive_numeric_settings(cls, value: int | float) -> int | float:
+        if value <= 0:
+            raise ValueError("value must be positive")
+        return value
+
+    @field_validator("reconciliation_tolerance")
+    @classmethod
+    def nonnegative_reconciliation_tolerance(cls, value: Decimal) -> Decimal:
+        if value < Decimal("0"):
+            raise ValueError("reconciliation tolerance must be nonnegative")
         return value
 
     @model_validator(mode="after")

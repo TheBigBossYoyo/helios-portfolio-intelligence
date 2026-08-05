@@ -1,0 +1,14 @@
+# Manual instrument resolution overrides keyed by ISIN.
+#
+# Fill entries only when you have verified the exact Yahoo ticker/listing.
+# Do not add guessed mappings.
+# Preferred handwritten keys are snake_case:
+# overrides:
+#   - isin: US0000000000
+#     yahoo_ticker: EXAMPLE
+#     preferred_exchange: NASDAQ
+#     quote_currency: USD
+#     reason: Verified manually.
+#
+# Existing camelCase aliases remain accepted for compatibility.
+overrides: []

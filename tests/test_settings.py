@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
 from pydantic import SecretStr
 from pytest import MonkeyPatch
 
@@ -42,3 +46,53 @@ def test_blank_environment_credentials_are_unconfigured(monkeypatch: MonkeyPatch
     settings = Settings()
 
     assert settings.t212_credentials() is None
+
+
+def test_m2_settings_defaults() -> None:
+    settings = Settings()
+
+    assert settings.instrument_metadata_ttl_hours == 24
+    assert settings.reconciliation_tolerance == Decimal("0.001")
+    assert settings.instrument_overrides_path == Path("config/instrument_overrides.yaml")
+    assert settings.openfigi_base_url == "https://api.openfigi.com/v3"
+    assert settings.openfigi_api_key is None
+    assert settings.resolver_timeout_seconds == 10.0
+    assert settings.sync_cadence_minutes == 60
+
+
+def test_blank_openfigi_key_is_unset(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("HELIOS_OPENFIGI_API_KEY", "   ")
+
+    settings = Settings()
+
+    assert settings.openfigi_api_key is None
+
+
+def test_openfigi_key_is_secret_and_masked(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("HELIOS_OPENFIGI_API_KEY", "super-secret")
+
+    settings = Settings()
+
+    assert settings.openfigi_api_key == SecretStr("super-secret")
+    assert "super-secret" not in repr(settings)
+    assert str(settings.model_dump()["openfigi_api_key"]) == "**********"
+
+
+def test_instrument_metadata_ttl_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        Settings(instrument_metadata_ttl_hours=0)
+
+
+def test_resolver_timeout_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        Settings(resolver_timeout_seconds=0.0)
+
+
+def test_sync_cadence_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        Settings(sync_cadence_minutes=0)
+
+
+def test_reconciliation_tolerance_must_be_nonnegative() -> None:
+    with pytest.raises(ValueError, match="nonnegative"):
+        Settings(reconciliation_tolerance=Decimal("-0.001"))
