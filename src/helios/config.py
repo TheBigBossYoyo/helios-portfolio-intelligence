@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     openfigi_api_key: SecretStr | None = None
     resolver_timeout_seconds: float = 10.0
     sync_cadence_minutes: int = 60
+    sync_lease_minutes: int = 15
 
     @field_validator(
         "t212_api_key",
@@ -52,6 +53,7 @@ class Settings(BaseSettings):
         "instrument_metadata_ttl_hours",
         "resolver_timeout_seconds",
         "sync_cadence_minutes",
+        "sync_lease_minutes",
     )
     @classmethod
     def positive_numeric_settings(cls, value: int | float) -> int | float:

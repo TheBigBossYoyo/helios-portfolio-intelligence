@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from uuid import uuid4
 
-from sqlalchemy import Select, case, func, select
+from sqlalchemy import Select, case, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,6 +20,7 @@ from .models import (
 from .portfolio_transforms import InstrumentSeed
 
 METADATA_ENDPOINT = "/equity/metadata/instruments"
+PORTFOLIO_SYNC_LEASE_ENDPOINT = "__portfolio_sync__"
 INSTRUMENT_UPSERT_CHUNK_SIZE = 500
 
 
@@ -29,6 +31,18 @@ class MetadataFreshness:
     ttl_hours: int
     last_success_at: datetime | None
     fresh: bool
+
+
+@dataclass(frozen=True)
+class SyncLease:
+    endpoint: str
+    token: str
+    acquired_at: datetime
+    expires_at: datetime
+
+
+class SyncAlreadyRunningError(RuntimeError):
+    pass
 
 
 class PortfolioRepository:
@@ -72,6 +86,78 @@ class PortfolioRepository:
                 status.last_status = "failed"
                 status.last_error = error_message
 
+    async def acquire_portfolio_sync_lease(
+        self,
+        *,
+        acquired_at: datetime,
+        lease_minutes: int,
+    ) -> SyncLease:
+        expires_at = acquired_at + timedelta(minutes=lease_minutes)
+        stale_before = acquired_at - timedelta(minutes=lease_minutes)
+        token = uuid4().hex
+        async with self._session_factory() as session:
+            async with session.begin():
+                await session.execute(
+                    sqlite_insert(SyncStatus)
+                    .values(endpoint=PORTFOLIO_SYNC_LEASE_ENDPOINT)
+                    .on_conflict_do_nothing(index_elements=[SyncStatus.endpoint])
+                )
+                await session.execute(
+                    update(SyncStatus)
+                    .where(SyncStatus.endpoint == PORTFOLIO_SYNC_LEASE_ENDPOINT)
+                    .where(
+                        (SyncStatus.last_status != "running")
+                        | (SyncStatus.last_status.is_(None))
+                        | (SyncStatus.last_attempt_at.is_(None))
+                        | (SyncStatus.last_attempt_at < stale_before)
+                    )
+                    .values(
+                        last_attempt_at=acquired_at,
+                        last_status="running",
+                        item_count=None,
+                        last_error=token,
+                    )
+                )
+                lease_status = await session.get(SyncStatus, PORTFOLIO_SYNC_LEASE_ENDPOINT)
+                if (
+                    lease_status is None
+                    or lease_status.last_status != "running"
+                    or lease_status.last_attempt_at != acquired_at
+                    or lease_status.last_error != token
+                ):
+                    raise SyncAlreadyRunningError("Portfolio sync already running")
+        return SyncLease(
+            endpoint=PORTFOLIO_SYNC_LEASE_ENDPOINT,
+            token=token,
+            acquired_at=acquired_at,
+            expires_at=expires_at,
+        )
+
+    async def release_portfolio_sync_lease(
+        self,
+        *,
+        lease: SyncLease,
+        completed_at: datetime,
+        succeeded: bool,
+        error_message: str | None,
+    ) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                values: dict[str, object] = {
+                    "last_attempt_at": completed_at,
+                    "last_status": "success" if succeeded else "failed",
+                    "last_error": error_message,
+                }
+                if succeeded:
+                    values["last_success_at"] = completed_at
+                await session.execute(
+                    update(SyncStatus)
+                    .where(SyncStatus.endpoint == PORTFOLIO_SYNC_LEASE_ENDPOINT)
+                    .where(SyncStatus.last_status == "running")
+                    .where(SyncStatus.last_error == lease.token)
+                    .values(values)
+                )
+
     async def ingest_domain_snapshot(
         self,
         session: AsyncSession,
@@ -101,7 +187,11 @@ class PortfolioRepository:
 
     async def list_endpoint_statuses(self) -> list[SyncStatus]:
         async with self._session_factory() as session:
-            result = await session.scalars(select(SyncStatus).order_by(SyncStatus.endpoint))
+            result = await session.scalars(
+                select(SyncStatus)
+                .where(SyncStatus.endpoint != PORTFOLIO_SYNC_LEASE_ENDPOINT)
+                .order_by(SyncStatus.endpoint)
+            )
             return list(result)
 
     async def list_instruments_with_status(self, status: str) -> list[Instrument]:
@@ -128,7 +218,9 @@ class PortfolioRepository:
 
     async def latest_report_timestamp(self) -> datetime | None:
         async with self._session_factory() as session:
-            statement: Select[tuple[datetime | None]] = select(func.max(SyncStatus.last_attempt_at))
+            statement: Select[tuple[datetime | None]] = select(
+                func.max(SyncStatus.last_attempt_at)
+            ).where(SyncStatus.endpoint != PORTFOLIO_SYNC_LEASE_ENDPOINT)
             return await session.scalar(statement)
 
     async def _upsert_instrument_seeds(

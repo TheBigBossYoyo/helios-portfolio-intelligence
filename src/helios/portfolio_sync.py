@@ -10,7 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .config import Settings
 from .models import OrderHistory, PositionLive, PositionReconciliation, SyncStatus
-from .portfolio_repository import METADATA_ENDPOINT, PortfolioRepository
+from .portfolio_repository import (
+    METADATA_ENDPOINT,
+    PortfolioRepository,
+)
 from .portfolio_transforms import (
     DomainTransformError,
     InstrumentSeed,
@@ -81,6 +84,37 @@ class PortfolioSyncService:
 
     async def sync(self, *, force_metadata: bool = False) -> PortfolioSyncSummary:
         synced_at = self._clock.utcnow()
+        lease = await self._repository.acquire_portfolio_sync_lease(
+            acquired_at=synced_at,
+            lease_minutes=self._settings.sync_lease_minutes,
+        )
+        try:
+            summary = await self._sync_without_lease(
+                force_metadata=force_metadata,
+                synced_at=synced_at,
+            )
+        except BaseException as exc:
+            await self._repository.release_portfolio_sync_lease(
+                lease=lease,
+                completed_at=self._clock.utcnow(),
+                succeeded=False,
+                error_message=exc.__class__.__name__,
+            )
+            raise
+        await self._repository.release_portfolio_sync_lease(
+            lease=lease,
+            completed_at=self._clock.utcnow(),
+            succeeded=True,
+            error_message=None,
+        )
+        return summary
+
+    async def _sync_without_lease(
+        self,
+        *,
+        force_metadata: bool,
+        synced_at: datetime,
+    ) -> PortfolioSyncSummary:
         metadata_freshness = await self._repository.get_metadata_freshness(
             checked_at=synced_at,
             ttl_hours=self._settings.instrument_metadata_ttl_hours,

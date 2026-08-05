@@ -20,7 +20,12 @@ from helios.models import (
     SyncStatus,
     Transaction,
 )
-from helios.portfolio_repository import METADATA_ENDPOINT, PortfolioRepository
+from helios.portfolio_repository import (
+    METADATA_ENDPOINT,
+    PORTFOLIO_SYNC_LEASE_ENDPOINT,
+    PortfolioRepository,
+    SyncAlreadyRunningError,
+)
 from helios.portfolio_sync import (
     DIVIDENDS_ENDPOINT,
     ORDERS_ENDPOINT,
@@ -318,6 +323,109 @@ async def test_repository_preserves_verified_mapping_on_not_required_upsert(tmp_
     assert instrument.mapping_status == "resolved"
     assert instrument.yahoo_ticker == "TSLA"
     assert instrument.mapping_details_json == {"reason": "verified"}
+
+
+@pytest.mark.asyncio
+async def test_sync_lease_conflict_and_stale_recovery(tmp_path: Path) -> None:
+    repository, session_factory = await _repository_and_session_factory(
+        tmp_path,
+        "lease.sqlite3",
+    )
+    acquired_at = datetime(2024, 2, 3, tzinfo=UTC)
+
+    first_lease = await repository.acquire_portfolio_sync_lease(
+        acquired_at=acquired_at,
+        lease_minutes=15,
+    )
+
+    with pytest.raises(SyncAlreadyRunningError):
+        await repository.acquire_portfolio_sync_lease(
+            acquired_at=acquired_at + timedelta(minutes=1),
+            lease_minutes=15,
+        )
+
+    stale_lease = await repository.acquire_portfolio_sync_lease(
+        acquired_at=acquired_at + timedelta(minutes=16),
+        lease_minutes=15,
+    )
+
+    assert first_lease.endpoint == PORTFOLIO_SYNC_LEASE_ENDPOINT
+    assert stale_lease.acquired_at == acquired_at + timedelta(minutes=16)
+
+    async with session_factory() as session:
+        lease_status = await session.get(SyncStatus, PORTFOLIO_SYNC_LEASE_ENDPOINT)
+
+    assert lease_status is not None
+    assert lease_status.last_status == "running"
+
+
+@pytest.mark.asyncio
+async def test_sync_lease_release_preserves_last_success_on_failure(tmp_path: Path) -> None:
+    repository, session_factory = await _repository_and_session_factory(
+        tmp_path,
+        "lease_release.sqlite3",
+    )
+    success_at = datetime(2024, 2, 4, tzinfo=UTC)
+
+    success_lease = await repository.acquire_portfolio_sync_lease(
+        acquired_at=success_at,
+        lease_minutes=15,
+    )
+    await repository.release_portfolio_sync_lease(
+        lease=success_lease,
+        completed_at=success_at,
+        succeeded=True,
+        error_message=None,
+    )
+    failed_lease = await repository.acquire_portfolio_sync_lease(
+        acquired_at=success_at + timedelta(minutes=1),
+        lease_minutes=15,
+    )
+    await repository.release_portfolio_sync_lease(
+        lease=failed_lease,
+        completed_at=success_at + timedelta(minutes=2),
+        succeeded=False,
+        error_message="RuntimeError",
+    )
+
+    async with session_factory() as session:
+        lease_status = await session.get(SyncStatus, PORTFOLIO_SYNC_LEASE_ENDPOINT)
+
+    assert lease_status is not None
+    assert lease_status.last_status == "failed"
+    assert lease_status.last_success_at == success_at
+    assert lease_status.last_error == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_stale_lease_owner_cannot_release_new_owner(tmp_path: Path) -> None:
+    repository, session_factory = await _repository_and_session_factory(
+        tmp_path,
+        "lease_owner.sqlite3",
+    )
+    started_at = datetime(2024, 2, 5, tzinfo=UTC)
+    stale_lease = await repository.acquire_portfolio_sync_lease(
+        acquired_at=started_at,
+        lease_minutes=15,
+    )
+    current_lease = await repository.acquire_portfolio_sync_lease(
+        acquired_at=started_at + timedelta(minutes=16),
+        lease_minutes=15,
+    )
+
+    await repository.release_portfolio_sync_lease(
+        lease=stale_lease,
+        completed_at=started_at + timedelta(minutes=17),
+        succeeded=True,
+        error_message=None,
+    )
+
+    async with session_factory() as session:
+        lease_status = await session.get(SyncStatus, PORTFOLIO_SYNC_LEASE_ENDPOINT)
+
+    assert lease_status is not None
+    assert lease_status.last_status == "running"
+    assert lease_status.last_error == current_lease.token
 
 
 def test_reconciliation_buy_sell_and_live_replay_edges() -> None:
