@@ -97,7 +97,7 @@ curl -X POST \
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `HELIOS_BASE_CURRENCY` | `EUR` | Only `EUR` is supported; anything else is rejected at startup. |
-| `HELIOS_ANALYTICS_FLOW_TIMING` | `flow_at_close` | Cash-flow timing for daily TWR. `flow_at_open`, `flow_at_close`, or `intraday_split` (Modified Dietz half-day weight). All three are flow-neutral. |
+| `HELIOS_ANALYTICS_FLOW_TIMING` | `flow_at_close` | Cash-flow timing for daily TWR. `flow_at_open`, `flow_at_close`, or `intraday_split` (Modified Dietz half-day weight). The first two are exactly flow-neutral — a pure deposit moves NAV without moving return. `intraday_split` is a deliberate approximation: half-weighting the flow means a deposit-only day shows a small non-zero return. Pick it only if you want Modified Dietz semantics. |
 | `HELIOS_ANALYTICS_MAX_PRICE_STALE_DAYS` | `10` | How far a close may be carried forward across weekends/holidays before the day is marked `STALE_PRICE` instead of valued. |
 | `HELIOS_ANALYTICS_MAX_FX_STALE_DAYS` | `10` | Same cutoff for ECB FX fixes (`STALE_FX`). |
 | `HELIOS_ANALYTICS_PASSIVE_BENCHMARK_KEY` | `vwrp` | Proxy used for the "you, but passive" counterfactual. |
