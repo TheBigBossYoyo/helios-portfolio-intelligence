@@ -24,14 +24,44 @@ class FakeSyncService:
 
 
 @dataclass
+class FakeReplayService:
+    calls: int = 0
+
+    async def replay(self, *, as_of: object | None = None) -> None:
+        del as_of
+        self.calls += 1
+
+
+@dataclass
+class FakeNewsService:
+    calls: int = 0
+    error: Exception | None = None
+
+    async def sync(self) -> None:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+
+
+@dataclass
 class FakeContainer:
     sync_service: FakeSyncService
+    replay_service: FakeReplayService = field(default_factory=FakeReplayService)
+    news_service: FakeNewsService = field(default_factory=FakeNewsService)
     startup_calls: int = 0
     shutdown_calls: int = 0
 
     @property
     def portfolio_sync_service(self) -> SyncService:
         return self.sync_service
+
+    @property
+    def performance_replay_service(self) -> FakeReplayService:
+        return self.replay_service
+
+    @property
+    def news_sync_service(self) -> FakeNewsService:
+        return self.news_service
 
     async def startup(self) -> None:
         self.startup_calls += 1
@@ -88,9 +118,13 @@ async def test_worker_starts_without_credentials(tmp_path: Path) -> None:
     worker._logger = FakeLogger()
 
     started_scheduler = await worker.start()
+    await asyncio.sleep(0)
     try:
         assert started_scheduler.running is True
-        assert scheduler.jobs == []
+        # Portfolio sync needs credentials and is skipped; news does not, so it still runs.
+        assert [job["id"] for job in scheduler.jobs] == ["news-sync"]
+        assert container.sync_service.calls == 0
+        assert container.news_service.calls == 1
         assert container.startup_calls == 1
     finally:
         await worker.shutdown()
@@ -118,14 +152,19 @@ async def test_worker_registers_interval_job_and_runs_initial_sync(tmp_path: Pat
     await asyncio.sleep(0)
     try:
         assert started_scheduler.running is True
-        assert len(scheduler.jobs) == 1
+        assert [job["id"] for job in scheduler.jobs] == ["portfolio-sync", "news-sync"]
         job = scheduler.jobs[0]
-        assert job["id"] == "portfolio-sync"
         assert job["trigger"] == "interval"
         assert job["minutes"] == 60
         assert job["max_instances"] == 1
         assert job["coalesce"] is True
+        news_job = scheduler.jobs[1]
+        assert news_job["minutes"] == 180
+        assert news_job["max_instances"] == 1
+        assert news_job["coalesce"] is True
         assert sync_service.calls == 1
+        assert container.replay_service.calls == 1
+        assert container.news_service.calls == 1
     finally:
         await worker.shutdown()
 
@@ -151,8 +190,39 @@ async def test_worker_logs_safe_error_class_and_survives(tmp_path: Path) -> None
     await asyncio.sleep(0)
     try:
         assert scheduler.running is True
-        assert fake_logger.warning_calls == [
-            ("worker_sync_failed", {"error": "RuntimeError"})
-        ]
+        assert fake_logger.warning_calls == [("worker_sync_failed", {"error": "RuntimeError"})]
+    finally:
+        await worker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_worker_news_failure_does_not_stop_portfolio_sync(tmp_path: Path) -> None:
+    """A publisher being unreachable must not take the portfolio loop down with it."""
+    scheduler = FakeScheduler()
+    sync_service = FakeSyncService()
+    container = FakeContainer(
+        sync_service=sync_service,
+        news_service=FakeNewsService(error=RuntimeError("feed down")),
+    )
+    worker = HeliosWorker(
+        Settings(
+            data_dir=tmp_path,
+            t212_api_key="key",
+            t212_api_secret=SecretStr("secret"),
+        ),
+        container_factory=lambda _settings: container,
+        scheduler=scheduler,
+    )
+    fake_logger = FakeLogger()
+    worker._logger = fake_logger
+
+    await worker.start()
+    await asyncio.sleep(0)
+    try:
+        assert scheduler.running is True
+        assert sync_service.calls == 1
+        assert container.replay_service.calls == 1
+        # Logged under its own event name, and only the class name — never the message.
+        assert fake_logger.warning_calls == [("worker_news_sync_failed", {"error": "RuntimeError"})]
     finally:
         await worker.shutdown()

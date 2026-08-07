@@ -1,0 +1,79 @@
+﻿
+=== REPLAY SUMMARY ===
+{
+  "asOf": "2024-05-01",
+  "startDate": "2024-01-02",
+  "endDate": "2024-05-01",
+  "flowTiming": "flow_at_close",
+  "holdingsWritten": 121,
+  "navWritten": 121,
+  "unsupportedQuantityEvents": [],
+  "missingPriceSymbols": [],
+  "stalePriceSymbols": [],
+  "missingFxCurrencies": [],
+  "staleFxCurrencies": [],
+  "excludedFlowCurrencies": [],
+  "notes": []
+}
+=== REPORT (headline) ===
+  flowTiming: "flow_at_close"
+  annualizationDays: 365
+  cumulativeTwr: {"status": "ok", "value": 0.025941663364904555, "observations": 120, "detail": null}
+  xirr: {"status": "ok", "value": 0.04986108959036952, "observations": 3, "detail": "Annual effective rate, ACT/365 
+day count."}
+  annualizedReturn: {"status": "ok", "value": 0.08101431476881915, "observations": 120, "detail": "Geometric 
+annualisation over 365 calendar days."}
+  volatility: {"status": "ok", "value": 0.2274672929191648, "observations": 120, "detail": "Annualised sample standard 
+deviation (ddof=1)."}
+  sharpe: {"status": "ok", "value": 0.45952347878314603, "observations": 120, "detail": null}
+  maxDrawdown: {"status": "ok", "value": -0.06716417910447761, "observations": 121, "detail": null}
+  recoveryDays: {"status": "ok", "value": 22.0, "observations": 121, "detail": null}
+  hhi: {"status": "ok", "value": 1.0, "observations": 1, "detail": "Herfindahl-Hirschman index of NAV weights."}
+  var95_1d: {"status": "ok", "value": 0.0, "observations": 120, "detail": "Historical simulation at 95% over 1 day(s); 
+loss shown as a negative return; 'linear' quantile interpolation; 120 observations, 39 in the tail. 28% of 
+observations are flat (non-trading calendar days carry the previous close forward), which dampens the tail."}
+  cvar95_1d: {"status": "ok", "value": -0.007040436758575253, "observations": 120, "detail": "Historical simulation at 
+95% over 1 day(s); loss shown as a negative return; 'linear' quantile interpolation; 120 observations, 39 in the tail. 
+28% of observations are flat (non-trading calendar days carry the previous close forward), which dampens the tail."}
+  var99_10d: {"status": "ok", "value": -0.04648117090251706, "observations": 111, "detail": "Historical simulation at 
+99% over 10 day(s); loss shown as a negative return; 'linear' quantile interpolation; 111 observations, 2 in the tail. 
+0% of observations are flat (non-trading calendar days carry the previous close forward), which dampens the tail."}
+  attribution: {"status": "unavailable", "activeReturn": null, "items": [], "detail": "Sector attribution requires 
+benchmark constituent weights and sector returns. No licensed index-constituent source is configured, so Helios 
+reports no numbers."}
+  correlationClusters: {"status": "insufficient_data", "observations": 0, "distanceThreshold": 1.0, "clusterCount": 
+null, "assignments": [], "detail": "Need at least two holdings with return history."}
+  ff5MomentumRegression: {"status": "unavailable", "observations": 0, "rSquared": null, "intercept": null, 
+"coefficients": {"mkt_rf": null, "smb": null, "hml": null, "rmw": null, "cma": null, "mom": null}, "detail": "No 
+factor return data is configured (HELIOS_FACTOR_DATA_PROVIDER=disabled); Helios does not fabricate factor series."}
+  passiveCounterfactual.status: ok
+  passiveCounterfactual.invested: 1450.0
+  passiveCounterfactual.final: 1409.607843137254901960784314
+  passiveCounterfactual.actualNav: 1469.8
+  passiveCounterfactual.detail: Counterfactual: external contributions invested in VWRP.LON (FTSE All-World ETF proxy) 
+at each flow date.
+  contributions: [{"key": "ABC_US_EQ", "weight": 1.0, "status": "ok", "returnValue": 0.00990099009900991, 
+"contribution": 0.00990099009900991, "detail": null}]
+  betaVsBenchmarks[vwrp].beta: {"status": "ok", "value": 0.2257816263589493, "observations": 86, "detail": null}
+  rollingVolatility30d: 91 points
+  rollingVolatility90d: 31 points
+  rollingBeta30d: 57 points
+  rollingBeta90d: 0 points
+  notes: [
+  "Cash-flow timing convention: flow_at_close.",
+  "Annualisation basis: 365 calendar days (the replay emits one NAV observation per calendar day).",
+  "Benchmarks are configurable ETF proxies, not official S&P/MSCI/FTSE index levels.",
+  "The passive comparison is a counterfactual built from ETF proxy prices, not an achievable or advised strategy.",
+  "Standard deviations use ddof=1; VaR/CVaR use historical simulation with 'linear' quantile interpolation and report 
+losses as negative returns.",
+  "Risk statistics run on the calendar-day NAV series, which includes non-trading days whose prices are carried 
+forward. Those flat days dampen volatility and can pull a 95% VaR toward zero; read the per-metric detail for the 
+flat-day share."
+]
+=== API ===
+  POST /replay without header -> 403 Missing required local action confirmation
+  POST /replay with header    -> 200
+  GET  /report                -> 200
+  report keys: 39
+
+

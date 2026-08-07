@@ -30,9 +30,7 @@ class OverrideEntry(BaseModel):
     preferred_exchange: str = Field(
         validation_alias=AliasChoices("preferred_exchange", "preferredExchange")
     )
-    quote_currency: str = Field(
-        validation_alias=AliasChoices("quote_currency", "quoteCurrency")
-    )
+    quote_currency: str = Field(validation_alias=AliasChoices("quote_currency", "quoteCurrency"))
     reason: str
 
     @field_validator("isin", "yahoo_ticker", "preferred_exchange", "quote_currency", "reason")
@@ -120,8 +118,10 @@ class OpenFigiResolver:
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._settings = settings
-        self._overrides = overrides if overrides is not None else load_instrument_overrides(
-            settings.instrument_overrides_path
+        self._overrides = (
+            overrides
+            if overrides is not None
+            else load_instrument_overrides(settings.instrument_overrides_path)
         )
         self._owned_client = http_client is None
         self._http_client = http_client or httpx.AsyncClient(
@@ -360,8 +360,6 @@ def _candidate_evidence(candidates: list[MappingCandidate]) -> dict[str, object]
     )
     return {
         "candidate_count": len(candidates),
-        "candidates": [
-            candidate.as_details() for candidate in ordered[:MAX_CANDIDATE_EVIDENCE]
-        ],
+        "candidates": [candidate.as_details() for candidate in ordered[:MAX_CANDIDATE_EVIDENCE]],
         "evidence_truncated": len(candidates) > MAX_CANDIDATE_EVIDENCE,
     }

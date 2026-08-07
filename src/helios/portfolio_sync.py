@@ -49,6 +49,7 @@ class Trading212Reader(Protocol):
 
     async def get_history_transactions(self) -> list[TransactionItem]: ...
 
+
 POSITIONS_ENDPOINT = "/equity/positions"
 ORDERS_ENDPOINT = "/equity/history/orders"
 DIVIDENDS_ENDPOINT = "/equity/history/dividends"
@@ -231,8 +232,7 @@ class PortfolioSyncService:
                 "asOf": synced_at,
                 "metadataFetched": should_fetch_metadata,
                 "endpoints": [
-                    summary.model_dump(mode="json", by_alias=True)
-                    for summary in endpoint_summaries
+                    summary.model_dump(mode="json", by_alias=True) for summary in endpoint_summaries
                 ],
             }
         )

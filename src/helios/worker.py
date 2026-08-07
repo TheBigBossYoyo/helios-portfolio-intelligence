@@ -16,9 +16,23 @@ class SyncService(Protocol):
     async def sync(self, *, force_metadata: bool = False) -> object: ...
 
 
+class ReplayService(Protocol):
+    async def replay(self, *, as_of: object | None = None) -> object: ...
+
+
+class NewsService(Protocol):
+    async def sync(self) -> object: ...
+
+
 class WorkerContainer(Protocol):
     @property
     def portfolio_sync_service(self) -> SyncService: ...
+
+    @property
+    def performance_replay_service(self) -> ReplayService: ...
+
+    @property
+    def news_sync_service(self) -> NewsService: ...
 
     async def startup(self) -> None: ...
 
@@ -62,12 +76,14 @@ class HeliosWorker:
         self._settings = settings or load_settings()
         configure_logging(self._settings)
         self._logger: WorkerLogger = get_logger(__name__)
-        self._container_factory: Callable[[Settings], WorkerContainer] = (
-            container_factory or _build_worker_container
+        self._container_factory = cast(
+            Callable[[Settings], WorkerContainer],
+            container_factory or _build_worker_container,
         )
         self._scheduler = scheduler or cast(Scheduler, AsyncIOScheduler(timezone="UTC"))
         self._container: WorkerContainer | None = None
         self._initial_sync_task: asyncio.Task[None] | None = None
+        self._initial_news_task: asyncio.Task[None] | None = None
 
     async def start(self) -> Scheduler:
         container = self._container_factory(self._settings)
@@ -85,6 +101,16 @@ class HeliosWorker:
                     max_instances=1,
                     coalesce=True,
                 )
+            # News needs no Trading 212 credentials, so it is scheduled either way. With no
+            # feeds configured it is a no-op that reports why.
+            self._scheduler.add_job(
+                self._run_scheduled_news_sync,
+                trigger="interval",
+                minutes=self._settings.news_sync_cadence_minutes,
+                id="news-sync",
+                max_instances=1,
+                coalesce=True,
+            )
             self._scheduler.start()
         except BaseException:
             await container.shutdown()
@@ -93,14 +119,18 @@ class HeliosWorker:
         if self._settings.t212_credentials() is not None:
             self._initial_sync_task = asyncio.create_task(self._run_scheduled_sync())
             self._logger.info("worker_started", sync_enabled=True)
+        self._initial_news_task = asyncio.create_task(self._run_scheduled_news_sync())
         return self._scheduler
 
     async def shutdown(self) -> None:
-        if self._initial_sync_task is not None:
-            self._initial_sync_task.cancel()
+        for task in (self._initial_sync_task, self._initial_news_task):
+            if task is None:
+                continue
+            task.cancel()
             with suppress(asyncio.CancelledError):
-                await self._initial_sync_task
-            self._initial_sync_task = None
+                await task
+        self._initial_sync_task = None
+        self._initial_news_task = None
         if self._scheduler.running:
             self._scheduler.shutdown(wait=False)
         if self._container is not None:
@@ -112,8 +142,18 @@ class HeliosWorker:
             return
         try:
             await self._container.portfolio_sync_service.sync()
+            await self._container.performance_replay_service.replay()
         except Exception as exc:
             self._logger.warning("worker_sync_failed", error=exc.__class__.__name__)
+
+    async def _run_scheduled_news_sync(self) -> None:
+        if self._container is None:
+            return
+        try:
+            await self._container.news_sync_service.sync()
+        except Exception as exc:
+            # A publisher being down must never take the portfolio sync loop with it.
+            self._logger.warning("worker_news_sync_failed", error=exc.__class__.__name__)
 
 
 async def run_worker(settings: Settings | None = None) -> None:

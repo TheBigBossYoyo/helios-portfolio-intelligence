@@ -19,6 +19,7 @@ async def test_container_wires_m2_services_and_shutdown_order(
     assert container.instrument_resolver is not None
     assert container.portfolio_sync_service is not None
     assert container.portfolio_quality_report_service is not None
+    assert container.performance_replay_service is not None
 
     order: list[str] = []
 

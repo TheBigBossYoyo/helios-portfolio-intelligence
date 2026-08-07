@@ -4,12 +4,22 @@ import argparse
 import asyncio
 import json
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from decimal import Decimal
 
 from .config import load_settings
 from .dependencies import Container, build_container
-from .schemas import PortfolioSyncSummary, Position, QualityReport
+from .schemas import (
+    AiAnalysisModel,
+    NewsItemModel,
+    NewsSyncSummaryModel,
+    PerformanceReplaySummaryModel,
+    PerformanceReportModel,
+    PortfolioSyncSummary,
+    Position,
+    QualityReport,
+    ThesisModel,
+)
 
 
 def main() -> int:
@@ -21,6 +31,22 @@ def main() -> int:
         return asyncio.run(_run_sync(force_metadata=args.force_metadata))
     if args.command == "quality":
         return asyncio.run(_run_quality())
+    if args.command == "performance-replay":
+        return asyncio.run(_run_performance_replay())
+    if args.command == "performance-report":
+        return asyncio.run(_run_performance_report())
+    if args.command == "news-sync":
+        return asyncio.run(_run_news_sync())
+    if args.command == "news":
+        return asyncio.run(_run_news(ticker=args.ticker, isin=args.isin, limit=args.limit))
+    if args.command == "ai-analyse":
+        return asyncio.run(_run_ai_analyse())
+    if args.command == "ai-latest":
+        return asyncio.run(_run_ai_latest())
+    if args.command == "thesis":
+        return asyncio.run(_run_thesis(args))
+    if args.command == "journal":
+        return asyncio.run(_run_journal(args))
     parser.error("unknown command")
     return 2
 
@@ -32,6 +58,41 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser = subparsers.add_parser("sync")
     sync_parser.add_argument("--force-metadata", action="store_true")
     subparsers.add_parser("quality")
+    subparsers.add_parser("performance-replay")
+    subparsers.add_parser("performance-report")
+    subparsers.add_parser("news-sync")
+    news_parser = subparsers.add_parser("news")
+    news_parser.add_argument("--ticker")
+    news_parser.add_argument("--isin")
+    news_parser.add_argument("--limit", type=int, default=20)
+    subparsers.add_parser("ai-analyse")
+    subparsers.add_parser("ai-latest")
+
+    thesis_parser = subparsers.add_parser("thesis")
+    thesis_sub = thesis_parser.add_subparsers(dest="thesis_command", required=True)
+    thesis_sub.add_parser("list").add_argument("--status")
+    create = thesis_sub.add_parser("create")
+    create.add_argument("--title", required=True)
+    create.add_argument("--body", required=True)
+    create.add_argument("--ticker")
+    create.add_argument("--isin")
+    create.add_argument("--conviction", default="medium")
+    show = thesis_sub.add_parser("show")
+    show.add_argument("thesis_id", type=int)
+    move = thesis_sub.add_parser("transition")
+    move.add_argument("thesis_id", type=int)
+    move.add_argument("--to", required=True, dest="to_status")
+    move.add_argument("--note")
+
+    journal_parser = subparsers.add_parser("journal")
+    journal_sub = journal_parser.add_subparsers(dest="journal_command", required=True)
+    add = journal_sub.add_parser("add")
+    add.add_argument("--note", required=True)
+    add.add_argument("--thesis-id", type=int, dest="thesis_id")
+    add.add_argument("--tags")
+    listing = journal_sub.add_parser("list")
+    listing.add_argument("--thesis-id", type=int, dest="thesis_id")
+    listing.add_argument("--limit", type=int, default=50)
     return parser
 
 
@@ -65,6 +126,165 @@ async def _run_quality() -> int:
         return 2
     print(_render_json(report))
     return 0
+
+
+async def _run_performance_replay() -> int:
+    try:
+        summary = await _run_with_container(
+            lambda container: container.performance_replay_service.replay()
+        )
+    except Exception as exc:
+        _print_error("helios.performance_replay.error", exc.__class__.__name__)
+        return 2
+    print(_render_json(PerformanceReplaySummaryModel.model_validate(summary, from_attributes=True)))
+    return 0
+
+
+async def _run_performance_report() -> int:
+    try:
+        report = await _run_with_container(
+            lambda container: container.performance_replay_service.get_report()
+        )
+    except Exception as exc:
+        _print_error("helios.performance_report.error", exc.__class__.__name__)
+        return 2
+    print(_render_json(PerformanceReportModel.model_validate(report, from_attributes=True)))
+    return 0
+
+
+async def _run_news_sync() -> int:
+    try:
+        summary = await _run_with_container(lambda container: container.news_sync_service.sync())
+    except Exception as exc:
+        _print_error("helios.news_sync.error", exc.__class__.__name__)
+        return 2
+    print(_render_json(NewsSyncSummaryModel.model_validate(summary, from_attributes=True)))
+    return 0
+
+
+async def _run_news(*, ticker: str | None, isin: str | None, limit: int) -> int:
+    try:
+        items = await _run_with_container(
+            lambda container: container.news_sync_service.list_news(
+                t212_ticker=ticker, isin=isin, limit=limit
+            )
+        )
+    except Exception as exc:
+        _print_error("helios.news.error", exc.__class__.__name__)
+        return 2
+    print(render_news([NewsItemModel.model_validate(item, from_attributes=True) for item in items]))
+    return 0
+
+
+async def _run_ai_analyse() -> int:
+    try:
+        analysis = await _run_with_container(
+            lambda container: container.ai_analysis_service.analyse()
+        )
+    except Exception as exc:
+        _print_error("helios.ai_analyse.error", exc.__class__.__name__)
+        return 2
+    print(_render_json(AiAnalysisModel.model_validate(analysis, from_attributes=True)))
+    return 0
+
+
+async def _run_ai_latest() -> int:
+    try:
+        analysis = await _run_with_container(
+            lambda container: container.ai_analysis_service.latest()
+        )
+    except Exception as exc:
+        _print_error("helios.ai_latest.error", exc.__class__.__name__)
+        return 2
+    if analysis is None:
+        print("No AI analysis has been run yet. Run `helios ai-analyse` first.")
+        return 0
+    print(_render_json(AiAnalysisModel.model_validate(analysis, from_attributes=True)))
+    return 0
+
+
+async def _run_thesis(args: argparse.Namespace) -> int:
+    from .thesis import format_thesis_line
+
+    try:
+        if args.thesis_command == "list":
+            rows = await _run_with_container(
+                lambda c: c.thesis_service.list_theses(status=args.status)
+            )
+            print(_lines(format_thesis_line(row) for row in rows) or "No theses yet.")
+            return 0
+        if args.thesis_command == "create":
+            thesis = await _run_with_container(
+                lambda c: c.thesis_service.create(
+                    title=args.title,
+                    body=args.body,
+                    t212_ticker=args.ticker,
+                    isin=args.isin,
+                    conviction=args.conviction,
+                )
+            )
+            print(format_thesis_line(thesis))
+            return 0
+        if args.thesis_command == "show":
+            thesis = await _run_with_container(lambda c: c.thesis_service.get(args.thesis_id))
+            print(_render_json(ThesisModel.model_validate(thesis, from_attributes=True)))
+            return 0
+        thesis = await _run_with_container(
+            lambda c: c.thesis_service.transition(
+                args.thesis_id, to_status=args.to_status, outcome_note=args.note
+            )
+        )
+        print(format_thesis_line(thesis))
+        return 0
+    except Exception as exc:
+        _print_error("helios.thesis.error", exc.__class__.__name__)
+        return 2
+
+
+async def _run_journal(args: argparse.Namespace) -> int:
+    from .thesis import format_journal_line
+
+    try:
+        if args.journal_command == "add":
+            entry = await _run_with_container(
+                lambda c: c.thesis_service.add_journal_entry(
+                    note=args.note, thesis_id=args.thesis_id, tags=args.tags
+                )
+            )
+            print(format_journal_line(entry))
+            return 0
+        rows = await _run_with_container(
+            lambda c: c.thesis_service.list_journal(thesis_id=args.thesis_id, limit=args.limit)
+        )
+        print(_lines(format_journal_line(row) for row in rows) or "No journal entries yet.")
+        return 0
+    except Exception as exc:
+        _print_error("helios.journal.error", exc.__class__.__name__)
+        return 2
+
+
+def _lines(values: Iterable[str]) -> str:
+    return "\n".join(values)
+
+
+def render_news(items: list[NewsItemModel]) -> str:
+    if not items:
+        return "No stored news. Configure sources in config/news_feeds.yaml, then run news-sync."
+    headers = ["published", "source", "ticker", "headline"]
+    rows = [headers]
+    for item in items:
+        rows.append(
+            [
+                item.published_at.isoformat() if item.published_at else "-",
+                item.source_label,
+                item.t212_ticker or "-",
+                item.headline,
+            ]
+        )
+    widths = [max(len(row[index]) for row in rows) for index in range(len(headers))]
+    return "\n".join(
+        " | ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)) for row in rows
+    )
 
 
 async def _run_with_container[T](operation: Callable[[Container], Awaitable[T]]) -> T:
@@ -113,7 +333,15 @@ def _fmt_decimal(value: Decimal | None) -> str:
     return format(value, "f")
 
 
-def _render_json(model: PortfolioSyncSummary | QualityReport) -> str:
+def _render_json(
+    model: PortfolioSyncSummary
+    | QualityReport
+    | PerformanceReplaySummaryModel
+    | PerformanceReportModel
+    | NewsSyncSummaryModel
+    | AiAnalysisModel
+    | ThesisModel,
+) -> str:
     return json.dumps(model.model_dump(mode="json", by_alias=True), indent=2)
 
 

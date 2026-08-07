@@ -1,20 +1,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import Select, case, func, select, update
+from sqlalchemy import Select, case, delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .models import (
+    AiObservation,
+    AiRun,
+    DailyHolding,
+    DailyNav,
     Dividend,
+    FactorReturnDaily,
+    FxRateDaily,
     Instrument,
+    JournalEntry,
+    MarketPriceDaily,
+    NewsItem,
     OrderHistory,
     PositionLive,
     PositionReconciliation,
+    RawNews,
     SyncStatus,
+    Thesis,
     Transaction,
 )
 from .portfolio_transforms import InstrumentSeed
@@ -41,8 +52,41 @@ class SyncLease:
     expires_at: datetime
 
 
+@dataclass(frozen=True)
+class InstrumentNewsTarget:
+    """Everything a news source template may substitute, from data Helios already holds."""
+
+    t212_ticker: str
+    isin: str | None
+    yahoo_ticker: str | None
+    name: str | None
+
+
+@dataclass(frozen=True)
+class ReplayInputData:
+    instruments: list[Instrument]
+    orders: list[OrderHistory]
+    dividends: list[Dividend]
+    transactions: list[Transaction]
+
+
 class SyncAlreadyRunningError(RuntimeError):
     pass
+
+
+def _title_already_stored(
+    row: NewsItem, titles_by_key: dict[str, list[datetime | None]], window: timedelta
+) -> bool:
+    """True when this headline is already stored close enough in time to be the same story."""
+    if not row.title_key:
+        return False
+    for published in titles_by_key.get(row.title_key, []):
+        if published is None or row.published_at is None:
+            # One side undated: the headline is all we have, so treat a match as the same story.
+            return True
+        if abs(published - row.published_at) <= window:
+            return True
+    return False
 
 
 class PortfolioRepository:
@@ -205,6 +249,367 @@ class PortfolioRepository:
                 .order_by(SyncStatus.endpoint)
             )
             return list(result)
+
+    async def load_replay_inputs(self) -> ReplayInputData:
+        async with self._session_factory() as session:
+            instruments = list(
+                await session.scalars(select(Instrument).order_by(Instrument.t212_ticker))
+            )
+            orders = list(
+                await session.scalars(
+                    select(OrderHistory).order_by(OrderHistory.fill_timestamp, OrderHistory.fill_id)
+                )
+            )
+            dividends = list(
+                await session.scalars(
+                    select(Dividend).order_by(Dividend.paid_on, Dividend.reference)
+                )
+            )
+            transactions = list(
+                await session.scalars(
+                    select(Transaction).order_by(Transaction.ts, Transaction.reference)
+                )
+            )
+            return ReplayInputData(
+                instruments=instruments,
+                orders=orders,
+                dividends=dividends,
+                transactions=transactions,
+            )
+
+    async def list_market_prices(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> dict[str, list[MarketPriceDaily]]:
+        async with self._session_factory() as session:
+            rows = list(
+                await session.scalars(
+                    select(MarketPriceDaily)
+                    .where(MarketPriceDaily.price_date >= start_date)
+                    .where(MarketPriceDaily.price_date <= end_date)
+                    .order_by(MarketPriceDaily.t212_ticker, MarketPriceDaily.price_date)
+                )
+            )
+        grouped: dict[str, list[MarketPriceDaily]] = {}
+        for row in rows:
+            grouped.setdefault(row.t212_ticker, []).append(row)
+        return grouped
+
+    async def upsert_market_prices(self, rows: list[MarketPriceDaily]) -> None:
+        if not rows:
+            return
+        async with self._session_factory() as session:
+            async with session.begin():
+                for row in rows:
+                    await session.merge(row)
+
+    async def list_fx_rates(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> dict[str, list[FxRateDaily]]:
+        async with self._session_factory() as session:
+            rows = list(
+                await session.scalars(
+                    select(FxRateDaily)
+                    .where(FxRateDaily.rate_date >= start_date)
+                    .where(FxRateDaily.rate_date <= end_date)
+                    .order_by(FxRateDaily.currency_code, FxRateDaily.rate_date)
+                )
+            )
+        grouped: dict[str, list[FxRateDaily]] = {}
+        for row in rows:
+            grouped.setdefault(row.currency_code, []).append(row)
+        return grouped
+
+    async def upsert_fx_rates(self, rows: list[FxRateDaily]) -> None:
+        if not rows:
+            return
+        async with self._session_factory() as session:
+            async with session.begin():
+                for row in rows:
+                    await session.merge(row)
+
+    async def list_factor_returns(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> list[FactorReturnDaily]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(FactorReturnDaily)
+                    .where(FactorReturnDaily.as_of_date >= start_date)
+                    .where(FactorReturnDaily.as_of_date <= end_date)
+                    .order_by(FactorReturnDaily.as_of_date)
+                )
+            )
+
+    async def upsert_factor_returns(self, rows: list[FactorReturnDaily]) -> None:
+        if not rows:
+            return
+        async with self._session_factory() as session:
+            async with session.begin():
+                for row in rows:
+                    await session.merge(row)
+
+    async def replace_daily_replay(
+        self,
+        *,
+        holdings: list[DailyHolding],
+        nav_rows: list[DailyNav],
+    ) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await session.execute(delete(DailyHolding))
+                await session.execute(delete(DailyNav))
+                session.add_all(holdings)
+                session.add_all(nav_rows)
+
+    async def list_daily_nav(self) -> list[DailyNav]:
+        async with self._session_factory() as session:
+            return list(await session.scalars(select(DailyNav).order_by(DailyNav.as_of_date)))
+
+    async def list_daily_holdings(self) -> list[DailyHolding]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(DailyHolding).order_by(DailyHolding.as_of_date, DailyHolding.t212_ticker)
+                )
+            )
+
+    async def insert_thesis(self, row: Thesis) -> Thesis:
+        async with self._session_factory() as session:
+            async with session.begin():
+                session.add(row)
+            return row
+
+    async def get_thesis(self, thesis_id: int) -> Thesis | None:
+        async with self._session_factory() as session:
+            return await session.get(Thesis, thesis_id)
+
+    async def update_thesis(self, thesis_id: int, **changes: object) -> Thesis:
+        """Apply only the fields actually supplied; `None` means 'leave alone'.
+
+        `closed_at` is the exception — it is set explicitly by a transition and may legitimately
+        be cleared, so it is applied whenever the caller passes the key at all.
+        """
+        async with self._session_factory() as session:
+            async with session.begin():
+                thesis = await session.get(Thesis, thesis_id)
+                if thesis is None:
+                    raise LookupError(f"no thesis with id {thesis_id}")
+                for field, value in changes.items():
+                    if value is None and field != "closed_at":
+                        continue
+                    setattr(thesis, field, value)
+            return thesis
+
+    async def list_theses(self, *, status: str | None = None) -> list[Thesis]:
+        async with self._session_factory() as session:
+            statement = select(Thesis)
+            if status is not None:
+                statement = statement.where(Thesis.status == status)
+            return list(
+                await session.scalars(statement.order_by(Thesis.created_at.desc(), Thesis.id))
+            )
+
+    async def insert_journal_entry(self, row: JournalEntry) -> JournalEntry:
+        async with self._session_factory() as session:
+            async with session.begin():
+                session.add(row)
+            return row
+
+    async def list_journal_entries(
+        self, *, thesis_id: int | None = None, limit: int = 100
+    ) -> list[JournalEntry]:
+        async with self._session_factory() as session:
+            statement = select(JournalEntry)
+            if thesis_id is not None:
+                statement = statement.where(JournalEntry.thesis_id == thesis_id)
+            return list(
+                await session.scalars(
+                    statement.order_by(
+                        JournalEntry.created_at.desc(), JournalEntry.id.desc()
+                    ).limit(limit)
+                )
+            )
+
+    async def latest_holding_weight(self, ticker: str) -> tuple[float | None, float | None]:
+        """Current NAV weight for one holding, or (None, None) when it is not held."""
+        async with self._session_factory() as session:
+            latest_date = await session.scalar(select(func.max(DailyHolding.as_of_date)))
+            if latest_date is None:
+                return None, None
+            rows = list(
+                await session.scalars(
+                    select(DailyHolding).where(DailyHolding.as_of_date == latest_date)
+                )
+            )
+        valued = [row for row in rows if row.market_value_eur is not None]
+        total = sum(float(row.market_value_eur or 0) for row in valued)
+        if total == 0.0:
+            return None, None
+        match = next((row for row in valued if row.t212_ticker == ticker), None)
+        if match is None:
+            return None, None
+        return float(match.market_value_eur or 0) / total, None
+
+    async def insert_ai_run(self, row: AiRun) -> int:
+        async with self._session_factory() as session:
+            async with session.begin():
+                session.add(row)
+            return row.id
+
+    async def insert_ai_observations(self, rows: list[AiObservation]) -> None:
+        if not rows:
+            return
+        async with self._session_factory() as session:
+            async with session.begin():
+                session.add_all(rows)
+
+    async def latest_ai_run(self) -> AiRun | None:
+        async with self._session_factory() as session:
+            result = await session.scalars(select(AiRun).order_by(AiRun.ts.desc()).limit(1))
+            return result.first()
+
+    async def list_ai_observations(self, run_id: int) -> list[AiObservation]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(AiObservation)
+                    .where(AiObservation.run_id == run_id)
+                    .order_by(AiObservation.rank)
+                )
+            )
+
+    async def list_instrument_news_targets(self) -> list[InstrumentNewsTarget]:
+        """Every known instrument, with the fields a news source template can substitute."""
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                select(
+                    Instrument.t212_ticker,
+                    Instrument.isin,
+                    Instrument.yahoo_ticker,
+                    Instrument.name,
+                ).order_by(Instrument.t212_ticker)
+            )
+            return [
+                InstrumentNewsTarget(t212_ticker=ticker, isin=isin, yahoo_ticker=yahoo, name=name)
+                for ticker, isin, yahoo, name in rows.all()
+            ]
+
+    async def insert_raw_news(self, row: RawNews) -> int:
+        async with self._session_factory() as session:
+            async with session.begin():
+                session.add(row)
+            return row.id
+
+    async def upsert_news_items(
+        self, rows: list[NewsItem], *, dedupe_window_hours: int = 48
+    ) -> int:
+        """Insert new articles, skipping ones already stored. Returns the number written.
+
+        Three checks, because a story can already be present under a different identity:
+        its exact `dedupe_key`, its canonical URL (same article, different tracking params), or
+        its title key within the dedupe window (same article, different source and URL).
+
+        Conflicts are ignored rather than updated: a re-fetch must not overwrite the
+        `fetched_at` of the first sighting, nor demote an item to a lower-trust source's copy.
+        """
+        if not rows:
+            return 0
+        keys = [row.dedupe_key for row in rows]
+        canonical_urls = [row.canonical_url for row in rows if row.canonical_url]
+        title_keys = [row.title_key for row in rows if row.title_key]
+        window = timedelta(hours=dedupe_window_hours)
+        async with self._session_factory() as session:
+            async with session.begin():
+                existing = set(
+                    await session.scalars(
+                        select(NewsItem.dedupe_key).where(NewsItem.dedupe_key.in_(keys))
+                    )
+                )
+                existing_urls = set(
+                    await session.scalars(
+                        select(NewsItem.canonical_url).where(
+                            NewsItem.canonical_url.in_(canonical_urls)
+                        )
+                    )
+                )
+                seen_titles = (
+                    await session.execute(
+                        select(NewsItem.title_key, NewsItem.published_at).where(
+                            NewsItem.title_key.in_(title_keys)
+                        )
+                    )
+                ).all()
+                titles_by_key: dict[str, list[datetime | None]] = {}
+                for key, published in seen_titles:
+                    titles_by_key.setdefault(key, []).append(published)
+
+                fresh: list[NewsItem] = []
+                for row in rows:
+                    if row.dedupe_key in existing or row.canonical_url in existing_urls:
+                        continue
+                    if _title_already_stored(row, titles_by_key, window):
+                        continue
+                    fresh.append(row)
+                    existing.add(row.dedupe_key)
+                    existing_urls.add(row.canonical_url)
+                    titles_by_key.setdefault(row.title_key, []).append(row.published_at)
+                if fresh:
+                    await session.execute(
+                        sqlite_insert(NewsItem)
+                        .values(
+                            [
+                                {
+                                    "dedupe_key": row.dedupe_key,
+                                    "feed_key": row.feed_key,
+                                    "provider": row.provider,
+                                    "source_label": row.source_label,
+                                    "t212_ticker": row.t212_ticker,
+                                    "isin": row.isin,
+                                    "headline": row.headline,
+                                    "summary": row.summary,
+                                    "url": row.url,
+                                    "canonical_url": row.canonical_url,
+                                    "title_key": row.title_key,
+                                    "published_at": row.published_at,
+                                    "fetched_at": row.fetched_at,
+                                    "raw_news_id": row.raw_news_id,
+                                }
+                                for row in fresh
+                            ]
+                        )
+                        .on_conflict_do_nothing(index_elements=[NewsItem.dedupe_key])
+                    )
+        return len(fresh)
+
+    async def list_news_items(
+        self,
+        *,
+        t212_ticker: str | None = None,
+        isin: str | None = None,
+        limit: int = 50,
+    ) -> list[NewsItem]:
+        async with self._session_factory() as session:
+            statement = select(NewsItem)
+            if t212_ticker is not None:
+                statement = statement.where(NewsItem.t212_ticker == t212_ticker)
+            if isin is not None:
+                statement = statement.where(NewsItem.isin == isin)
+            # Undated items sort last rather than being dropped or dated by guesswork.
+            statement = statement.order_by(
+                NewsItem.published_at.is_(None),
+                NewsItem.published_at.desc(),
+                NewsItem.headline,
+            ).limit(limit)
+            return list(await session.scalars(statement))
 
     async def list_instruments_with_status(self, status: str) -> list[Instrument]:
         async with self._session_factory() as session:
