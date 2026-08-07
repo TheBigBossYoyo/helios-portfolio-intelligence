@@ -1,0 +1,88 @@
+# Helios news sources.
+#
+# Everything below is DISABLED by default. Turn on what you are entitled to use by setting
+# `enabled: true`. Helios never enables a third-party source on your behalf.
+#
+# What Helios does with a source:
+#   - fetches the URL and stores the raw body (raw-first, same as every other source)
+#   - keeps the headline, summary and link the publisher put in the feed
+#   - records the source label and original URL on every item, so nothing is unattributed
+#
+# What it never does:
+#   - follow the article link, or fetch/store article bodies (paywalled and copyrighted text is
+#     never copied)
+#   - guess which company a story is about — an item is attached to an instrument only because
+#     the source was configured for that instrument
+#
+# TEMPLATE PLACEHOLDERS (substituted from data Helios already holds):
+#   {ticker}        Trading 212 ticker, e.g. AAPL_US_EQ
+#   {yahoo_ticker}  resolved market symbol from the M2 OpenFIGI mapping, e.g. AAPL
+#   {isin}          ISIN, e.g. US0378331005
+#   {name}          instrument name (URL-encoded), e.g. Apple%20Inc.
+# A source is skipped for any instrument missing a field its template needs.
+#
+# TRUST: when the same story arrives from several sources, the highest `trust` wins and the
+# others are merged away. Primary sources should outrank aggregators.
+
+feeds:
+  # ---------------------------------------------------------------------------
+  # 1. Yahoo Finance — per-holding headlines. No account, no key.
+  #    Best free breadth per instrument. Unofficial endpoint: no SLA, could change.
+  # ---------------------------------------------------------------------------
+  - key: yahoo-finance
+    label: Yahoo Finance
+    provider: rss
+    url_template: https://feeds.finance.yahoo.com/rss/2.0/headline?s={yahoo_ticker}&region=US&lang=en-US
+    trust: 40
+    enabled: false
+
+  # ---------------------------------------------------------------------------
+  # 2. SEC EDGAR — company filings. No account, but the SEC's access policy REQUIRES a
+  #    User-Agent naming a real contact. Set HELIOS_NEWS_SEC_USER_AGENT (e.g.
+  #    "Your Name your@email.com") and put the same value below, or leave this disabled.
+  #    Highest-signal source here: an 8-K is the event itself, not commentary about it.
+  #    US registrants only — non-US listings return nothing.
+  # ---------------------------------------------------------------------------
+  - key: sec-edgar
+    label: SEC EDGAR filings
+    provider: rss
+    url_template: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={yahoo_ticker}&type=8-K&dateb=&owner=include&count=20&output=atom
+    user_agent: "REPLACE-WITH-YOUR-NAME your@email.example"
+    trust: 100
+    enabled: false
+
+  # ---------------------------------------------------------------------------
+  # 3. Marketaux — ticker-tagged international news with sentiment.
+  #    ACCOUNT NEEDED: free signup at https://www.marketaux.com → API token →
+  #    HELIOS_NEWS_MARKETAUX_API_KEY. Free tier is 100 requests/day; Helios issues ONE
+  #    request per sync covering every holding, so a 3-hourly cadence uses ~8/day.
+  # ---------------------------------------------------------------------------
+  - key: marketaux
+    label: Marketaux
+    provider: marketaux
+    trust: 60
+    enabled: false
+
+  # ---------------------------------------------------------------------------
+  # 4. Google News search — broad fallback, no account.
+  #    Median item age was ~6.6 days in a July 2026 sampling, so treat it as backfill for
+  #    names the other sources miss, not as a primary source. Low trust on purpose.
+  # ---------------------------------------------------------------------------
+  - key: google-news
+    label: Google News
+    provider: rss
+    url_template: https://news.google.com/rss/search?q=%22{name}%22+when:7d&hl=en-US&gl=US&ceid=US:en
+    trust: 20
+    enabled: false
+
+  # ---------------------------------------------------------------------------
+  # 5. Your own publisher feeds. Check each publisher's terms permit personal,
+  #    non-redistributed use. Name one ticker to attribute a feed to an instrument;
+  #    omit for market-wide news.
+  # ---------------------------------------------------------------------------
+  # - key: publisher-markets
+  #   label: Publisher — Markets
+  #   provider: rss
+  #   url: https://example.com/markets/feed.xml
+  #   trust: 80
+  #   enabled: true

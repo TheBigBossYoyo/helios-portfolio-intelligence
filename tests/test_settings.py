@@ -96,3 +96,68 @@ def test_sync_cadence_must_be_positive() -> None:
 def test_reconciliation_tolerance_must_be_nonnegative() -> None:
     with pytest.raises(ValueError, match="nonnegative"):
         Settings(reconciliation_tolerance=Decimal("-0.001"))
+
+
+def test_m3_analytics_settings_defaults() -> None:
+    settings = Settings()
+
+    assert settings.analytics_flow_timing == "flow_at_close"
+    assert settings.analytics_max_price_stale_days == 10
+    assert settings.analytics_max_fx_stale_days == 10
+    assert settings.analytics_passive_benchmark_key == "vwrp"
+    assert settings.market_data_provider == "disabled"
+    assert settings.factor_data_provider == "disabled"
+    # Helios never guesses a benchmark's listing currency.
+    assert settings.benchmark_cspx_currency is None
+    assert settings.benchmark_swda_currency is None
+    assert settings.benchmark_vwrp_currency is None
+
+
+def test_base_currency_must_be_eur() -> None:
+    with pytest.raises(ValueError, match="base_currency must be EUR"):
+        Settings(base_currency="USD")
+
+    assert Settings(base_currency="eur").base_currency == "EUR"
+
+
+def test_flow_timing_must_be_a_known_convention() -> None:
+    with pytest.raises(ValueError):
+        Settings(analytics_flow_timing="flow_whenever")
+
+    assert Settings(analytics_flow_timing="intraday_split").analytics_flow_timing == (
+        "intraday_split"
+    )
+
+
+def test_stale_day_cutoffs_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        Settings(analytics_max_price_stale_days=0)
+    with pytest.raises(ValueError, match="positive"):
+        Settings(analytics_max_fx_stale_days=-1)
+
+
+def test_data_provider_settings_are_enumerated() -> None:
+    with pytest.raises(ValueError, match="market_data_provider must be one of"):
+        Settings(market_data_provider="yfinance")
+    with pytest.raises(ValueError, match="factor_data_provider must be one of"):
+        Settings(factor_data_provider="kenneth-french")
+
+
+def test_passive_benchmark_key_must_be_a_known_proxy() -> None:
+    with pytest.raises(ValueError, match="analytics_passive_benchmark_key must be one of"):
+        Settings(analytics_passive_benchmark_key="sp500")
+
+    assert Settings(analytics_passive_benchmark_key="CSPX").analytics_passive_benchmark_key == (
+        "cspx"
+    )
+
+
+def test_blank_benchmark_currency_is_unset(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("HELIOS_BENCHMARK_VWRP_CURRENCY", "  ")
+
+    assert Settings().benchmark_vwrp_currency is None
+
+
+def test_settings_has_no_ambient_clock() -> None:
+    # The replay/report pipeline must take its clock by injection, never from date.today().
+    assert not hasattr(Settings(), "today")
