@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import httpx
 import numpy as np
 import pytest
 from hypothesis import given
@@ -30,10 +31,12 @@ from helios.performance import (
     BenchmarkDefinition,
     DailyPricePoint,
     DailyReturnPoint,
+    EcbFxRateProvider,
     FactorObservation,
     FxRatePoint,
     PerformanceReplayService,
     PriceRequest,
+    UnknownCurrencyError,
     _merge_fx_maps,
     _merge_market_price_maps,
     _missing_price_requests,
@@ -1161,3 +1164,67 @@ async def _repository_and_session_factory(
     engine = create_async_engine(settings.sqlite_url, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     return PortfolioRepository(session_factory), session_factory
+
+
+class _StubEcbTransport(httpx.AsyncBaseTransport):
+    """Serves the ECB CSV shape and 404s any series ECB does not publish."""
+
+    def __init__(self) -> None:
+        self.requested_urls: list[str] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.requested_urls.append(str(request.url))
+        if "D.GBP.EUR.SP00.A" not in str(request.url):
+            return httpx.Response(404, text="No such series")
+        body = "TIME_PERIOD,OBS_VALUE\n2026-08-05,0.86\n2026-08-06,0.88\n"
+        return httpx.Response(200, text=body)
+
+
+def _ecb_provider(tmp_path: Path) -> tuple[EcbFxRateProvider, _StubEcbTransport]:
+    provider = EcbFxRateProvider(Settings(data_dir=tmp_path))
+    transport = _StubEcbTransport()
+    provider._client = httpx.AsyncClient(transport=transport)
+    return provider, transport
+
+
+async def test_gbx_is_converted_through_gbp_and_scaled_by_one_hundred(tmp_path: Path) -> None:
+    """Trading 212 quotes London listings in pence. ECB has no GBX series.
+
+    A GBX holding must be valued through the GBP fix divided by 100. Skipping the divisor would
+    overstate a UK position by 100x, which is the worst kind of wrong: silent and enormous.
+    """
+    provider, transport = _ecb_provider(tmp_path)
+
+    result = await provider.fetch_eur_base_rates(
+        currencies={"GBX"}, start_date=date(2026, 8, 5), end_date=date(2026, 8, 6)
+    )
+
+    assert all("D.GBX." not in url for url in transport.requested_urls)
+    points = result["GBX"]
+    assert [point.currency_code for point in points] == ["GBX", "GBX"]
+    # 0.86 GBP per EUR -> 1/0.86 EUR per GBP -> that / 100 EUR per GBX.
+    assert points[0].eur_per_unit == (ONE / Decimal("0.86")) / Decimal("100")
+    assert points[1].eur_per_unit == (ONE / Decimal("0.88")) / Decimal("100")
+
+
+async def test_gbx_and_gbp_share_a_single_ecb_request(tmp_path: Path) -> None:
+    provider, transport = _ecb_provider(tmp_path)
+
+    result = await provider.fetch_eur_base_rates(
+        currencies={"GBX", "GBP"}, start_date=date(2026, 8, 5), end_date=date(2026, 8, 6)
+    )
+
+    assert len(transport.requested_urls) == 1
+    # The same fix, expressed per unit of each quote convention.
+    assert result["GBP"][0].eur_per_unit == result["GBX"][0].eur_per_unit * Decimal("100")
+
+
+async def test_unpublished_currency_names_itself_instead_of_raising_a_bare_404(
+    tmp_path: Path,
+) -> None:
+    provider, _ = _ecb_provider(tmp_path)
+
+    with pytest.raises(UnknownCurrencyError, match="ZZZ"):
+        await provider.fetch_eur_base_rates(
+            currencies={"ZZZ"}, start_date=date(2026, 8, 5), end_date=date(2026, 8, 6)
+        )

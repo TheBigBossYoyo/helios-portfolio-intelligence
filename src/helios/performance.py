@@ -78,6 +78,22 @@ VALUATION_PARTIAL = "PARTIAL"
 PROVENANCE_EXACT = "EXACT"
 PROVENANCE_FORWARD_FILL = "FORWARD_FILL"
 
+# Trading 212 quotes some London listings in GBX (pence), which is not a currency and has no ECB
+# series -- asking for D.GBX.EUR.SP00.A returns 404. It is a minor unit: 1 GBX = 1/100 GBP. Map
+# each minor unit to its major currency and the divisor, fetch the major series, and scale.
+# Treating GBX as GBP without scaling would overstate a UK holding by 100x.
+MINOR_UNIT_CURRENCIES: dict[str, tuple[str, Decimal]] = {
+    "GBX": ("GBP", Decimal("100")),
+    "GBP_MINOR": ("GBP", Decimal("100")),
+    "ZAC": ("ZAR", Decimal("100")),
+    "ILA": ("ILS", Decimal("100")),
+}
+
+
+def resolve_minor_unit(currency: str) -> tuple[str, Decimal]:
+    """Return the (major currency, divisor) an FX quote must be fetched and scaled by."""
+    return MINOR_UNIT_CURRENCIES.get(currency.upper(), (currency.upper(), ONE))
+
 
 @dataclass(frozen=True)
 class MetricValue:
@@ -447,6 +463,10 @@ class AlphaVantageMarketDataProvider:
         return results
 
 
+class UnknownCurrencyError(ValueError):
+    """A holding is quoted in a currency Helios cannot convert to EUR."""
+
+
 class EcbFxRateProvider:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -463,40 +483,68 @@ class EcbFxRateProvider:
         end_date: date,
     ) -> dict[str, list[FxRatePoint]]:
         results: dict[str, list[FxRatePoint]] = {}
+        # A minor unit (GBX) and its major currency (GBP) share one ECB series, so fetch each
+        # series once and derive every requested currency that maps onto it.
+        series_cache: dict[str, list[tuple[date, Decimal]]] = {}
         for currency in sorted(currencies):
             if currency == BASE_CURRENCY:
                 continue
-            url = (
-                f"{self._settings.ecb_base_url}/EXR/D.{currency}.EUR.SP00.A"
-                f"?format=csvdata&startPeriod={start_date.isoformat()}"
-                f"&endPeriod={end_date.isoformat()}"
-            )
-            response = await self._client.get(url)
-            response.raise_for_status()
-            reader = csv.DictReader(StringIO(response.text))
-            points: list[FxRatePoint] = []
-            for row in reader:
-                period = row.get("TIME_PERIOD")
-                observed_value = row.get("OBS_VALUE")
-                if period is None or observed_value is None:
-                    continue
-                quoted_ccy_per_eur = Decimal(observed_value)
-                if quoted_ccy_per_eur == ZERO:
-                    continue
-                point_date = date.fromisoformat(period)
-                points.append(
-                    FxRatePoint(
-                        as_of_date=point_date,
-                        currency_code=currency,
-                        eur_per_unit=ONE / quoted_ccy_per_eur,
-                        provider="ecb",
-                        source_date=point_date,
-                        provenance=PROVENANCE_EXACT,
-                        stale=False,
-                    )
+            major_currency, divisor = resolve_minor_unit(currency)
+            if major_currency == BASE_CURRENCY:
+                # A minor unit of the base currency (there is none today, but the table is open)
+                # needs no FX lookup -- only the scale.
+                results[currency] = []
+                continue
+            if major_currency not in series_cache:
+                series_cache[major_currency] = await self._fetch_series(
+                    currency=major_currency, start_date=start_date, end_date=end_date
                 )
+            points = [
+                FxRatePoint(
+                    as_of_date=point_date,
+                    currency_code=currency,
+                    # eur_per_unit is per unit of the *requested* currency: one GBX buys a
+                    # hundredth of what one GBP buys.
+                    eur_per_unit=(ONE / quoted_ccy_per_eur) / divisor,
+                    provider="ecb",
+                    source_date=point_date,
+                    provenance=PROVENANCE_EXACT,
+                    stale=False,
+                )
+                for point_date, quoted_ccy_per_eur in series_cache[major_currency]
+            ]
             results[currency] = sorted(points, key=lambda item: item.as_of_date)
         return results
+
+    async def _fetch_series(
+        self, *, currency: str, start_date: date, end_date: date
+    ) -> list[tuple[date, Decimal]]:
+        url = (
+            f"{self._settings.ecb_base_url}/EXR/D.{currency}.EUR.SP00.A"
+            f"?format=csvdata&startPeriod={start_date.isoformat()}"
+            f"&endPeriod={end_date.isoformat()}"
+        )
+        response = await self._client.get(url)
+        if response.status_code == httpx.codes.NOT_FOUND:
+            # ECB publishes no such series. Name the currency -- a bare 404 from a URL the caller
+            # never built is not a diagnosable error.
+            raise UnknownCurrencyError(
+                f"ECB publishes no EUR reference rate for {currency!r}. If this is a minor unit "
+                f"or a currency Helios should know about, add it to MINOR_UNIT_CURRENCIES."
+            )
+        response.raise_for_status()
+        reader = csv.DictReader(StringIO(response.text))
+        series: list[tuple[date, Decimal]] = []
+        for row in reader:
+            period = row.get("TIME_PERIOD")
+            observed_value = row.get("OBS_VALUE")
+            if period is None or observed_value is None:
+                continue
+            quoted_ccy_per_eur = Decimal(observed_value)
+            if quoted_ccy_per_eur == ZERO:
+                continue
+            series.append((date.fromisoformat(period), quoted_ccy_per_eur))
+        return series
 
 
 class NoPerformanceDataError(ValueError):

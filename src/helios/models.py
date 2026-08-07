@@ -86,7 +86,12 @@ class Instrument(Base):
     sector: Mapped[str | None] = mapped_column(String(128), nullable=True)
     industry: Mapped[str | None] = mapped_column(String(128), nullable=True)
     country: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    mapping_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unresolved")
+    # Indexed because the data-quality report filters on it three times per request, and the
+    # T212 instrument metadata cache is ~17k rows -- unindexed that was three full scans and
+    # about 5s of the response, enough to trip the frontend's fetch timeout.
+    mapping_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unresolved", index=True
+    )
     mapping_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     mapping_details_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     mapped_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
