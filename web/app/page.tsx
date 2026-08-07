@@ -1,153 +1,261 @@
-interface HealthResponse {
-  status: string;
-  trading212Configured: boolean;
-  databaseReady: boolean;
+import { NavChart } from "@/components/charts/nav-chart";
+import { DataTable, type Column } from "@/components/data-table";
+import { HeroFigure, MetricTile } from "@/components/metric-tile";
+import { Note, Panel, Unavailable } from "@/components/panel";
+import { StatusBadge } from "@/components/status-badge";
+import { AiPanel } from "@/components/ai-panel";
+import { NewsFeed } from "@/components/news-feed";
+import {
+  getHealth,
+  getLatestAiAnalysis,
+  getNews,
+  getPerformanceReport,
+  getPositions,
+} from "@/lib/api";
+import {
+  EMPTY,
+  formatDateTime,
+  formatEur,
+  formatPercent,
+  formatRatio,
+  formatSignedPercent,
+} from "@/lib/format";
+import { latestValuedNav, toNavRows } from "@/lib/series";
+import type { Position } from "@/lib/types";
+
+export const dynamic = "force-dynamic";
+
+interface TopHolding {
+  ticker: string;
+  name: string | null;
+  value: string | null;
 }
 
-function parseHealth(data: unknown): HealthResponse | null {
-  if (!data || typeof data !== "object") return null;
-  const obj = data as Record<string, unknown>;
-  if (typeof obj.status !== "string") return null;
-  if (typeof obj.trading212Configured !== "boolean") return null;
-  if (typeof obj.databaseReady !== "boolean") return null;
+const TOP_HOLDING_COLUMNS: Column<TopHolding>[] = [
+  { key: "ticker", header: "Ticker", render: (row) => row.ticker },
+  {
+    key: "name",
+    header: "Instrument",
+    render: (row) => <span className="text-neutral-500">{row.name ?? EMPTY}</span>,
+  },
+  {
+    key: "value",
+    header: "Account value",
+    numeric: true,
+    render: (row) => formatEur(row.value),
+  },
+];
 
-  return {
-    status: obj.status,
-    trading212Configured: obj.trading212Configured,
-    databaseReady: obj.databaseReady,
-  };
-}
+export default async function OverviewPage() {
+  const [health, report, positions, news, insight] = await Promise.all([
+    getHealth(),
+    getPerformanceReport(),
+    getPositions(),
+    getNews({ limit: 6 }),
+    getLatestAiAnalysis(),
+  ]);
 
-interface HealthResult {
-  data: HealthResponse | null;
-  error: string | null;
-  timestamp: string;
-}
+  const navSeries = report.ok ? report.data.navSeries : [];
+  const latestNav = latestValuedNav(navSeries);
+  const navRows = report.ok ? toNavRows(navSeries, report.data.passiveCounterfactual.series) : [];
+  const passiveLabel =
+    report.ok && report.data.passiveCounterfactual.status === "ok"
+      ? report.data.passiveCounterfactual.benchmarkLabel
+      : null;
 
-async function getHealth(): Promise<HealthResult> {
-  const apiUrl = process.env.HELIOS_API_URL || "http://127.0.0.1:8000";
-  try {
-    const res = await fetch(`${apiUrl}/health`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(3_000),
-    });
-    const timestamp = new Date().toISOString();
-    if (!res.ok) {
-      return { data: null, error: `HTTP ${res.status}`, timestamp };
-    }
-    const json = await res.json();
-    const data = parseHealth(json);
-    if (!data) {
-      return { data: null, error: "Malformed response", timestamp };
-    }
-    return { data, error: null, timestamp };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Network error";
-    return { data: null, error: msg, timestamp: new Date().toISOString() };
-  }
-}
-
-interface StatusIndicatorProps {
-  label: string;
-  active: boolean;
-  value: string;
-  timestamp: string;
-}
-
-function StatusIndicator({ label, active, value, timestamp }: StatusIndicatorProps) {
-  return (
-    <div className="relative flex flex-col border border-border bg-graphite-light/50 p-3 sm:p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-xs uppercase tracking-wider text-neutral-500">{label}</span>
-        <span
-          aria-hidden="true"
-          className={`h-2 w-2 rounded-full ${active ? "bg-amber-accent shadow-[0_0_8px_rgba(255,176,0,0.6)]" : "bg-neutral-600"}`}
-        />
-      </div>
-      <div className="truncate font-mono text-sm text-neutral-200 sm:text-base" title={value}>
-        {value}
-      </div>
-      <div className="mt-2 text-right font-mono text-[10px] text-neutral-600">
-        AS_OF: {timestamp}
-      </div>
-    </div>
-  );
-}
-
-export default async function Page() {
-  const { data, error, timestamp } = await getHealth();
-  const isOnline = data?.status === "ok" && !error;
+  const topHoldings: TopHolding[] = positions.ok
+    ? [...positions.data]
+        .sort((left, right) => walletValue(right) - walletValue(left))
+        .slice(0, 5)
+        .map((position) => ({
+          ticker: position.instrument.ticker,
+          name: position.instrument.name,
+          value: position.walletImpact?.currentValue ?? null,
+        }))
+    : [];
 
   return (
-    <main className="noise-bg flex min-h-screen items-center justify-center p-4 sm:p-8">
-      <div className="relative z-10 flex w-full max-w-4xl flex-col gap-8">
-        <header className="flex flex-col justify-between gap-4 border-b border-border pb-4 sm:flex-row sm:items-end">
-          <div>
-            <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-white mb-1">
-              HELIOS<span className="text-amber-accent">_</span>
-            </h1>
-            <p className="text-sm text-neutral-500 uppercase tracking-widest">
-              Milestone 1 Connectivity
-            </p>
-          </div>
-          <div className="flex flex-col gap-1 font-mono text-xs sm:items-end">
-            <div className="flex items-center gap-2 border border-neutral-800 bg-neutral-900 px-2 py-1 text-neutral-400">
-              <span className="text-acid-green">MODE:</span> DEMO_LOCAL
+    <>
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <div className="sheen panel-raised flex flex-col justify-between border border-border p-4 md:col-span-1">
+          <HeroFigure
+            caption={
+              latestNav
+                ? `Replayed NAV as of ${latestNav.asOfDate}`
+                : "No valued NAV in the replay yet"
+            }
+            label="Portfolio NAV"
+            value={latestNav ? formatEur(latestNav.navEur) : EMPTY}
+          />
+          <dl className="mt-6 grid grid-cols-2 gap-3 text-[11px]">
+            <div>
+              <dt className="text-neutral-600">Cash</dt>
+              <dd className="mt-0.5 tabular-nums text-neutral-300">
+                {latestNav ? formatEur(latestNav.cashBalanceEur) : EMPTY}
+              </dd>
             </div>
-            <div className="flex items-center gap-2 border border-red-900/50 bg-red-950/30 px-2 py-1 text-red-400">
-              <span className="h-1.5 w-1.5 rounded-full bg-red-500 motion-safe:animate-pulse" />
-              READ-ONLY / NO-TRADE
+            <div>
+              <dt className="text-neutral-600">Securities</dt>
+              <dd className="mt-0.5 tabular-nums text-neutral-300">
+                {latestNav ? formatEur(latestNav.securitiesValueEur) : EMPTY}
+              </dd>
             </div>
-          </div>
-        </header>
-
-        <div aria-live="polite" className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <StatusIndicator
-            label="API_STATE"
-            active={isOnline}
-            value={isOnline ? "ONLINE" : `OFFLINE / STALE [${error}]`}
-            timestamp={timestamp}
-          />
-          <StatusIndicator
-            label="DATABASE"
-            active={data?.databaseReady === true}
-            value={data?.databaseReady ? "READY" : "UNAVAILABLE / STALE"}
-            timestamp={timestamp}
-          />
-          <StatusIndicator
-            label="T212_UPLINK"
-            active={!!data?.trading212Configured}
-            value={data?.trading212Configured ? "CONFIGURED" : "PENDING"}
-            timestamp={timestamp}
-          />
+          </dl>
         </div>
 
-        <section className="flex flex-col gap-2 border border-border bg-[#121214] p-4 font-mono text-xs text-neutral-400">
-          <div className="flex justify-between border-b border-neutral-800 pb-2">
-            <span>SYSTEM_TICK</span>
-            <span className="text-neutral-300">{timestamp}</span>
-          </div>
-          <div className="flex justify-between border-b border-neutral-800 pb-2 pt-1">
-            <span>TARGET_ACCOUNT</span>
-            <span className="text-neutral-300">EUR INVEST</span>
-          </div>
-          <div className="flex justify-between pt-1">
-            <span>SHELL_VERSION</span>
-            <span className="text-neutral-300">v0.1.0-M1</span>
-          </div>
-        </section>
+        <div className="grid grid-cols-2 gap-4 md:col-span-2 lg:grid-cols-3">
+          <MetricTile
+            label="Cumulative TWR"
+            metric={report.ok ? report.data.cumulativeTwr : null}
+            render={(value) => formatSignedPercent(value)}
+          />
+          <MetricTile
+            label="Annualized"
+            metric={report.ok ? report.data.annualizedReturn : null}
+            render={(value) => formatSignedPercent(value)}
+          />
+          <MetricTile
+            label="XIRR"
+            metric={report.ok ? report.data.xirr : null}
+            render={(value) => formatSignedPercent(value)}
+          />
+          <MetricTile
+            label="Volatility"
+            metric={report.ok ? report.data.volatility : null}
+            render={(value) => formatPercent(value)}
+          />
+          <MetricTile
+            label="Sharpe"
+            metric={report.ok ? report.data.sharpe : null}
+            render={(value) => formatRatio(value)}
+          />
+          <MetricTile
+            label="Max drawdown"
+            metric={report.ok ? report.data.maxDrawdown : null}
+            render={(value) => formatPercent(value)}
+          />
+        </div>
+      </section>
 
-        <nav aria-label="Build milestones" className="grid grid-cols-4 gap-px border border-border bg-border sm:grid-cols-8">
-          {Array.from({ length: 8 }, (_, index) => (
-            <div
-              className={`bg-graphite px-2 py-2 text-center text-[10px] tracking-wider ${index === 0 ? "text-amber-accent" : "text-neutral-600"}`}
-              key={index}
+      <Panel
+        subtitle={
+          passiveLabel
+            ? `Replayed daily NAV against the ${passiveLabel} counterfactual. Gaps are days Helios refused to value.`
+            : "Replayed daily NAV in EUR. Gaps are days Helios refused to value."
+        }
+        title="Net asset value"
+      >
+        {report.ok && navRows.length > 0 ? (
+          <NavChart data={navRows} passiveLabel={passiveLabel} />
+        ) : (
+          <Unavailable
+            detail={
+              report.ok
+                ? "Run a performance replay to reconstruct the daily NAV series."
+                : report.error
+            }
+            reason={report.ok ? "No NAV history" : "Performance report unavailable"}
+          />
+        )}
+      </Panel>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <Panel subtitle="Live from Trading 212, by account value." title="Largest holdings">
+          {positions.ok ? (
+            <DataTable
+              caption="Five largest holdings by account value"
+              columns={TOP_HOLDING_COLUMNS}
+              empty="No open positions"
+              rowKey={(row) => row.ticker}
+              rows={topHoldings}
+            />
+          ) : (
+            <Unavailable detail={positions.error} reason="Positions unavailable" />
+          )}
+        </Panel>
+
+        <Panel
+          actions={
+            <a
+              className="text-[10px] uppercase tracking-wider text-neutral-500 hover:text-amber-accent"
+              href="/news"
             >
-              M{index + 1} / {index === 0 ? "ACTIVE" : "LOCKED"}
-            </div>
-          ))}
-        </nav>
+              All news →
+            </a>
+          }
+          subtitle="From the feeds you configured. Headlines link to the publisher."
+          title="Latest news"
+        >
+          {news.ok ? (
+            <NewsFeed compact items={news.data} />
+          ) : (
+            <Unavailable detail={news.error} reason="News unavailable" />
+          )}
+        </Panel>
       </div>
-    </main>
+
+      {insight.ok && insight.data.status === "ok" ? (
+        <Panel
+          actions={
+            <a
+              className="text-[10px] uppercase tracking-wider text-neutral-500 hover:text-amber-accent"
+              href="/insights"
+            >
+              Full analysis →
+            </a>
+          }
+          subtitle="Claude describing your own analytics. Not advice."
+          title="Latest insight"
+        >
+          <AiPanel
+            analysis={{ ...insight.data, observations: insight.data.observations.slice(0, 3) }}
+          />
+        </Panel>
+      ) : null}
+
+      <Panel subtitle="Local stack reachability." title="System">
+        <dl className="flex flex-col gap-2 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-neutral-500">API</dt>
+            <dd>
+              <StatusBadge
+                label={health.ok ? health.data.status.toUpperCase() : "OFFLINE"}
+                status={health.ok && health.data.status === "ok" ? "ok" : "failed"}
+              />
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-neutral-500">Database</dt>
+            <dd>
+              <StatusBadge
+                label={health.ok && health.data.databaseReady ? "READY" : "UNAVAILABLE"}
+                status={health.ok && health.data.databaseReady ? "ok" : "failed"}
+              />
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-neutral-500">Trading 212 uplink</dt>
+            <dd>
+              <StatusBadge
+                label={health.ok && health.data.trading212Configured ? "CONFIGURED" : "PENDING"}
+                status={health.ok && health.data.trading212Configured ? "ok" : "warning"}
+              />
+            </dd>
+          </div>
+          <div className="mt-2 flex items-center justify-between gap-2 border-t border-neutral-900 pt-2 text-[10px] text-neutral-600">
+            <dt>Checked</dt>
+            <dd className="tabular-nums">{formatDateTime(health.timestamp)}</dd>
+          </div>
+        </dl>
+      {!health.ok ? <Note>{health.error}</Note> : null}
+    </Panel>
+    </>
   );
+}
+
+function walletValue(position: Position): number {
+  const raw = position.walletImpact?.currentValue;
+  if (!raw) return 0;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
