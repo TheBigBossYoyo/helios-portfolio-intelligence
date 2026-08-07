@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text
@@ -195,3 +195,202 @@ class PositionReconciliation(Base):
     difference_quantity: Mapped[Decimal] = mapped_column(QUANTITY_NUMERIC, nullable=False)
     tolerance_quantity: Mapped[Decimal] = mapped_column(QUANTITY_NUMERIC, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class FxRateDaily(Base):
+    __tablename__ = "fx_rates_daily"
+
+    rate_date: Mapped[date] = mapped_column(primary_key=True)
+    currency_code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    eur_per_unit: Mapped[Decimal] = mapped_column(FX_NUMERIC, nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_date: Mapped[date] = mapped_column(nullable=False)
+    provenance: Mapped[str] = mapped_column(String(32), nullable=False)
+    stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class MarketPriceDaily(Base):
+    __tablename__ = "market_prices_daily"
+
+    price_date: Mapped[date] = mapped_column(primary_key=True)
+    t212_ticker: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider_symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    currency_code: Mapped[str] = mapped_column(String(16), nullable=False)
+    close_price: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_date: Mapped[date] = mapped_column(nullable=False)
+    provenance: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class RawNews(Base):
+    """Raw feed bodies, stored before anything is parsed out of them.
+
+    Same raw-first rule as `raw_snapshots`: the bytes a publisher actually served are the record
+    of truth, so a parser bug can be re-run against history instead of losing it.
+    """
+
+    __tablename__ = "raw_news"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    feed_key: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    http_status: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class NewsItem(Base):
+    """A parsed article.
+
+    `t212_ticker` / `isin` come from the feed's *declared* binding in config, never from pattern
+    matching a headline — guessing which company a story is about would fabricate a relationship
+    the data does not contain.
+    """
+
+    __tablename__ = "news_items"
+
+    # sha256 of (url, published_at) — the plan's dedupe rule, expressed as a key so a NULL
+    # published_at cannot slip past a UNIQUE index (SQLite treats NULLs as distinct).
+    dedupe_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    feed_key: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="rss")
+    source_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    t212_ticker: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    isin: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
+    headline: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    # Tracking-stripped URL and normalised headline: the two keys that let the same story from
+    # Yahoo, Marketaux and a publisher feed collapse into one row across syncs.
+    canonical_url: Mapped[str] = mapped_column(Text, index=True, nullable=False)
+    title_key: Mapped[str] = mapped_column(Text, index=True, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    raw_news_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class Thesis(Base):
+    """An investment thesis: why you hold something, written down before the outcome is known.
+
+    The point of recording it is to make later self-assessment honest, so `opened_on` and the
+    original `body` are never rewritten by a status change — only `outcome_note` is added.
+    """
+
+    __tablename__ = "theses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    t212_ticker: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    isin: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    conviction: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    status: Mapped[str] = mapped_column(String(16), index=True, nullable=False, default="draft")
+    opened_on: Mapped[date] = mapped_column(nullable=False)
+    outcome_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class JournalEntry(Base):
+    """A dated note. Attached to a thesis, or standalone when `thesis_id` is null."""
+
+    __tablename__ = "journal_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    thesis_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True, nullable=False)
+    note: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class AiRun(Base):
+    """One Claude call, stored raw-first so every published insight is auditable.
+
+    `prompt_json` and `response_json` are the exact request and response. If a narrative later
+    looks wrong, you can see precisely which numbers were put in front of the model.
+    """
+
+    __tablename__ = "ai_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), index=True, nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    effort: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    response_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    served_by_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class AiObservation(Base):
+    """A single parsed observation from an AI run.
+
+    Deliberately called an *observation*, not a recommendation: each row restates something
+    already present in the analytics, with the evidence it came from. `evidence` must quote the
+    figure the observation rests on, which is what makes an unfounded claim visible.
+    """
+
+    __tablename__ = "ai_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    t212_ticker: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    headline: Mapped[str] = mapped_column(Text, nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class FactorReturnDaily(Base):
+    """Fama-French 5 factor + momentum daily returns from a configured factor provider."""
+
+    __tablename__ = "factor_returns_daily"
+
+    as_of_date: Mapped[date] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    risk_free_rate: Mapped[Decimal] = mapped_column(FX_NUMERIC, nullable=False)
+    mkt_rf: Mapped[Decimal] = mapped_column(FX_NUMERIC, nullable=False)
+    smb: Mapped[Decimal] = mapped_column(FX_NUMERIC, nullable=False)
+    hml: Mapped[Decimal] = mapped_column(FX_NUMERIC, nullable=False)
+    rmw: Mapped[Decimal] = mapped_column(FX_NUMERIC, nullable=False)
+    cma: Mapped[Decimal] = mapped_column(FX_NUMERIC, nullable=False)
+    mom: Mapped[Decimal] = mapped_column(FX_NUMERIC, nullable=False)
+
+
+class DailyHolding(Base):
+    __tablename__ = "daily_holdings"
+
+    as_of_date: Mapped[date] = mapped_column(primary_key=True)
+    t212_ticker: Mapped[str] = mapped_column(String(64), primary_key=True)
+    quantity: Mapped[Decimal] = mapped_column(QUANTITY_NUMERIC, nullable=False)
+    price_currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    close_price: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    price_provenance: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    fx_rate_to_eur: Mapped[Decimal | None] = mapped_column(FX_NUMERIC, nullable=True)
+    fx_provenance: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    market_value_local: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    market_value_eur: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    valuation_status: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class DailyNav(Base):
+    __tablename__ = "daily_nav"
+
+    as_of_date: Mapped[date] = mapped_column(primary_key=True)
+    cash_balance_eur: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    securities_value_eur: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    nav_eur: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    external_flow_eur: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    internal_cash_flow_eur: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    valuation_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    missing_price_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    missing_fx_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

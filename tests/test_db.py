@@ -25,7 +25,7 @@ async def test_sqlite_wal_mode_is_enabled(tmp_path: Path) -> None:
     assert await fetch_journal_mode(engine) == "wal"
     async with engine.connect() as connection:
         revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0004_align_cash_transactions"
+    assert revision == "0008_create_thesis_foundation"
 
     await engine.dispose()
 
@@ -60,7 +60,7 @@ async def test_migration_stamps_matching_legacy_schema(tmp_path: Path) -> None:
     migrated_engine = create_engine(settings)
     async with migrated_engine.connect() as connection:
         revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0004_align_cash_transactions"
+    assert revision == "0008_create_thesis_foundation"
     await migrated_engine.dispose()
 
 
@@ -228,6 +228,58 @@ async def test_cash_transaction_table_matches_official_fields(tmp_path: Path) ->
 
     assert columns == {"reference", "ts", "transaction_type", "currency_code", "amount"}
     assert "ix_transactions_t212_ticker" not in indexes
+
+
+@pytest.mark.asyncio
+async def test_m3_performance_tables_use_exact_text_storage(tmp_path: Path) -> None:
+    settings = Settings(data_dir=tmp_path, sqlite_filename="m3_schema.sqlite3")
+    await migrate_database(settings)
+    sync_engine = create_sync_engine(settings.sqlite_url.replace("+aiosqlite", ""))
+    try:
+        inspector = inspect(sync_engine)
+        fx_column = next(
+            column
+            for column in inspector.get_columns("fx_rates_daily")
+            if column["name"] == "eur_per_unit"
+        )
+        price_column = next(
+            column
+            for column in inspector.get_columns("market_prices_daily")
+            if column["name"] == "close_price"
+        )
+        nav_column = next(
+            column for column in inspector.get_columns("daily_nav") if column["name"] == "nav_eur"
+        )
+    finally:
+        sync_engine.dispose()
+
+    assert fx_column["type"].__class__.__name__.upper() == "TEXT"
+    assert price_column["type"].__class__.__name__.upper() == "TEXT"
+    assert nav_column["type"].__class__.__name__.upper() == "TEXT"
+
+
+@pytest.mark.asyncio
+async def test_m5_news_tables_exist_with_utc_timestamps(tmp_path: Path) -> None:
+    settings = Settings(data_dir=tmp_path, sqlite_filename="m5_schema.sqlite3")
+    await migrate_database(settings)
+    sync_engine = create_sync_engine(settings.sqlite_url.replace("+aiosqlite", ""))
+    try:
+        inspector = inspect(sync_engine)
+        tables = set(inspector.get_table_names())
+        news_columns = {column["name"] for column in inspector.get_columns("news_items")}
+        raw_columns = {column["name"] for column in inspector.get_columns("raw_news")}
+        news_indexes = {index["name"] for index in inspector.get_indexes("news_items")}
+    finally:
+        sync_engine.dispose()
+
+    assert {"raw_news", "news_items"} <= tables
+    # Raw body is kept verbatim alongside the parsed rows.
+    assert {"body", "http_status", "content_type", "url", "ts"} <= raw_columns
+    # dedupe_key is the (url, published_at) rule as a primary key.
+    assert {"dedupe_key", "source_label", "published_at", "fetched_at", "raw_news_id"} <= (
+        news_columns
+    )
+    assert {"ix_news_items_t212_ticker", "ix_news_items_isin"} <= news_indexes
 
 
 def _alembic_config(settings: Settings) -> Config:
