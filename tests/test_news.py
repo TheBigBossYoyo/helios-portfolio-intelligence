@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -12,7 +14,7 @@ from sqlalchemy.pool import NullPool
 
 from helios.config import Settings
 from helios.db import migrate_database
-from helios.models import Instrument, NewsItem, RawNews
+from helios.models import Instrument, NewsItem, PositionLive, RawNews
 from helios.news import (
     CollectedItem,
     FeedRequest,
@@ -124,11 +126,40 @@ MARKETAUX_JSON = """{"data": [
 # ---------------------------------------------------------------------------
 
 
-def test_shipped_feed_file_ships_every_source_disabled() -> None:
-    """Helios must not enable anyone's feed on the operator's behalf."""
-    shipped = Path(__file__).resolve().parents[1] / "config" / "news_feeds.yaml"
+SHIPPED_FEEDS = Path(__file__).resolve().parents[1] / "config" / "news_feeds.yaml"
 
-    assert load_news_feeds(shipped) == []
+
+def test_shipped_feed_file_enables_only_sources_needing_no_credential() -> None:
+    """Helios may switch on a source that costs nothing and asks for nothing.
+
+    It must never enable one that spends a credential or signs the operator up to a service, so
+    the credentialled sources stay off until the operator turns them on deliberately.
+    """
+    enabled = {entry.key for entry in load_news_feeds(SHIPPED_FEEDS)}
+
+    assert enabled == {"yahoo-finance", "google-news"}
+
+
+def test_sec_feed_stays_skipped_until_a_contact_user_agent_is_configured() -> None:
+    """The SEC's access policy requires a real contact.
+
+    Fetching with a generic agent risks the deployment being blocked, so an unset contact means
+    the feed is dropped rather than fetched anonymously.
+    """
+    without = {entry.key for entry in load_news_feeds(SHIPPED_FEEDS)}
+    assert "sec-edgar" not in without
+
+    feeds = load_news_feeds(SHIPPED_FEEDS, contact_user_agent="A Person a@example.com")
+    sec = next(entry for entry in feeds if entry.key == "sec-edgar")
+
+    assert sec.user_agent == "A Person a@example.com"
+
+
+def test_shipped_feed_file_never_contains_an_email_address() -> None:
+    """The contact is read from the environment; a personal address must not reach the repo."""
+    text = SHIPPED_FEEDS.read_text(encoding="utf-8")
+
+    assert not re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", text.replace("your@email.com", ""))
 
 
 def test_rss_feed_requires_exactly_one_target(tmp_path: Path) -> None:
@@ -524,8 +555,14 @@ async def test_sync_merges_the_same_story_from_two_sources(tmp_path: Path) -> No
     """The headline arrives from an RSS feed and Marketaux under different URLs."""
     repository, session_factory = await _repository(tmp_path, "news_merge.sqlite3")
     async with session_factory() as session, session.begin():
-        session.add(
-            Instrument(t212_ticker="AAPL_US_EQ", yahoo_ticker="AAPL", mapping_status="resolved")
+        # A news target must be an instrument you hold, so seed the position too.
+        session.add_all(
+            [
+                Instrument(
+                    t212_ticker="AAPL_US_EQ", yahoo_ticker="AAPL", mapping_status="resolved"
+                ),
+                _held("AAPL_US_EQ"),
+            ]
         )
     feeds = _write(
         tmp_path,
@@ -654,13 +691,16 @@ async def test_sync_keeps_the_raw_body_when_parsing_fails(tmp_path: Path) -> Non
 async def test_sync_attributes_items_to_the_configured_instrument(tmp_path: Path) -> None:
     repository, session_factory = await _repository(tmp_path, "news_attr.sqlite3")
     async with session_factory() as session, session.begin():
-        session.add(
-            Instrument(
-                t212_ticker="AAPL_US_EQ",
-                isin="US0378331005",
-                yahoo_ticker="AAPL",
-                mapping_status="resolved",
-            )
+        session.add_all(
+            [
+                Instrument(
+                    t212_ticker="AAPL_US_EQ",
+                    isin="US0378331005",
+                    yahoo_ticker="AAPL",
+                    mapping_status="resolved",
+                ),
+                _held("AAPL_US_EQ", isin="US0378331005"),
+            ]
         )
     feeds = _write(
         tmp_path,
@@ -770,6 +810,16 @@ def _write(tmp_path: Path, body: str) -> Path:
     return path
 
 
+def _held(ticker: str, *, isin: str | None = None) -> PositionLive:
+    """A live position, which is what makes an instrument a news target."""
+    return PositionLive(
+        ts=datetime(2026, 8, 7, tzinfo=UTC),
+        t212_ticker=ticker,
+        isin=isin,
+        quantity=Decimal("1"),
+    )
+
+
 async def _repository(
     tmp_path: Path, filename: str
 ) -> tuple[PortfolioRepository, async_sessionmaker[AsyncSession]]:
@@ -778,3 +828,43 @@ async def _repository(
     engine = create_async_engine(settings.sqlite_url, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     return PortfolioRepository(session_factory), session_factory
+
+
+async def test_news_targets_are_scoped_to_held_positions_not_the_whole_catalogue(
+    tmp_path: Path,
+) -> None:
+    """The instruments table is the full T212 catalogue (~17k rows).
+
+    One outbound request is issued per target per feed, so scoping to the catalogue would mean
+    tens of thousands of requests per sync -- enough to get blocked by the publisher, and noise
+    besides. Only instruments actually held are targets.
+    """
+    repository, session_factory = await _repository(tmp_path, "news_targets.sqlite3")
+    synced_at = datetime(2026, 8, 7, tzinfo=UTC)
+    async with session_factory() as session:
+        session.add_all(
+            [
+                Instrument(t212_ticker="HELD_US_EQ", isin="US1", yahoo_ticker="HELD", name="Held"),
+                Instrument(t212_ticker="OTHER_US_EQ", isin="US2", yahoo_ticker="OTH", name="Oth"),
+                PositionLive(
+                    ts=synced_at,
+                    t212_ticker="HELD_US_EQ",
+                    isin="US1",
+                    quantity=Decimal("1"),
+                ),
+            ]
+        )
+        await session.commit()
+
+    targets = await repository.list_instrument_news_targets()
+
+    assert [target.t212_ticker for target in targets] == ["HELD_US_EQ"]
+
+
+async def test_news_targets_are_empty_before_any_position_snapshot(tmp_path: Path) -> None:
+    repository, session_factory = await _repository(tmp_path, "news_targets_empty.sqlite3")
+    async with session_factory() as session:
+        session.add(Instrument(t212_ticker="X_US_EQ", isin="US3", yahoo_ticker="X", name="X"))
+        await session.commit()
+
+    assert await repository.list_instrument_news_targets() == []

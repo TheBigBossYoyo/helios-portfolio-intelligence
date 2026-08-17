@@ -1,7 +1,9 @@
 # Helios news sources.
 #
-# Everything below is DISABLED by default. Turn on what you are entitled to use by setting
-# `enabled: true`. Helios never enables a third-party source on your behalf.
+# Sources needing no account and no configuration ship ENABLED: Yahoo Finance, Google News, and
+# SEC EDGAR. SEC additionally requires a contact User-Agent and stays skipped until
+# HELIOS_NEWS_SEC_USER_AGENT is set. Anything needing a credential ships DISABLED -- turn on what
+# you are entitled to use with `enabled: true`. Helios never signs you up for a source.
 #
 # What Helios does with a source:
 #   - fetches the URL and stores the raw body (raw-first, same as every other source)
@@ -34,12 +36,13 @@ feeds:
     provider: rss
     url_template: https://feeds.finance.yahoo.com/rss/2.0/headline?s={yahoo_ticker}&region=US&lang=en-US
     trust: 40
-    enabled: false
+    enabled: true
 
   # ---------------------------------------------------------------------------
   # 2. SEC EDGAR — company filings. No account, but the SEC's access policy REQUIRES a
   #    User-Agent naming a real contact. Set HELIOS_NEWS_SEC_USER_AGENT (e.g.
-  #    "Your Name your@email.com") and put the same value below, or leave this disabled.
+  #    "Your Name your@email.com"); `contact_required` reads it from there so your address is
+  #    never committed. Until it is set this feed is skipped, not fetched with a generic agent.
   #    Highest-signal source here: an 8-K is the event itself, not commentary about it.
   #    US registrants only — non-US listings return nothing.
   # ---------------------------------------------------------------------------
@@ -47,9 +50,9 @@ feeds:
     label: SEC EDGAR filings
     provider: rss
     url_template: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={yahoo_ticker}&type=8-K&dateb=&owner=include&count=20&output=atom
-    user_agent: "REPLACE-WITH-YOUR-NAME your@email.example"
+    contact_required: true
     trust: 100
-    enabled: false
+    enabled: true
 
   # ---------------------------------------------------------------------------
   # 3. Marketaux — ticker-tagged international news with sentiment.
@@ -73,7 +76,7 @@ feeds:
     provider: rss
     url_template: https://news.google.com/rss/search?q=%22{name}%22+when:7d&hl=en-US&gl=US&ceid=US:en
     trust: 20
-    enabled: false
+    enabled: true
 
   # ---------------------------------------------------------------------------
   # 5. Your own publisher feeds. Check each publisher's terms permit personal,

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import zipfile
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 
 import httpx
@@ -27,6 +29,7 @@ from helios.models import (
 )
 from helios.performance import (
     ANNUALIZATION_DAYS,
+    FACTOR_NAMES,
     ONE,
     BenchmarkDefinition,
     DailyPricePoint,
@@ -34,8 +37,11 @@ from helios.performance import (
     EcbFxRateProvider,
     FactorObservation,
     FxRatePoint,
+    KenFrenchFactorDataProvider,
+    MarketDataProviderError,
     PerformanceReplayService,
     PriceRequest,
+    TwelveDataMarketDataProvider,
     UnknownCurrencyError,
     _merge_fx_maps,
     _merge_market_price_maps,
@@ -50,6 +56,7 @@ from helios.performance import (
     correlation_clusters,
     ff5_momentum_regression,
     historical_var_cvar,
+    parse_ken_french_csv,
 )
 from helios.portfolio_repository import PortfolioRepository
 from helios.rate_limit import Clock
@@ -1228,3 +1235,188 @@ async def test_unpublished_currency_names_itself_instead_of_raising_a_bare_404(
         await provider.fetch_eur_base_rates(
             currencies={"ZZZ"}, start_date=date(2026, 8, 5), end_date=date(2026, 8, 6)
         )
+
+
+def _twelvedata_payload(currency: str = "USD") -> dict[str, object]:
+    return {
+        "meta": {"symbol": "IVV", "currency": currency, "exchange": "NYSE", "type": "ETF"},
+        "values": [
+            {"datetime": "2026-08-06", "close": "772.13000"},
+            {"datetime": "2026-08-05", "close": "773.35999"},
+        ],
+        "status": "ok",
+    }
+
+
+class _StubJsonTransport(httpx.AsyncBaseTransport):
+    def __init__(self, payload: object, status_code: int = 200) -> None:
+        self._payload = payload
+        self._status_code = status_code
+        self.calls = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.calls += 1
+        return httpx.Response(self._status_code, json=self._payload)
+
+
+def _twelvedata_provider(
+    tmp_path: Path, payload: object
+) -> tuple[TwelveDataMarketDataProvider, _StubJsonTransport]:
+    settings = Settings(
+        data_dir=tmp_path, market_data_provider="twelvedata", market_data_api_key="test-key"
+    )
+    provider = TwelveDataMarketDataProvider(settings)
+    transport = _StubJsonTransport(payload)
+    provider._client = httpx.AsyncClient(transport=transport)
+    return provider, transport
+
+
+async def test_twelvedata_adopts_the_provider_reported_currency_when_none_is_configured(
+    tmp_path: Path,
+) -> None:
+    """A currency the provider states is data, not a guess.
+
+    The no-guessing rule exists to stop Helios assuming USD. Twelve Data reports meta.currency, so
+    using it is what lets benchmarks work without hand-configuring a listing currency.
+    """
+    provider, _ = _twelvedata_provider(tmp_path, _twelvedata_payload("USD"))
+
+    result = await provider.fetch_daily_closes(
+        requests=[PriceRequest("bench:cspx", "IVV", None)],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 7),
+    )
+
+    points = result["bench:cspx"]
+    assert [point.currency_code for point in points] == ["USD", "USD"]
+    assert [point.as_of_date for point in points] == [date(2026, 8, 5), date(2026, 8, 6)]
+    assert points[0].close_price == Decimal("773.35999")
+
+
+async def test_twelvedata_drops_a_symbol_whose_currency_contradicts_trusted_metadata(
+    tmp_path: Path,
+) -> None:
+    """Disagreement is a mapping error, and valuing a GBX series as GBP overstates by 100x."""
+    provider, _ = _twelvedata_provider(tmp_path, _twelvedata_payload("GBX"))
+
+    result = await provider.fetch_daily_closes(
+        requests=[PriceRequest("holding:X", "X", "GBP")],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 7),
+    )
+
+    assert result == {}
+
+
+async def test_twelvedata_error_payload_raises_instead_of_looking_like_an_empty_series(
+    tmp_path: Path,
+) -> None:
+    """Twelve Data returns HTTP 200 with status=error for quota and entitlement failures.
+
+    Swallowing that would report 'no price data' for what is really 'you are out of credits'.
+    """
+    provider, _ = _twelvedata_provider(
+        tmp_path, {"code": 429, "message": "You have run out of API credits", "status": "error"}
+    )
+
+    with pytest.raises(MarketDataProviderError, match="credits"):
+        await provider.fetch_daily_closes(
+            requests=[PriceRequest("holding:X", "X", "USD")],
+            start_date=date(2026, 8, 1),
+            end_date=date(2026, 8, 7),
+        )
+
+
+def _ken_french_zip(name: str, body: str) -> bytes:
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(name, body)
+    return buffer.getvalue()
+
+
+FF5_BODY = """This file was created by using the 202606 CRSP database.
+Some more prose about the T-bill.
+
+,Mkt-RF,SMB,HML,RMW,CMA,RF
+20260803,   -0.67,    0.00,   -0.34,   -0.01,    0.16,    0.01
+20260804,    0.79,   -0.26,    0.26,   -0.07,   -0.20,    0.01
+20260805,  -99.99,  -99.99,  -99.99,  -99.99,  -99.99,  -99.99
+
+Copyright 2026 Eugene F. Fama and Kenneth R. French
+"""
+
+MOM_BODY = """This file was created by using the 202606 CRSP database.
+Missing data are indicated by -99.99 or -999.
+
+,Mom
+20260803,   0.35
+20260804,  -0.61
+20260805,   1.15
+
+Copyright 2026 Eugene F. Fama and Kenneth R. French
+"""
+
+
+def test_ken_french_values_are_converted_from_percent_to_decimal_fractions() -> None:
+    """The library quotes percent. Reading -0.67 as a fraction inflates every loading by 100x."""
+    table = parse_ken_french_csv(_ken_french_zip("ff5.csv", FF5_BODY))
+
+    assert table[date(2026, 8, 3)]["Mkt-RF"] == Decimal("-0.67") / Decimal("100")
+    assert table[date(2026, 8, 3)]["RF"] == Decimal("0.01") / Decimal("100")
+
+
+def test_ken_french_missing_sentinels_are_dropped_not_read_as_returns() -> None:
+    """-99.99 is 'no observation', not a -99.99% day."""
+    table = parse_ken_french_csv(_ken_french_zip("ff5.csv", FF5_BODY))
+
+    assert table[date(2026, 8, 5)] == {}
+    assert "Mkt-RF" in table[date(2026, 8, 4)]
+
+
+def test_ken_french_ignores_prose_header_and_trailing_copyright() -> None:
+    table = parse_ken_french_csv(_ken_french_zip("ff5.csv", FF5_BODY))
+
+    assert sorted(table) == [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)]
+
+
+async def test_ken_french_provider_joins_five_factor_and_momentum_files(tmp_path: Path) -> None:
+    provider = KenFrenchFactorDataProvider(Settings(data_dir=tmp_path))
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "Momentum" in str(request.url):
+            return httpx.Response(200, content=_ken_french_zip("mom.csv", MOM_BODY))
+        return httpx.Response(200, content=_ken_french_zip("ff5.csv", FF5_BODY))
+
+    provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    observations = await provider.fetch_factor_returns(
+        start_date=date(2026, 8, 1), end_date=date(2026, 8, 31)
+    )
+
+    # 2026-08-05 is dropped: its 5-factor row is all sentinels, so the factors are absent.
+    assert [row.as_of_date for row in observations] == [date(2026, 8, 3), date(2026, 8, 4)]
+    first = observations[0]
+    assert set(first.factors) == set(FACTOR_NAMES)
+    assert first.factors["mom"] == Decimal("0.35") / Decimal("100")
+    assert first.risk_free_rate == Decimal("0.01") / Decimal("100")
+
+
+def test_factor_regression_distinguishes_unconfigured_from_no_published_overlap() -> None:
+    """Two empty-factor cases need different explanations.
+
+    'Set the provider' is the wrong instruction when the provider is set and working; the real
+    cause is that the library trails the present by about a month.
+    """
+    returns = [DailyReturnPoint(date(2026, 8, 5), 0.01), DailyReturnPoint(date(2026, 8, 6), 0.02)]
+
+    disabled = ff5_momentum_regression(returns, [], factor_provider="disabled")
+    configured = ff5_momentum_regression(returns, [], factor_provider="kenfrench")
+
+    assert disabled.status == "unavailable"
+    assert "HELIOS_FACTOR_DATA_PROVIDER=disabled" in str(disabled.detail)
+
+    assert configured.status == "unavailable"
+    assert "kenfrench" in str(configured.detail)
+    assert "trails the present" in str(configured.detail)
+    assert "2026-08-05" in str(configured.detail)
+    assert "disabled" not in str(configured.detail)

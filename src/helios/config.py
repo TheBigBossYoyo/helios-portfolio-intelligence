@@ -11,8 +11,8 @@ from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SUPPORTED_BASE_CURRENCY = "EUR"
-MARKET_DATA_PROVIDERS = frozenset({"disabled", "alphavantage"})
-FACTOR_DATA_PROVIDERS = frozenset({"disabled"})
+MARKET_DATA_PROVIDERS = frozenset({"disabled", "alphavantage", "twelvedata"})
+FACTOR_DATA_PROVIDERS = frozenset({"disabled", "kenfrench"})
 FlowTiming = Literal["flow_at_open", "flow_at_close", "intraday_split"]
 AnthropicEffort = Literal["low", "medium", "high", "xhigh", "max"]
 BENCHMARK_KEYS = frozenset({"cspx", "swda", "vwrp"})
@@ -48,15 +48,36 @@ class Settings(BaseSettings):
     market_data_base_url: str = "https://www.alphavantage.co/query"
     market_data_api_key: SecretStr | None = None
     market_data_timeout_seconds: float = 15.0
-    factor_data_provider: str = "disabled"
-    benchmark_cspx_symbol: str = "CSPX.LON"
-    benchmark_swda_symbol: str = "SWDA.LON"
-    benchmark_vwrp_symbol: str = "VWRP.LON"
-    # Quotation currency of each benchmark proxy. Left unset on purpose: Helios never guesses a
-    # listing currency, and a provider request without a trusted currency is skipped instead.
-    benchmark_cspx_currency: str | None = None
-    benchmark_swda_currency: str | None = None
-    benchmark_vwrp_currency: str | None = None
+    twelvedata_base_url: str = "https://api.twelvedata.com/time_series"
+    # On by default: the Kenneth French library is the official source, free, and needs no
+    # account, so there is nothing for an operator to opt into.
+    factor_data_provider: str = "kenfrench"
+    ken_french_five_factor_url: str = (
+        "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/"
+        "F-F_Research_Data_5_Factors_2x3_daily_CSV.zip"
+    )
+    ken_french_momentum_url: str = (
+        "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/"
+        "F-F_Momentum_Factor_daily_CSV.zip"
+    )
+    # US-listed benchmark proxies, chosen so the free market-data tier covers them: the free plan
+    # serves US exchanges only, and an LSE symbol would return nothing.
+    #
+    # These are proxies for the index, not the UCITS ETF an EU investor would actually buy. IVV
+    # (US-domiciled) and CSPX (Irish-domiciled) track the same index but face different dividend
+    # withholding, so the "you, but passive" counterfactual is an approximation of what you could
+    # have held rather than a quote for it. With a provider that covers the LSE, set these back to
+    # CSPX.LON / SWDA.LON / VWRP.LON and give each its listing currency.
+    benchmark_cspx_symbol: str = "IVV"
+    benchmark_swda_symbol: str = "URTH"
+    benchmark_vwrp_symbol: str = "VT"
+    # Quotation currency of each benchmark proxy. Helios never *infers* a listing currency, but a
+    # provider that reports one (Twelve Data does) is trusted over silence -- see
+    # TwelveDataMarketDataProvider._resolve_currency. Setting these makes the value authoritative
+    # and turns a provider disagreement into a skip rather than a silent mis-valuation.
+    benchmark_cspx_currency: str | None = "USD"
+    benchmark_swda_currency: str | None = "USD"
+    benchmark_vwrp_currency: str | None = "USD"
     analytics_flow_timing: FlowTiming = "flow_at_close"
     analytics_max_price_stale_days: int = 10
     analytics_max_fx_stale_days: int = 10

@@ -488,15 +488,28 @@ class PortfolioRepository:
             )
 
     async def list_instrument_news_targets(self) -> list[InstrumentNewsTarget]:
-        """Every known instrument, with the fields a news source template can substitute."""
+        """Instruments you currently hold, with the fields a news template can substitute.
+
+        Scoped to live positions on purpose. The instruments table is the full Trading 212
+        catalogue -- around 17,000 rows -- and a news source is fetched once per target per feed,
+        so using it would issue tens of thousands of outbound requests per sync and get the
+        deployment rate-limited or blocked by the publisher. It would also be useless: news about
+        instruments you do not own is noise.
+        """
         async with self._session_factory() as session:
+            latest_ts = await session.scalar(select(func.max(PositionLive.ts)))
+            if latest_ts is None:
+                return []
+            held = select(PositionLive.t212_ticker).where(PositionLive.ts == latest_ts)
             rows = await session.execute(
                 select(
                     Instrument.t212_ticker,
                     Instrument.isin,
                     Instrument.yahoo_ticker,
                     Instrument.name,
-                ).order_by(Instrument.t212_ticker)
+                )
+                .where(Instrument.t212_ticker.in_(held))
+                .order_by(Instrument.t212_ticker)
             )
             return [
                 InstrumentNewsTarget(t212_ticker=ticker, isin=isin, yahoo_ticker=yahoo, name=name)

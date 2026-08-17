@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import csv
 import math
+import re
+import zipfile
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from io import StringIO
+from io import BytesIO, StringIO
 from itertools import pairwise
 from typing import Protocol, cast
 
@@ -93,6 +95,14 @@ MINOR_UNIT_CURRENCIES: dict[str, tuple[str, Decimal]] = {
 def resolve_minor_unit(currency: str) -> tuple[str, Decimal]:
     """Return the (major currency, divisor) an FX quote must be fetched and scaled by."""
     return MINOR_UNIT_CURRENCIES.get(currency.upper(), (currency.upper(), ONE))
+
+
+PERCENT = Decimal("100")
+TWELVEDATA_MAX_OUTPUTSIZE = 5000
+KEN_FRENCH_DATE_PATTERN = re.compile(r"\d{8}")
+# The library encodes gaps as sentinels rather than blanks. Read literally, -99.99 becomes a
+# -99.99% daily factor return and destroys the regression.
+KEN_FRENCH_MISSING_SENTINELS = frozenset({Decimal("-99.99"), Decimal("-999")})
 
 
 @dataclass(frozen=True)
@@ -401,6 +411,227 @@ class NullFactorDataProvider:
         return []
 
 
+class TwelveDataMarketDataProvider:
+    """Free-tier daily closes from Twelve Data.
+
+    Chosen over Alpha Vantage for the free path: 800 credits/day against Alpha Vantage's 25, and
+    -- the reason that actually matters here -- the response carries ``meta.currency``. Alpha
+    Vantage reports no quotation currency, so Helios has to skip any symbol whose currency it
+    cannot get from trusted metadata.
+
+    The free plan covers US exchanges only. A non-US listing is not silently mispriced; it simply
+    returns no series, and the affected metric reports ``unavailable`` like any other gap.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._client = httpx.AsyncClient(timeout=settings.market_data_timeout_seconds)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def fetch_daily_closes(
+        self,
+        *,
+        requests: Sequence[PriceRequest],
+        start_date: date,
+        end_date: date,
+    ) -> dict[str, list[DailyPricePoint]]:
+        api_key = self._settings.market_data_api_key
+        if api_key is None:
+            return {}
+        results: dict[str, list[DailyPricePoint]] = {}
+        for request in requests:
+            response = await self._client.get(
+                self._settings.twelvedata_base_url,
+                params={
+                    "symbol": request.provider_symbol,
+                    "interval": "1day",
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
+                    "outputsize": str(TWELVEDATA_MAX_OUTPUTSIZE),
+                    "format": "JSON",
+                    "apikey": api_key.get_secret_value(),
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                continue
+            # Twelve Data signals errors with HTTP 200 and {"status": "error"}, so raise_for_status
+            # alone would let a quota or entitlement failure through as "no data" -- indistinguish-
+            # able from a genuinely empty series.
+            if payload.get("status") == "error":
+                raise MarketDataProviderError(
+                    f"Twelve Data rejected {request.provider_symbol!r}: "
+                    f"{payload.get('message', 'no message')} (code {payload.get('code')})"
+                )
+            currency = self._resolve_currency(request, payload)
+            if currency is None:
+                continue
+            values = payload.get("values")
+            if not isinstance(values, list):
+                continue
+            points: list[DailyPricePoint] = []
+            for raw in values:
+                if not isinstance(raw, dict):
+                    continue
+                stamp = raw.get("datetime")
+                close_value = raw.get("close")
+                if not isinstance(stamp, str) or not isinstance(close_value, str):
+                    continue
+                point_date = date.fromisoformat(stamp[:10])
+                if point_date < start_date or point_date > end_date:
+                    continue
+                points.append(
+                    DailyPricePoint(
+                        as_of_date=point_date,
+                        close_price=Decimal(close_value),
+                        currency_code=currency,
+                        provider="twelvedata",
+                        source_date=point_date,
+                        provenance=PROVENANCE_EXACT,
+                    )
+                )
+            results[request.key] = sorted(points, key=lambda item: item.as_of_date)
+        return results
+
+    @staticmethod
+    def _resolve_currency(request: PriceRequest, payload: Mapping[str, object]) -> str | None:
+        """Reconcile the configured currency against the one the provider reports.
+
+        Two failure modes are worth separating. If Helios holds trusted metadata and the provider
+        disagrees, that is a mapping error -- valuing a GBX series as GBP would overstate by 100x
+        -- so the symbol is dropped rather than trusted. If Helios holds no currency, the
+        provider's own ``meta.currency`` is used: that is reported data, not the assumption the
+        no-guessing rule exists to prevent.
+        """
+        meta = payload.get("meta")
+        reported = meta.get("currency") if isinstance(meta, Mapping) else None
+        reported_code = reported.upper() if isinstance(reported, str) and reported else None
+        if request.currency_code is None:
+            return reported_code
+        configured = request.currency_code.upper()
+        if reported_code is not None and reported_code != configured:
+            return None
+        return configured
+
+
+class KenFrenchFactorDataProvider:
+    """Daily FF5 + momentum factors from the Kenneth French Data Library.
+
+    The official source, free, and no account -- which is why the factor regression no longer
+    needs a licensed feed. Two zipped CSVs are joined on date: the 5-factor file supplies
+    Mkt-RF/SMB/HML/RMW/CMA and the risk-free rate, the momentum file supplies Mom.
+
+    Two properties of these files drive the parsing below. Values are quoted in **percent**, so
+    they are divided by 100 -- skipping that would inflate every loading by 100x. And missing
+    observations are sentinels (-99.99 / -999) rather than blanks, so they are dropped instead of
+    being read as catastrophic single-day returns.
+
+    Note the publication lag: the library is updated monthly and trails the present by roughly a
+    month. The regression therefore covers only the overlap between your NAV history and the
+    published factors, and reports ``insufficient_data`` when that overlap is too short -- which
+    is the intended behaviour, not a fetch failure.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._client = httpx.AsyncClient(
+            timeout=settings.market_data_timeout_seconds, follow_redirects=True
+        )
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def fetch_factor_returns(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> list[FactorObservation]:
+        five = await self._fetch_table(self._settings.ken_french_five_factor_url)
+        momentum = await self._fetch_table(self._settings.ken_french_momentum_url)
+        observations: list[FactorObservation] = []
+        for as_of, row in sorted(five.items()):
+            if as_of < start_date or as_of > end_date:
+                continue
+            mom_row = momentum.get(as_of)
+            if mom_row is None:
+                # The momentum file is published separately and can lag the 5-factor file by a
+                # day. An observation missing a factor is dropped, never zero-filled.
+                continue
+            try:
+                factors = {
+                    "mkt_rf": row["Mkt-RF"],
+                    "smb": row["SMB"],
+                    "hml": row["HML"],
+                    "rmw": row["RMW"],
+                    "cma": row["CMA"],
+                    "mom": mom_row["Mom"],
+                }
+            except KeyError:
+                continue
+            risk_free = row.get("RF")
+            if risk_free is None:
+                continue
+            observations.append(
+                FactorObservation(
+                    as_of_date=as_of,
+                    provider="kenfrench",
+                    risk_free_rate=risk_free,
+                    factors=factors,
+                )
+            )
+        return observations
+
+    async def _fetch_table(self, url: str) -> dict[date, dict[str, Decimal]]:
+        response = await self._client.get(url)
+        response.raise_for_status()
+        return parse_ken_french_csv(response.content)
+
+
+def parse_ken_french_csv(payload: bytes) -> dict[date, dict[str, Decimal]]:
+    """Parse a Kenneth French zipped daily CSV into {date: {column: decimal fraction}}.
+
+    The files open with several lines of prose, then a header row whose first cell is empty, then
+    ``YYYYMMDD,value,...`` rows, then a blank line and a copyright notice. Parsing therefore
+    starts at the header row and stops at the first row whose first cell is not an 8-digit date,
+    which also guards against the trailing annual block some files in this library carry.
+    """
+    with zipfile.ZipFile(BytesIO(payload)) as archive:
+        names = archive.namelist()
+        if not names:
+            raise FactorDataFormatError("Ken French archive is empty")
+        text = archive.read(names[0]).decode("latin-1")
+
+    header: list[str] | None = None
+    table: dict[date, dict[str, Decimal]] = {}
+    for line in text.splitlines():
+        cells = [cell.strip() for cell in line.split(",")]
+        if header is None:
+            # The header is the first row that starts with an empty cell and names columns.
+            if len(cells) > 1 and cells[0] == "" and any(cells[1:]):
+                header = cells
+            continue
+        if not KEN_FRENCH_DATE_PATTERN.fullmatch(cells[0]):
+            if table:
+                break
+            continue
+        values: dict[str, Decimal] = {}
+        for column, cell in zip(header[1:], cells[1:], strict=False):
+            if not cell:
+                continue
+            value = Decimal(cell)
+            if value in KEN_FRENCH_MISSING_SENTINELS:
+                continue
+            values[column] = value / PERCENT
+        table[datetime.strptime(cells[0], "%Y%m%d").date()] = values
+    if header is None:
+        raise FactorDataFormatError("Ken French CSV had no recognisable header row")
+    return table
+
+
 class AlphaVantageMarketDataProvider:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -465,6 +696,14 @@ class AlphaVantageMarketDataProvider:
 
 class UnknownCurrencyError(ValueError):
     """A holding is quoted in a currency Helios cannot convert to EUR."""
+
+
+class MarketDataProviderError(RuntimeError):
+    """A market-data provider refused a request (quota, entitlement, bad symbol)."""
+
+
+class FactorDataFormatError(ValueError):
+    """A factor-data file did not have the structure Helios knows how to read."""
 
 
 class EcbFxRateProvider:
@@ -752,7 +991,9 @@ class PerformanceReplayService:
             **_concentration_fields(weights),
             **_var_fields(returns),
             ff5_momentum_regression=ff5_momentum_regression(
-                twr_points, _factor_observations(factor_rows)
+                twr_points,
+                _factor_observations(factor_rows),
+                factor_provider=self._settings.factor_data_provider,
             ),
             nav_series=[_nav_point(row) for row in nav_rows],
             daily_twr=twr_points,
@@ -798,27 +1039,36 @@ def benchmark_cache_key(key: str) -> str:
 
 
 def default_benchmarks(settings: Settings) -> list[BenchmarkDefinition]:
+    """Build the benchmark set from configuration.
+
+    The keys are stable identifiers (they key stored rows), but the label and description are
+    derived from the configured symbol so they never claim to be an instrument the deployment is
+    not actually pricing.
+    """
     return [
         BenchmarkDefinition(
             "cspx",
-            "S&P 500 ETF proxy",
+            f"S&P 500 ETF proxy ({settings.benchmark_cspx_symbol})",
             settings.benchmark_cspx_symbol,
             settings.benchmark_cspx_currency,
-            "ETF proxy for the S&P 500; not the licensed index level.",
+            f"ETF proxy for the S&P 500 using {settings.benchmark_cspx_symbol}; "
+            "not the licensed index level.",
         ),
         BenchmarkDefinition(
             "swda",
-            "MSCI World ETF proxy",
+            f"MSCI World ETF proxy ({settings.benchmark_swda_symbol})",
             settings.benchmark_swda_symbol,
             settings.benchmark_swda_currency,
-            "ETF proxy for MSCI World; not the licensed index level.",
+            f"ETF proxy for MSCI World using {settings.benchmark_swda_symbol}; "
+            "not the licensed index level.",
         ),
         BenchmarkDefinition(
             "vwrp",
-            "FTSE All-World ETF proxy",
+            f"FTSE All-World ETF proxy ({settings.benchmark_vwrp_symbol})",
             settings.benchmark_vwrp_symbol,
             settings.benchmark_vwrp_currency,
-            "ETF proxy for FTSE All-World; not the licensed index level.",
+            f"ETF proxy for FTSE All-World using {settings.benchmark_vwrp_symbol}; "
+            "not the licensed index level.",
         ),
     ]
 
@@ -1398,18 +1648,42 @@ def compute_passive_counterfactual(
 def ff5_momentum_regression(
     portfolio_returns: Sequence[DailyReturnPoint],
     factor_rows: Sequence[FactorObservation],
+    *,
+    factor_provider: str = "disabled",
 ) -> RegressionResult:
-    """Regress *excess* portfolio returns on Fama-French 5 factors plus momentum."""
+    """Regress *excess* portfolio returns on Fama-French 5 factors plus momentum.
+
+    ``factor_provider`` is reported, not used, so an empty factor set can say which of two very
+    different things happened: nothing was configured, or a configured source published nothing
+    covering this window. Reporting the first when the second is true sends the reader to change
+    a setting that is already correct.
+    """
     empty_coefficients: dict[str, float | None] = dict.fromkeys(FACTOR_NAMES)
     if not factor_rows:
+        if factor_provider == "disabled":
+            detail = (
+                "No factor return data is configured (HELIOS_FACTOR_DATA_PROVIDER=disabled); "
+                "Helios does not fabricate factor series."
+            )
+        else:
+            window = ""
+            if portfolio_returns:
+                window = (
+                    f" for {portfolio_returns[0].as_of_date} to "
+                    f"{portfolio_returns[-1].as_of_date}"
+                )
+            detail = (
+                f"Factor provider '{factor_provider}' is configured and reachable but published "
+                f"no observations{window}. The Kenneth French library is updated monthly and "
+                "trails the present by roughly a month, so recent days have no factors yet."
+            )
         return RegressionResult(
             "unavailable",
             0,
             None,
             None,
             empty_coefficients,
-            "No factor return data is configured (HELIOS_FACTOR_DATA_PROVIDER=disabled); "
-            "Helios does not fabricate factor series.",
+            detail,
         )
     factor_by_date = {row.as_of_date: row for row in factor_rows}
     aligned: list[tuple[float, list[float]]] = []

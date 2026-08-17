@@ -108,6 +108,10 @@ class NewsFeedEntry(BaseModel):
     trust: int | None = None
     #: Some publishers (notably the SEC) require a User-Agent identifying a real contact.
     user_agent: str | None = None
+    #: Set when the publisher's access policy requires a real contact. The value is then read from
+    #: HELIOS_NEWS_SEC_USER_AGENT rather than this file, so a personal email never lands in the
+    #: repository, and the feed is skipped with a stated reason when that setting is empty.
+    contact_required: bool = False
 
     @model_validator(mode="after")
     def validate_target(self) -> NewsFeedEntry:
@@ -143,8 +147,14 @@ class NewsFeedFile(BaseModel):
     feeds: list[NewsFeedEntry] = Field(default_factory=list)
 
 
-def load_news_feeds(path: Path) -> list[NewsFeedEntry]:
-    """Load the operator's source list. A missing file simply means 'no sources configured'."""
+def load_news_feeds(path: Path, *, contact_user_agent: str | None = None) -> list[NewsFeedEntry]:
+    """Load the operator's source list. A missing file simply means 'no sources configured'.
+
+    ``contact_user_agent`` supplies the identifying User-Agent for feeds that declare
+    ``contact_required``. Such a feed is dropped when it is absent: sending the SEC a generic
+    agent would breach its access policy, and the alternative -- fetching anyway -- risks the
+    whole deployment being blocked.
+    """
     if not path.exists():
         return []
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -160,7 +170,16 @@ def load_news_feeds(path: Path) -> list[NewsFeedEntry]:
     duplicates = {key for key in keys if keys.count(key) > 1}
     if duplicates:
         raise NewsFeedConfigError(f"duplicate feed keys: {sorted(duplicates)}")
-    return [entry for entry in parsed.feeds if entry.enabled]
+    resolved: list[NewsFeedEntry] = []
+    for entry in parsed.feeds:
+        if not entry.enabled:
+            continue
+        if entry.contact_required:
+            if not contact_user_agent:
+                continue
+            entry = entry.model_copy(update={"user_agent": contact_user_agent})
+        resolved.append(entry)
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -698,7 +717,10 @@ class NewsSyncService:
             notes=[],
         )
         try:
-            feeds = load_news_feeds(self._settings.news_feeds_path)
+            feeds = load_news_feeds(
+                self._settings.news_feeds_path,
+                contact_user_agent=self._settings.news_sec_user_agent,
+            )
         except NewsFeedConfigError as error:
             return replace(empty, failures=[f"news feed config invalid: {error}"])
         if not feeds:

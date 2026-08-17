@@ -106,11 +106,17 @@ def test_m3_analytics_settings_defaults() -> None:
     assert settings.analytics_max_fx_stale_days == 10
     assert settings.analytics_passive_benchmark_key == "vwrp"
     assert settings.market_data_provider == "disabled"
-    assert settings.factor_data_provider == "disabled"
-    # Helios never guesses a benchmark's listing currency.
-    assert settings.benchmark_cspx_currency is None
-    assert settings.benchmark_swda_currency is None
-    assert settings.benchmark_vwrp_currency is None
+    # Free, official, no account -- so it is on by default. Prices still need a key.
+    assert settings.factor_data_provider == "kenfrench"
+    # Benchmark proxies default to US listings, which the free price tier covers. Their currency
+    # is declared rather than left blank so a provider that disagrees is caught as a mismatch
+    # instead of being taken at its word.
+    assert settings.benchmark_cspx_symbol == "IVV"
+    assert settings.benchmark_swda_symbol == "URTH"
+    assert settings.benchmark_vwrp_symbol == "VT"
+    assert settings.benchmark_cspx_currency == "USD"
+    assert settings.benchmark_swda_currency == "USD"
+    assert settings.benchmark_vwrp_currency == "USD"
 
 
 def test_base_currency_must_be_eur() -> None:

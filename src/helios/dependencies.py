@@ -14,9 +14,12 @@ from .news import NewsHttpClient, NewsSyncService
 from .performance import (
     AlphaVantageMarketDataProvider,
     EcbFxRateProvider,
+    KenFrenchFactorDataProvider,
+    MarketDataProvider,
     NullFactorDataProvider,
     NullMarketDataProvider,
     PerformanceReplayService,
+    TwelveDataMarketDataProvider,
 )
 from .portfolio_repository import PortfolioRepository
 from .portfolio_sync import PortfolioSyncService
@@ -72,6 +75,14 @@ class AsyncCloseable(Protocol):
     async def aclose(self) -> None: ...
 
 
+def _build_market_data_provider(settings: Settings) -> MarketDataProvider:
+    if settings.market_data_provider == "twelvedata":
+        return TwelveDataMarketDataProvider(settings)
+    if settings.market_data_provider == "alphavantage":
+        return AlphaVantageMarketDataProvider(settings)
+    return NullMarketDataProvider()
+
+
 def build_container(settings: Settings | None = None) -> Container:
     resolved_settings = settings or load_settings()
     engine = create_engine(resolved_settings)
@@ -80,13 +91,13 @@ def build_container(settings: Settings | None = None) -> Container:
     portfolio_repository = PortfolioRepository(session_factory)
     client = Trading212Client(settings=resolved_settings, snapshot_writer=snapshot_repository)
     resolver = OpenFigiResolver(resolved_settings)
-    market_data_provider = (
-        AlphaVantageMarketDataProvider(resolved_settings)
-        if resolved_settings.market_data_provider == "alphavantage"
-        else NullMarketDataProvider()
-    )
+    market_data_provider = _build_market_data_provider(resolved_settings)
     fx_rate_provider = EcbFxRateProvider(resolved_settings)
-    factor_data_provider = NullFactorDataProvider()
+    factor_data_provider = (
+        KenFrenchFactorDataProvider(resolved_settings)
+        if resolved_settings.factor_data_provider == "kenfrench"
+        else NullFactorDataProvider()
+    )
     sync_service = PortfolioSyncService(
         settings=resolved_settings,
         session_factory=session_factory,

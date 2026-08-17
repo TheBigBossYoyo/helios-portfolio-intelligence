@@ -17,20 +17,43 @@ Both ports bind to loopback only. Override with `HELIOS_WEB_PORT` / `HELIOS_API_
 
 ## Accounts you need
 
-**Helios runs end-to-end with zero accounts.** Everything below is optional; each one unlocks a
-feature, and anything unconfigured reports itself as unavailable rather than degrading silently.
+Helios is configured **free-first**: every source that costs nothing and needs no signup is on by
+default. Two accounts are worth creating, and only one of them is required.
 
 | # | Account | Cost | Unlocks | Without it |
 | --- | --- | --- | --- | --- |
 | 1 | **Trading 212** API key (Settings → API) | free | Everything — your own portfolio data | Nothing works; this is the one that matters |
-| 2 | **Anthropic** — <https://console.anthropic.com> | pay per use, ~$0.02–0.10/run | AI analysis (Insights page) | Insights reports "unavailable"; the rest is unaffected |
-| 3 | **Marketaux** — <https://www.marketaux.com> | free tier, 100 req/day | Ticker-tagged international news + sentiment | That one source is skipped; other news sources still work |
-| 4 | **OpenFIGI** — <https://www.openfigi.com/api> | free | Higher instrument-mapping rate limits | Mapping still works, just slower |
-| 5 | **Alpha Vantage** — <https://www.alphavantage.co> | free tier unusable, $49.99+/mo | Live market prices for M3 analytics | Benchmarks and price-dependent metrics report `unavailable` |
+| 2 | **Twelve Data** — <https://twelvedata.com/pricing> | **free tier**, 800 calls/day | Daily prices → every performance and risk metric | All price-dependent analytics report `unavailable` |
+| 3 | **Anthropic** — <https://console.anthropic.com> | ~$0.05/run (~$1.50/mo) | AI analysis (Insights page) | Insights reports "unavailable"; nothing else changes |
+| 4 | **Marketaux** — <https://www.marketaux.com> | free tier, 100 req/day | Ticker-tagged international news + sentiment | That one source is skipped; the other feeds still work |
+| 5 | **OpenFIGI** — <https://www.openfigi.com/api> | free | Higher instrument-mapping rate limits | Mapping still works, just slower |
 
-**No account needed** for: Yahoo Finance news, Google News, SEC EDGAR (set
-`HELIOS_NEWS_SEC_USER_AGENT` to a real contact — the SEC's policy requires it, not an account),
-ECB foreign exchange, or your own publisher RSS feeds.
+**Already working, no account, enabled by default:** ECB foreign exchange · Kenneth French factor
+library (FF5 + momentum) · Yahoo Finance news · Google News.
+
+**No account, but one setting:** SEC EDGAR filings — the SEC's access policy requires a
+User-Agent naming a real contact. Set `HELIOS_NEWS_SEC_USER_AGENT="Your Name your@email.com"`.
+The feed ships enabled but is skipped until you do, so your address never enters the repository.
+
+### Why Twelve Data, and what it costs you
+
+There is no financial news or price API in the $15–20/month band — the tier above free jumps to
+roughly $250/month — so the stack is built to sit at $0 on data.
+
+Twelve Data's free tier covers **US exchanges only**. Two consequences worth understanding
+before you rely on the numbers:
+
+- **Benchmarks default to US listings** (`IVV`, `URTH`, `VT`) instead of the UCITS ETFs an EU
+  investor would actually buy (`CSPX.LON`, `SWDA.LON`, `VWRP.LON`). They track the same indices,
+  but US- and Irish-domiciled funds face different dividend withholding, so the "you, but
+  passive" counterfactual is an approximation of what you could have held, not a quote for it.
+- **European-listed holdings will not price.** They report `unavailable` rather than being
+  guessed at. If you hold EU listings, the cheapest fix is Marketstack Basic (~$10/month) or
+  EODHD All World (~$20/month), then set the benchmark symbols back to the `.LON` tickers.
+
+The factor regression uses the Kenneth French library, which is free and official but published
+monthly — it trails the present by about a month, so the regression covers only the overlap with
+your NAV history.
 
 ### What AI actually costs
 
@@ -101,22 +124,28 @@ curl -X POST \
 | `HELIOS_ANALYTICS_MAX_PRICE_STALE_DAYS` | `10` | How far a close may be carried forward across weekends/holidays before the day is marked `STALE_PRICE` instead of valued. |
 | `HELIOS_ANALYTICS_MAX_FX_STALE_DAYS` | `10` | Same cutoff for ECB FX fixes (`STALE_FX`). |
 | `HELIOS_ANALYTICS_PASSIVE_BENCHMARK_KEY` | `vwrp` | Proxy used for the "you, but passive" counterfactual. |
-| `HELIOS_MARKET_DATA_PROVIDER` | `disabled` | `disabled` or `alphavantage`. |
-| `HELIOS_FACTOR_DATA_PROVIDER` | `disabled` | No licensed FF5+momentum feed ships with Helios. |
+| `HELIOS_MARKET_DATA_PROVIDER` | `disabled` | `twelvedata` (free tier, recommended), `alphavantage`, or `disabled`. Needs `HELIOS_MARKET_DATA_API_KEY`. |
+| `HELIOS_FACTOR_DATA_PROVIDER` | `kenfrench` | Kenneth French daily FF5 + momentum. Free, official, no account. Set `disabled` to skip the download. |
+| `HELIOS_BENCHMARK_*_SYMBOL` | `IVV` / `URTH` / `VT` | US listings, so the free price tier covers them. Switch to `CSPX.LON` / `SWDA.LON` / `VWRP.LON` with a provider that covers the LSE. |
 
 - Annualisation uses a **365 calendar-day** basis, because the replay emits one NAV observation per calendar day (not per trading day).
 - Forward-filled valuations carry `FORWARD_FILL` provenance on both the price and FX columns, and the day's status becomes `FORWARD_FILL` rather than `VALUED`.
 - Non-EUR cash flows (deposits, withdrawals, trade wallet impact, dividends without `amountInEuro`) are converted at the flow date's ECB fix. If no fix is available inside the stale cutoff, the flow is **excluded** and reported in `excludedFlowCurrencies` — it is never added as if it were EUR.
 - Dividend cash comes from the dividends ledger only; dividend-typed cash transactions are skipped so the same payment is not counted twice.
-- Live market data is optional. Without `HELIOS_MARKET_DATA_PROVIDER=alphavantage` plus `HELIOS_MARKET_DATA_API_KEY`, replay/report surfaces still start, but missing prices remain explicit instead of fabricated.
+- Live market data is optional. Without a provider plus `HELIOS_MARKET_DATA_API_KEY`, replay/report surfaces still start, but missing prices remain explicit instead of fabricated.
+- Quotation currency is never inferred. Twelve Data reports `meta.currency`, which is used when Helios holds no currency of its own; when it does hold one and the provider disagrees, the symbol is dropped rather than mis-valued.
+- `GBX` (pence) and other minor units resolve to their major currency and are scaled — ECB publishes no GBX series, and treating GBX as GBP would overstate a UK holding by 100x.
 
 ### Benchmarks and unavailable analytics
 
 Benchmarks are configurable ETF proxies, not official index levels:
 
-- CSPX = S&P 500 ETF proxy
-- SWDA = MSCI World ETF proxy
-- VWRP = FTSE All-World ETF proxy
+- `cspx` = S&P 500 ETF proxy (default symbol `IVV`)
+- `swda` = MSCI World ETF proxy (default symbol `URTH`)
+- `vwrp` = FTSE All-World ETF proxy (default symbol `VT`)
+
+The keys are stable identifiers; each label and description is built from the symbol actually
+configured, so a report never names an instrument it is not pricing.
 
 Each proxy's quotation currency (`HELIOS_BENCHMARK_CSPX_CURRENCY`, `..._SWDA_...`, `..._VWRP_...`) is **unset by default**. Helios never guesses a listing currency: a price request without a trusted currency is skipped, and the affected benchmark, passive counterfactual, and beta figures report an explicit `unavailable` status instead of a number.
 
