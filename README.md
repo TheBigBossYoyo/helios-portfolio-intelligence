@@ -1,321 +1,69 @@
 # Helios
 
-Local-first, read-only Trading 212 portfolio intelligence: backend sync/runtime/performance
-foundation plus a self-hosted dashboard.
+Helios is a local-first, read-only portfolio tracker for Trading 212: a Python backend that syncs your positions and computes performance/risk analytics, plus a self-hosted Next.js dashboard on top of it. Everything lives in your own SQLite database, on your own machine.
 
-## Running the stack
+## Why I built it
+
+Trading 212's app shows you positions and a simple return figure, but nothing like proper time-weighted return, drawdown, factor exposure, or a "you, but if you'd just bought a world index instead" comparison. I wanted those numbers computed correctly from my own trade history rather than approximated, and I wanted a place to record *why* I bought something before I find out whether I was right, since that's the part that's easy to forget in hindsight.
+
+## What it does
+
+- Syncs positions, orders, dividends and cash transactions from Trading 212's read-only API, and stores every raw response before parsing it.
+- Replays your full trade history into a daily NAV series and computes time-weighted and money-weighted (XIRR) returns, volatility, Sharpe/Sortino, drawdown, VaR/CVaR, rolling beta, and per-holding contribution.
+- Compares your portfolio against configurable ETF benchmark proxies and against the Kenneth French factor library (FF5 + momentum).
+- Pulls in free news feeds (Yahoo Finance, SEC filings, Google News, optionally Marketaux) with cross-source deduplication.
+- Optionally asks Claude to describe what the computed analytics show, in plain language, with every claim tied to a specific number.
+- Lets you record an investment thesis before you know the outcome, then journal updates and later mark it validated, invalidated or closed.
+- Ships a dashboard (overview, holdings, performance, news, insights, journal, data-quality) that reads the same API as the CLI.
+
+## How it works
+
+The backend treats Alembic/SQLite as the source of truth and Trading 212's live positions endpoint as reconciliation only, never as a source for history. Instead, the performance engine replays daily holdings and NAV purely from individual `TRADE` fills, one calendar day at a time, so the numbers are reproducible from the ledger rather than trusting a snapshot. Every monetary, quantity and FX value that gets persisted uses a text-backed exact decimal type instead of a float, because compounding rounding errors across years of fills is exactly the kind of bug that's invisible until it matters.
+
+A rule I tried to follow everywhere: never fabricate a number to fill a gap. If a price is missing, that day is marked `STALE_PRICE` or `FORWARD_FILL` rather than silently reusing an old close forever; if an FX fix isn't available, the cash flow is excluded and reported rather than treated as zero-cost; if a benchmark's currency isn't configured, that metric reports `unavailable` instead of guessing. Metrics like factor regression or correlation clustering report `insufficient_data` until there's actually enough history behind them, rather than showing a number computed from too little.
+
+The news pipeline has the same raw-first idea: every fetched response is stored before parsing, so a parser bug can be fixed and replayed against history without re-downloading anything. Combining several feeds for the same story turned out to need more than matching URLs, since the same article shows up under three different links (the aggregator's, the source's, Yahoo's), so articles are deduplicated on a normalized canonical URL and a normalized headline within a time window, and when two sources cover the same story the more trustworthy one wins.
+
+The AI analysis feature is built to avoid the obvious failure mode of an LLM "advising" trades. The structured output schema literally has no field for a rating, a price target or a buy/sell call, so there's nowhere for one to end up even if the model tried. Every observation it produces is required to cite the specific metric it's based on, and any metric the backend already flagged as unavailable is passed through as unavailable rather than estimated. It only ever runs when you ask for it, since each call costs a small amount of money and I didn't want it quietly running on a schedule.
+
+## Running it
 
 ```bash
-cp .env.example .env      # fill in credentials; nothing is committed
+cp .env.example .env      # add your Trading 212 key and any optional API keys
 make dev                  # docker compose up --build
 ```
 
-- Dashboard: <http://127.0.0.1:3001>
-- API: <http://127.0.0.1:8001>
+- Dashboard: http://127.0.0.1:3001
+- API: http://127.0.0.1:8001
 
-Both ports bind to loopback only. Override with `HELIOS_WEB_PORT` / `HELIOS_API_PORT`.
+Both bind to loopback only; override with `HELIOS_WEB_PORT` / `HELIOS_API_PORT`. To run the backend directly instead of in Docker, `pip install -e ".[dev]"` (Python 3.12+) gives you the `helios` CLI and `helios-worker`; `make test`, `make lint` and `make typecheck` run pytest, ruff and mypy. The dashboard has its own commands under `web/`: `npm run dev`, `npm run lint`, `npm run typecheck`, `npm test` (Vitest), and `npm run test:e2e` (Playwright against a stubbed API, no real credentials needed).
 
-## Accounts you need
+## Accounts and cost
 
-Helios is configured **free-first**: every source that costs nothing and needs no signup is on by
-default. Two accounts are worth creating, and only one of them is required.
+The only account you actually need is your own Trading 212 API key (Settings → API in the T212 app), which is free. Everything else is optional and free-tier by default:
 
-| # | Account | Cost | Unlocks | Without it |
-| --- | --- | --- | --- | --- |
-| 1 | **Trading 212** API key (Settings → API) | free | Everything — your own portfolio data | Nothing works; this is the one that matters |
-| 2 | **Twelve Data** — <https://twelvedata.com/pricing> | **free tier**, 800 calls/day | Daily prices → every performance and risk metric | All price-dependent analytics report `unavailable` |
-| 3 | **Anthropic** — <https://console.anthropic.com> | ~$0.05/run (~$1.50/mo) | AI analysis (Insights page) | Insights reports "unavailable"; nothing else changes |
-| 4 | **Marketaux** — <https://www.marketaux.com> | free tier, 100 req/day | Ticker-tagged international news + sentiment | That one source is skipped; the other feeds still work |
-| 5 | **OpenFIGI** — <https://www.openfigi.com/api> | free | Higher instrument-mapping rate limits | Mapping still works, just slower |
-
-**Already working, no account, enabled by default:** ECB foreign exchange · Kenneth French factor
-library (FF5 + momentum) · Yahoo Finance news · Google News.
-
-**No account, but one setting:** SEC EDGAR filings — the SEC's access policy requires a
-User-Agent naming a real contact. Set `HELIOS_NEWS_SEC_USER_AGENT="Your Name your@email.com"`.
-The feed ships enabled but is skipped until you do, so your address never enters the repository.
-
-### Why Twelve Data, and what it costs you
-
-There is no financial news or price API in the $15–20/month band — the tier above free jumps to
-roughly $250/month — so the stack is built to sit at $0 on data.
-
-Twelve Data's free tier covers **US exchanges only**. Two consequences worth understanding
-before you rely on the numbers:
-
-- **Benchmarks default to US listings** (`IVV`, `URTH`, `VT`) instead of the UCITS ETFs an EU
-  investor would actually buy (`CSPX.LON`, `SWDA.LON`, `VWRP.LON`). They track the same indices,
-  but US- and Irish-domiciled funds face different dividend withholding, so the "you, but
-  passive" counterfactual is an approximation of what you could have held, not a quote for it.
-- **European-listed holdings will not price.** They report `unavailable` rather than being
-  guessed at. If you hold EU listings, the cheapest fix is Marketstack Basic (~$10/month) or
-  EODHD All World (~$20/month), then set the benchmark symbols back to the `.LON` tickers.
-
-The factor regression uses the Kenneth French library, which is free and official but published
-monthly — it trails the present by about a month, so the regression covers only the overlap with
-your NAV history.
-
-### What AI actually costs
-
-A portfolio analysis is roughly 4k input / 1k output tokens. Analysis only runs when you ask —
-it is deliberately **not** on the worker schedule.
-
-| Model | Per run | Daily use |
+| Account | Unlocks | Cost |
 | --- | --- | --- |
-| `claude-haiku-4-5` | ~$0.01 | ~$0.30/mo |
-| `claude-sonnet-5` | ~$0.03 | ~$0.90/mo |
-| `claude-opus-5` (default) | ~$0.05 | ~$1.50/mo |
+| Twelve Data | Daily prices, so performance/risk metrics compute at all | free tier, 800 calls/day |
+| Anthropic | The Insights page (Claude describing your analytics) | pay-per-use, a small fraction of a cent to a few cents per run |
+| Marketaux | Ticker-tagged international news | free tier, 100 req/day |
+| OpenFIGI | Faster instrument mapping | free |
 
-The default is Opus 5 for quality; set `HELIOS_ANTHROPIC_MODEL` to trade down. The system prompt
-is cached, so repeat runs cost less than the first.
+ECB FX rates, the Kenneth French factor data, Yahoo Finance and Google News all work with no account. SEC EDGAR filings need one setting rather than an account: the SEC requires a User-Agent naming a real contact, so that feed is skipped until you set `HELIOS_NEWS_SEC_USER_AGENT="Your Name your@email.com"`.
 
-## Commands
+Twelve Data's free tier only covers US exchanges, which has two consequences: the default benchmarks are US-listed ETFs (`IVV`, `URTH`, `VT`) rather than the UCITS versions a European investor would actually buy, and European-listed holdings simply won't get a price. They report `unavailable` rather than being guessed at. Getting real EU coverage means paying for a broader data plan. AI analysis costs work the same way: Claude Opus is the default model for quality, Haiku is the cheap option, and the system prompt is cached so a second run in the same session costs less than the first.
 
-- `helios positions`
-- `helios sync [--force-metadata]`
-- `helios quality`
-- `helios performance-replay`
-- `helios performance-report`
-- `helios news-sync`
-- `helios news [--ticker T] [--isin I] [--limit N]`
-- `helios ai-analyse` · `helios ai-latest`
-- `helios thesis list|create|show|transition` · `helios journal add|list`
-- `helios-worker`
+## Not financial advice
 
-## API
+The passive-benchmark comparison is a counterfactual built from proxy ETF prices, not an index and not something you could have actually achieved. The AI analysis describes numbers Helios already computed; it never rates, targets or recommends anything. None of this is investment advice, and I built it to be honest about what it doesn't know rather than to look confident.
 
-- `GET /health`
-- `GET /api/v1/t212/positions`
-- `POST /api/v1/portfolio/sync?force_metadata=false`
-- `GET /api/v1/portfolio/data-quality`
-- `POST /api/v1/performance/replay`
-- `GET /api/v1/performance/report`
-- `POST /api/v1/news/sync`
-- `GET /api/v1/news?ticker=&isin=&limit=`
-- `POST /api/v1/ai/analyse` · `GET /api/v1/ai/latest`
-- `GET|POST /api/v1/theses` · `GET|PATCH /api/v1/theses/{id}` · `POST /api/v1/theses/{id}/transition`
-- `GET|POST /api/v1/journal`
+## Safety and privacy
 
-Example sync request:
+Trading 212 access is strictly read-only (GET requests only); no trade or account mutation is ever sent. Everything Helios computes stays in your own local SQLite database. Nothing is sent anywhere except the specific third-party API you've configured, and only the data that call needs (Trading 212 credentials never leave that one client, for instance). Keep demo and live Trading 212 keys separate, and don't commit secrets into tracked files.
 
-```bash
-curl -X POST \
-  -H "X-Helios-Local-Action: sync" \
-  "http://127.0.0.1:8000/api/v1/portfolio/sync?force_metadata=false"
+## Limitations and what I'd improve
 
-curl -X POST \
-  -H "X-Helios-Local-Action: replay" \
-  "http://127.0.0.1:8000/api/v1/performance/replay"
-```
-
-## Performance / analytics
-
-- Alembic/SQLite stay authoritative.
-- Milestone 3 replays daily holdings and NAV from per-fill `TRADE` rows only.
-- `positions_live` remains reconciliation-only; it is never used as historical NAV.
-- Exact persisted monetary/quantity/FX fields use text-backed `ExactDecimal` storage.
-
-### Conventions
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `HELIOS_BASE_CURRENCY` | `EUR` | Only `EUR` is supported; anything else is rejected at startup. |
-| `HELIOS_ANALYTICS_FLOW_TIMING` | `flow_at_close` | Cash-flow timing for daily TWR. `flow_at_open`, `flow_at_close`, or `intraday_split` (Modified Dietz half-day weight). The first two are exactly flow-neutral — a pure deposit moves NAV without moving return. `intraday_split` is a deliberate approximation: half-weighting the flow means a deposit-only day shows a small non-zero return. Pick it only if you want Modified Dietz semantics. |
-| `HELIOS_ANALYTICS_MAX_PRICE_STALE_DAYS` | `10` | How far a close may be carried forward across weekends/holidays before the day is marked `STALE_PRICE` instead of valued. |
-| `HELIOS_ANALYTICS_MAX_FX_STALE_DAYS` | `10` | Same cutoff for ECB FX fixes (`STALE_FX`). |
-| `HELIOS_ANALYTICS_PASSIVE_BENCHMARK_KEY` | `vwrp` | Proxy used for the "you, but passive" counterfactual. |
-| `HELIOS_MARKET_DATA_PROVIDER` | `disabled` | `twelvedata` (free tier, recommended), `alphavantage`, or `disabled`. Needs `HELIOS_MARKET_DATA_API_KEY`. |
-| `HELIOS_FACTOR_DATA_PROVIDER` | `kenfrench` | Kenneth French daily FF5 + momentum. Free, official, no account. Set `disabled` to skip the download. |
-| `HELIOS_BENCHMARK_*_SYMBOL` | `IVV` / `URTH` / `VT` | US listings, so the free price tier covers them. Switch to `CSPX.LON` / `SWDA.LON` / `VWRP.LON` with a provider that covers the LSE. |
-
-- Annualisation uses a **365 calendar-day** basis, because the replay emits one NAV observation per calendar day (not per trading day).
-- Forward-filled valuations carry `FORWARD_FILL` provenance on both the price and FX columns, and the day's status becomes `FORWARD_FILL` rather than `VALUED`.
-- Non-EUR cash flows (deposits, withdrawals, trade wallet impact, dividends without `amountInEuro`) are converted at the flow date's ECB fix. If no fix is available inside the stale cutoff, the flow is **excluded** and reported in `excludedFlowCurrencies` — it is never added as if it were EUR.
-- Dividend cash comes from the dividends ledger only; dividend-typed cash transactions are skipped so the same payment is not counted twice.
-- Live market data is optional. Without a provider plus `HELIOS_MARKET_DATA_API_KEY`, replay/report surfaces still start, but missing prices remain explicit instead of fabricated.
-- Quotation currency is never inferred. Twelve Data reports `meta.currency`, which is used when Helios holds no currency of its own; when it does hold one and the provider disagrees, the symbol is dropped rather than mis-valued.
-- `GBX` (pence) and other minor units resolve to their major currency and are scaled — ECB publishes no GBX series, and treating GBX as GBP would overstate a UK holding by 100x.
-
-### Benchmarks and unavailable analytics
-
-Benchmarks are configurable ETF proxies, not official index levels:
-
-- `cspx` = S&P 500 ETF proxy (default symbol `IVV`)
-- `swda` = MSCI World ETF proxy (default symbol `URTH`)
-- `vwrp` = FTSE All-World ETF proxy (default symbol `VT`)
-
-The keys are stable identifiers; each label and description is built from the symbol actually
-configured, so a report never names an instrument it is not pricing.
-
-Each proxy's quotation currency (`HELIOS_BENCHMARK_CSPX_CURRENCY`, `..._SWDA_...`, `..._VWRP_...`) is **unset by default**. Helios never guesses a listing currency: a price request without a trusted currency is skipped, and the affected benchmark, passive counterfactual, and beta figures report an explicit `unavailable` status instead of a number.
-
-Metrics that report a status rather than a value when their inputs are absent:
-
-- `attribution` — Brinson-Fachler needs benchmark constituent weights and sector returns; no licensed constituent source is configured, so the report is `unavailable`.
-- `ff5MomentumRegression` — `unavailable` while `HELIOS_FACTOR_DATA_PROVIDER=disabled`; the regression itself runs on *excess* returns (return minus the risk-free rate).
-- `correlationClusters` — `insufficient_data` until enough aligned per-holding observations exist.
-- `passiveCounterfactual` — a counterfactual built from proxy prices; not an index, not achievable, not advice.
-- `contributions` — a holding without two consecutive valued observations is reported as `insufficient_data`, never as a 0% contribution.
-- VaR/CVaR — historical simulation; losses are negative returns, quantiles use `linear` interpolation, and the actual observation count is always reported.
-
-> **Reading the risk numbers.** Volatility, Sharpe/Sortino, and VaR/CVaR are computed on the calendar-day NAV series, which includes weekends and market holidays valued from a carried-forward close. Those flat days dampen volatility and can pull a 95% VaR toward zero. Each VaR/CVaR metric's `detail` reports the observation count, the tail count, and the share of flat observations so the effect is visible rather than hidden.
-
-## News
-
-Helios combines several free sources. Every one is **disabled by default** in
-`config/news_feeds.yaml`; enable what you are entitled to use.
-
-| Source | Account | Coverage | Trust |
-| --- | --- | --- | --- |
-| **Yahoo Finance** | none | Per-holding headlines, incl. European listings | 40 |
-| **SEC EDGAR** | none (needs a contact User-Agent) | US filings — the event itself, not commentary | 100 |
-| **Marketaux** | free tier | Ticker-tagged international news + sentiment | 60 |
-| **Google News** | none | Broad fallback; median item age ~6.6 days, so backfill only | 20 |
-| **Your publisher feeds** | per publisher | Whatever you choose | 80 |
-
-### Why combining sources needs more than a URL check
-
-The obvious dedupe key — `(url, published_at)` — breaks as soon as two sources cover the same
-story: Yahoo links to `finance.yahoo.com`, Marketaux links to the publisher, and the publisher
-feed links to its own canonical page. Three URLs, one article. So Helios dedupes on two keys:
-
-1. **Canonical URL** — tracking parameters (`utm_*`, `fbclid`, …) stripped, host normalised.
-2. **Title key** — normalised headline, matched within `HELIOS_NEWS_DEDUPE_WINDOW_HOURS`.
-
-When a duplicate is found the **higher-trust** copy wins, so a primary SEC filing outranks the
-aggregator commentary quoting it. Both keys are checked against already-stored items too, so a
-source added later does not re-import history you already have.
-
-### Template placeholders
-
-`url_template` is filled from data Helios already holds — never inferred:
-
-| Placeholder | Source |
-| --- | --- |
-| `{ticker}` | Trading 212 ticker (`AAPL_US_EQ`) |
-| `{yahoo_ticker}` | Resolved market symbol from the M2 OpenFIGI mapping (`AAPL`) |
-| `{isin}` | ISIN |
-| `{name}` | Instrument name, URL-encoded |
-
-An instrument missing a field its template needs is skipped with a stated reason.
-
-### Rules the pipeline enforces
-
-- **Feeds and documented APIs only, never scraping.** The article link is never followed and
-  article bodies are never fetched or stored, so paywalled text is never copied.
-- **Raw-first.** The response body lands in `raw_news` before parsing, so a parser fix is
-  replayable against history.
-- **Linkage is declared, never guessed.** No headline scanning for company names.
-- **Hardened parsing.** `defusedxml` for untrusted feeds (a billion-laughs payload is rejected);
-  http/https only; body size capped. The Marketaux key is attached at fetch time so it never
-  reaches the stored raw URL.
-- **One bad publisher cannot break a sync.** Failures are collected per source and reported.
-
-## AI analysis (Claude)
-
-The Insights page asks Claude to **describe** analytics Helios already computed. It is not
-investment advice, and the design makes that structural rather than aspirational:
-
-- **The output schema has no field for advice.** No rating, no price target, no buy/sell action,
-  and `additionalProperties: false` — so there is nowhere for one to go, even if asked.
-- **Every observation cites its evidence.** `evidence` is a required schema field naming the
-  figure the claim rests on. An observation without one is dropped, not softened.
-- **Unknowns stay unknown.** Metrics M3 reported as `insufficient_data` or `unavailable` are
-  passed through with that status, so the model says so rather than estimating.
-- **Raw-first.** Prompt and response are stored in `ai_runs`, so any published statement traces
-  back to the numbers behind it.
-- **Never on a schedule.** Each run costs money, so it runs only when you ask.
-
-Uses adaptive thinking, structured outputs, prompt caching on the system prompt, and server-side
-refusal fallbacks (Opus 5's classifiers can decline; the request re-runs on the fallback model
-rather than surfacing a refusal).
-
-## Thesis and journal
-
-Record *why* you hold something, before the outcome is known.
-
-```bash
-helios thesis create --title "Services compound" --body "..." --ticker AAPL_US_EQ --conviction high
-helios thesis transition 1 --to active
-helios journal add --note "Added on the pullback" --thesis-id 1
-helios thesis transition 1 --to validated --note "Services grew as expected"
-```
-
-**A thesis is editable only while it is a draft.** Once activated, the original reasoning is
-frozen — later thinking goes in the journal, and the outcome goes in the note you must write to
-close it. Editing a thesis to match what happened would destroy the only thing it is for.
-
-Status flow: `draft → active → validated | invalidated → closed`. `closed` is terminal, and a
-draft cannot jump straight to an outcome without having been live.
-
-## Dashboard
-
-A Next.js app in `web/`, rendering four sections:
-
-| Route | Shows |
-| --- | --- |
-| `/` | NAV hero figure, headline return/risk metrics, NAV chart, largest holdings, stack health |
-| `/holdings` | Live Trading 212 positions with exact fractional quantities |
-| `/performance` | Every M3 analytic: TWR/XIRR, NAV and drawdown charts, rolling vol/beta 30-90d, VaR/CVaR, contribution, benchmarks, concentration, correlation clusters, factor exposure |
-| `/news` | Configured-feed articles, filterable by holding, each linking to its publisher |
-| `/insights` | Claude's description of your analytics, every observation citing its evidence |
-| `/journal` | Theses and dated notes, open vs settled |
-| `/data-quality` | Endpoint sync health, instrument mapping issues, reconciliation mismatches |
-
-Design and safety rules the UI holds to:
-
-- **The browser never talks to the API.** Every read happens in a React Server Component, so
-  `HELIOS_API_URL` and every backend credential stay server-side. `lib/api.ts` imports
-  `server-only`, which makes an accidental client import a build error. An E2E test asserts no
-  browser request ever reaches the API origin.
-- **A missing value renders as `—`, never as `0`.** Metrics the backend flagged
-  `insufficient_data` or `unavailable` show that status and its reason, so M3's honesty about
-  what it cannot compute survives all the way to the screen.
-- **Every chart has a table-view twin**, so no value is reachable only by hovering.
-- **Status is never carried by color alone** — each badge pairs a glyph with a text label.
-- Chart colors come from a palette validated against this app's own surface for colorblind
-  separation and contrast (`web/lib/viz.ts` records the command and its result). The brand amber
-  is deliberately not a series color: it fails the lightness band a data mark needs here.
-- Decimal strings from the API stay strings until the render boundary, so exact backend values
-  are never round-tripped through a float.
-
-### Web commands
-
-```bash
-cd web
-npm run dev          # http://127.0.0.1:3000 against HELIOS_API_URL
-npm run lint
-npm run typecheck
-npm test             # vitest: parsers, series shaping, component render
-npm run test:e2e     # playwright against a stubbed API, no credentials needed
-```
-
-`npx playwright test screenshots` writes full-page captures to `.sisyphus/evidence/m4/`.
-
-## Safety
-
-- Trading 212 access is read-only and GET-only.
-- No trades or account mutations are performed.
-- OpenFIGI use is optional and isolated from Trading 212 credentials.
-- Trading 212 cash transactions are not replayed into quantities; quantity-changing non-TRADE fills remain `UNSUPPORTED_ACTION`.
-- Market data is optional/configurable; Helios does not silently invent missing prices, FX, or benchmark levels.
-
-## Credentials
-
-- Keep demo and live Trading 212 credentials separate.
-- Do not place secret values in tracked files.
-- Local bindings stay on localhost; users often override to `3001/8001` via env.
-
-## Instrument overrides
-
-Use `config/instrument_overrides.yaml` for verified manual mappings only.
-
-- Prefer snake_case fields: `yahoo_ticker`, `preferred_exchange`, `quote_currency`
-- Existing camelCase aliases are still accepted
-- Never guess Yahoo/LSE mappings
-
-## Docker Compose
-
-`compose.yaml` mounts `/app/config`, keeps API and worker on shared backend image, and
-makes the worker wait for a healthy API to reduce first-start migration contention.
-The worker still migrates on startup so standalone worker runs remain safe.
+- Sector-level (Brinson-Fachler) attribution isn't implemented yet: there's no licensed index-constituent feed wired in, so that panel reports `unavailable`.
+- Non-US-listed holdings need a paid price provider; the free tier genuinely can't cover them.
+- The factor regression trails real time by about a month, since the Kenneth French library is only published monthly.
+- The dashboard is read-focused right now; most actions (sync, replay, journaling) still happen from the CLI, and I'd like more of that surfaced in the UI itself.
