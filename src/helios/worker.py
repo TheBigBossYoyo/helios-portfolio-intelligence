@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from typing import Protocol, cast
 
@@ -10,6 +10,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .config import Settings, load_settings
 from .dependencies import Container, build_container
 from .logging import configure_logging, get_logger
+
+#: How often the worker looks at the clock for the daily summary.
+SUMMARY_CHECK_MINUTES = 10
 
 
 class SyncService(Protocol):
@@ -22,6 +25,14 @@ class ReplayService(Protocol):
 
 class NewsService(Protocol):
     async def sync(self) -> object: ...
+
+
+class AlertChecker(Protocol):
+    async def evaluate(self) -> Sequence[object]: ...
+
+
+class SummaryWriter(Protocol):
+    async def maybe_create(self) -> object | None: ...
 
 
 class CardRefreshOutcome(Protocol):
@@ -45,6 +56,12 @@ class WorkerContainer(Protocol):
 
     @property
     def card_history_service(self) -> CardService: ...
+
+    @property
+    def alert_service(self) -> AlertChecker: ...
+
+    @property
+    def daily_summary_service(self) -> SummaryWriter: ...
 
     async def startup(self) -> None: ...
 
@@ -125,6 +142,25 @@ class HeliosWorker:
                     max_instances=1,
                     coalesce=True,
                 )
+            # Alerts fall back to stored daily closes without credentials, and the summary
+            # needs none, so both run either way.
+            self._scheduler.add_job(
+                self._run_scheduled_alerts,
+                trigger="interval",
+                minutes=self._settings.alerts_poll_minutes,
+                id="price-alerts",
+                max_instances=1,
+                coalesce=True,
+            )
+            if self._settings.daily_summary_enabled:
+                self._scheduler.add_job(
+                    self._run_scheduled_summary,
+                    trigger="interval",
+                    minutes=SUMMARY_CHECK_MINUTES,
+                    id="daily-summary",
+                    max_instances=1,
+                    coalesce=True,
+                )
             # News needs no Trading 212 credentials, so it is scheduled either way. With no
             # feeds configured it is a no-op that reports why.
             self._scheduler.add_job(
@@ -173,6 +209,24 @@ class HeliosWorker:
         if self._settings.refresh_after_sync:
             # New holdings deserve their headlines now, not at the next three-hourly news run.
             await self._run_scheduled_news_sync()
+
+    async def _run_scheduled_alerts(self) -> None:
+        if self._container is None:
+            return
+        try:
+            await self._container.alert_service.evaluate()
+        except Exception as exc:
+            self._logger.warning("worker_alerts_failed", error=exc.__class__.__name__)
+
+    async def _run_scheduled_summary(self) -> None:
+        """Write today's summary once it is past the configured time (a no-op otherwise)."""
+
+        if self._container is None:
+            return
+        try:
+            await self._container.daily_summary_service.maybe_create()
+        except Exception as exc:
+            self._logger.warning("worker_summary_failed", error=exc.__class__.__name__)
 
     async def _run_scheduled_card_history(self) -> None:
         """Collect a finished export, or request one when a day has passed since the last.

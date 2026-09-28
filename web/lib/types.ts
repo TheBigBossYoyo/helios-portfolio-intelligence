@@ -345,6 +345,30 @@ export interface InstrumentDetail {
   }[];
 }
 
+export type AlertKind = "above" | "below" | "gain_pct" | "loss_pct";
+
+export interface PriceAlert {
+  id: number;
+  ticker: string;
+  kind: AlertKind;
+  threshold: string;
+  note: string | null;
+  createdAt: string;
+  active: boolean;
+  triggeredAt: string | null;
+  triggeredPrice: string | null;
+}
+
+export interface AppNotification {
+  id: number;
+  kind: string;
+  title: string;
+  body: string;
+  url: string | null;
+  createdAt: string;
+  deliveredAt: string | null;
+}
+
 export interface CardTransaction {
   rowId: string;
   ts: string;

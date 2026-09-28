@@ -41,6 +41,7 @@ type LocalAction =
   | "news-sync"
   | "card-refresh"
   | "card-budget"
+  | "alerts-write"
   | "ai-analyse"
   | "thesis-write"
   | "journal-write"
@@ -48,7 +49,7 @@ type LocalAction =
   | "restart";
 
 interface MutateOptions {
-  method?: "POST" | "PATCH" | "PUT";
+  method?: "POST" | "PATCH" | "PUT" | "DELETE";
   body?: unknown;
   /** Paths to re-render once the mutation lands. */
   revalidate?: string[];
@@ -222,6 +223,39 @@ export async function setCardBudgetAction(form: FormData): Promise<ActionResult>
     body: { category, monthlyLimit: limit === null ? null : limit.toFixed(2) },
     successMessage: limit === null ? "Budget removed." : "Budget saved.",
     revalidate: ["/card"],
+  });
+}
+
+const ALERT_KINDS = new Set(["above", "below", "gain_pct", "loss_pct"]);
+
+/** Add a price or gain/loss alert for one ticker. */
+export async function createAlertAction(form: FormData): Promise<ActionResult> {
+  const ticker = optionalField(form, "ticker");
+  const kind = optionalField(form, "kind");
+  const raw = optionalField(form, "threshold");
+  if (ticker === null) return missingFieldResult("Ticker");
+  if (kind === null || !ALERT_KINDS.has(kind)) return missingFieldResult("Alert type");
+  const threshold = raw === null ? Number.NaN : Number(raw.replace(",", "."));
+  if (!Number.isFinite(threshold) || threshold <= 0) {
+    return {
+      ok: false,
+      error: "Enter a number above zero.",
+      status: null,
+      timestamp: new Date().toISOString(),
+    };
+  }
+  return mutate("/api/v1/alerts", "alerts-write", {
+    body: { ticker, kind, threshold: String(threshold), note: optionalField(form, "note") },
+    successMessage: "Alert set. You'll get a Windows notification when it's met.",
+    revalidate: [`/holdings/${encodeURIComponent(ticker)}`, "/"],
+  });
+}
+
+export async function deleteAlertAction(id: number, ticker: string): Promise<ActionResult> {
+  return mutate(`/api/v1/alerts/${id}`, "alerts-write", {
+    method: "DELETE",
+    successMessage: "Alert removed.",
+    revalidate: [`/holdings/${encodeURIComponent(ticker)}`],
   });
 }
 

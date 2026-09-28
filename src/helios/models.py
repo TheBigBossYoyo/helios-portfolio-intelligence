@@ -453,6 +453,43 @@ class T212ExportRow(Base):
     export_id: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class PriceAlert(Base):
+    """"Tell me when...": a price level, or a gain or loss on the average cost, for one ticker."""
+
+    __tablename__ = "price_alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    #: above / below (a price, in the instrument's currency) or gain_pct / loss_pct (percent
+    #: on the average price paid).
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    threshold: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    triggered_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    triggered_price: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+
+
+class Notification(Base):
+    """Something to tell the owner: a fired alert or the daily summary.
+
+    The desktop tray shows each undelivered row once and marks it delivered. ``dedupe_key``
+    makes creation idempotent: one summary per day, one notification per fired alert.
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    dedupe_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+
+
 class CardBudget(Base):
     """The owner's monthly spending limit for one Trading 212 merchant category (EUR)."""
 

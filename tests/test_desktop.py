@@ -396,3 +396,38 @@ def test_startup_shortcut_path_comes_from_appdata(monkeypatch: pytest.MonkeyPatc
     assert link is not None
     assert link.parts[-3:] == ("Programs", "Startup", "Helios.lnk")
     assert startup_shortcut({}) is None
+
+
+def test_notification_relay_shows_each_pending_item_once_and_acknowledges_it() -> None:
+    from helios.desktop import NotificationRelay
+
+    pending = [{"id": index, "title": f"T{index}", "body": "x" * 400} for index in range(1, 6)]
+    shown: list[tuple[str, str]] = []
+    acked: list[int] = []
+    relay = NotificationRelay(
+        "http://api",
+        lambda title, body: shown.append((title, body)),
+        fetch=lambda _url: pending,
+        ack=lambda _url, identifier: acked.append(identifier),
+    )
+
+    assert relay.poll_once() == 3
+
+    # The newest three, clipped to what Windows shows, then one line for the rest.
+    assert [title for title, _ in shown] == ["T1", "T2", "T3", "Helios"]
+    assert len(shown[0][1]) == 250
+    assert shown[-1][1] == "2 more notification(s) are waiting in Helios."
+    assert acked == [1, 2, 3, 4, 5]
+
+
+def test_notification_relay_waits_quietly_while_the_api_is_down() -> None:
+    import urllib.error
+
+    from helios.desktop import NotificationRelay
+
+    def down(_url: str) -> list[dict[str, object]]:
+        raise urllib.error.URLError("refused")
+
+    relay = NotificationRelay("http://api", lambda *_: None, fetch=down, ack=lambda *_: None)
+
+    assert relay.poll_once() == 0

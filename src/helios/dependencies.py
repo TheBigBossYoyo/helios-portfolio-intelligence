@@ -8,6 +8,7 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from .ai import AiAnalysisService, ClaudeAiClient
+from .alerts import AlertService, DailySummaryService
 from .card_history import CardHistoryService
 from .client import Trading212Client
 from .config import Settings, load_settings
@@ -56,6 +57,8 @@ class Container:
     t212_service: Trading212Service
     card_history_service: CardHistoryService
     instrument_detail_service: InstrumentDetailService
+    alert_service: AlertService
+    daily_summary_service: DailySummaryService
     market_data_provider: object
     fx_rate_provider: object
     factor_data_provider: object
@@ -158,6 +161,10 @@ def build_container(settings: Settings | None = None) -> Container:
     service = Trading212Service(client)
     card_history_service = CardHistoryService(portfolio_repository, client, resolved_settings)
     instrument_detail_service = InstrumentDetailService(portfolio_repository, resolved_settings)
+    alert_service = AlertService(portfolio_repository, service, resolved_settings)
+    daily_summary_service = DailySummaryService(
+        portfolio_repository, performance_service, news_service, resolved_settings
+    )
     return Container(
         settings=resolved_settings,
         engine=engine,
@@ -177,6 +184,8 @@ def build_container(settings: Settings | None = None) -> Container:
         t212_service=service,
         card_history_service=card_history_service,
         instrument_detail_service=instrument_detail_service,
+        alert_service=alert_service,
+        daily_summary_service=daily_summary_service,
         market_data_provider=market_data_provider,
         fx_rate_provider=fx_rate_provider,
         factor_data_provider=factor_data_provider,

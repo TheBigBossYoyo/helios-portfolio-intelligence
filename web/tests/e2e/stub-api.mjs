@@ -947,8 +947,57 @@ const appleDetail = {
   }),
 };
 
+// One waiting alert on Apple, one that already fired, and the notifications they produced.
+const alerts = [
+  {
+    id: 1,
+    ticker: "AAPL_US_EQ",
+    kind: "above",
+    threshold: "200",
+    note: "take some profit",
+    createdAt: "2024-04-20T10:00:00Z",
+    active: true,
+    triggeredAt: null,
+    triggeredPrice: null,
+  },
+  {
+    id: 2,
+    ticker: "AAPL_US_EQ",
+    kind: "gain_pct",
+    threshold: "10",
+    note: null,
+    createdAt: "2024-04-01T10:00:00Z",
+    active: false,
+    triggeredAt: "2024-04-12T15:05:00Z",
+    triggeredPrice: "168.20",
+  },
+];
+
+const notifications = [
+  {
+    id: 11,
+    kind: "daily_summary",
+    title: "Today: +€12.40 (+0.36%)",
+    body: "Portfolio worth €3,405.40. Movers: best AAPL +€15.10, worst SHEL −€2.70.",
+    url: "/?period=1D",
+    createdAt: "2024-04-29T19:00:00Z",
+    deliveredAt: "2024-04-29T19:01:00Z",
+  },
+  {
+    id: 10,
+    kind: "alert",
+    title: "AAPL: up 10% or more on your average cost",
+    body: "Apple Inc. is at 168.20 USD (+11.9% on your average cost).",
+    url: "/holdings/AAPL_US_EQ",
+    createdAt: "2024-04-12T15:05:00Z",
+    deliveredAt: "2024-04-12T15:06:00Z",
+  },
+];
+
 const ROUTES = {
   "/health": health,
+  "/api/v1/alerts": alerts,
+  "/api/v1/notifications": notifications,
   "/api/v1/card": cardHistory,
   "/api/v1/instruments/AAPL_US_EQ": appleDetail,
   "/api/v1/t212/positions": positions,
@@ -1007,6 +1056,8 @@ const MUTATIONS = {
   "POST /api/v1/portfolio/sync": { action: "sync", body: portfolioSyncSummary },
   "POST /api/v1/performance/replay": { action: "replay", body: replaySummary },
   "POST /api/v1/news/sync": { action: "news-sync", body: newsSyncSummary },
+  "POST /api/v1/alerts": { action: "alerts-write", body: alerts[0] },
+  "DELETE /api/v1/alerts/{id}": { action: "alerts-write", body: null },
   "PUT /api/v1/card/budgets": {
     action: "card-budget",
     body: [{ category: "MEMBERSHIPS", monthlyLimit: "80.00" }],
@@ -1086,6 +1137,9 @@ function mutationKey(method, path) {
   }
   if (/^\/api\/v1\/theses\/[^/]+\/transition$/.test(path) && method === "POST") {
     return "POST /api/v1/theses/{id}/transition";
+  }
+  if (/^\/api\/v1\/alerts\/[^/]+$/.test(path) && method === "DELETE") {
+    return "DELETE /api/v1/alerts/{id}";
   }
   return `${method} ${path}`;
 }

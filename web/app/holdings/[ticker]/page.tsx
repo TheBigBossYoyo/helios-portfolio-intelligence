@@ -1,5 +1,7 @@
 import { ArrowDownRight, ArrowLeft, ArrowUpRight } from "lucide-react";
 import Link from "next/link";
+import { ActionButton } from "@/components/action-button";
+import { AlertForm } from "@/components/alert-form";
 import { NavChart } from "@/components/charts/nav-chart";
 import { PriceChart, type PriceRow } from "@/components/charts/price-chart";
 import { DataTable, type Column } from "@/components/data-table";
@@ -10,6 +12,7 @@ import {
   getAccountSummary,
   getInstrumentDetail,
   getNews,
+  getAlerts,
   getPositions,
   getTheses,
 } from "@/lib/api";
@@ -24,6 +27,7 @@ import {
   formatQuantity,
   formatSignedPercent,
 } from "@/lib/format";
+import { createAlertAction, deleteAlertAction } from "@/lib/actions";
 import type { InstrumentDetail } from "@/lib/types";
 import { CARD, LINK } from "@/lib/ui";
 
@@ -187,12 +191,13 @@ export default async function HoldingDetailPage({
   const range: RangeKey = RANGES.some((item) => item.key === rawRange)
     ? (rawRange as RangeKey)
     : "6M";
-  const [result, positions, account, news, theses] = await Promise.all([
+  const [result, positions, account, news, theses, alerts] = await Promise.all([
     getInstrumentDetail(ticker),
     getPositions(),
     getAccountSummary(),
     getNews({ ticker, limit: 8, mentionsOnly: true }),
     getTheses(),
+    getAlerts(ticker),
   ]);
 
   const back = (
@@ -427,6 +432,44 @@ export default async function HoldingDetailPage({
             <Unavailable detail={news.error} reason="News unavailable" />
           )}
         </Panel>
+        <div className="flex flex-col gap-6">
+        <Panel
+          subtitle="A Windows notification when a price, or your gain or loss, is reached. Checked every few minutes; each alert fires once."
+          title="Alerts"
+        >
+          {alerts.ok && alerts.data.length > 0 ? (
+            <ul className="mb-4 flex flex-col divide-y divide-border">
+              {alerts.data.map((alert) => (
+                <li className="flex items-start justify-between gap-3 py-2.5 first:pt-0" key={alert.id}>
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <span className="text-sm font-medium text-ink">
+                      {alertText(alert.kind, money(alert.threshold), currency)}
+                    </span>
+                    <span className="text-xs text-ink-3">
+                      {alert.active
+                        ? "Waiting"
+                        : `Fired ${alert.triggeredAt ? formatDateTime(alert.triggeredAt) : ""} at ${priceText(money(alert.triggeredPrice), currency)}`}
+                      {alert.note ? ` · ${alert.note}` : ""}
+                    </span>
+                  </div>
+                  <ActionButton
+                    action={deleteAlertAction.bind(null, alert.id, ticker)}
+                    label="Remove"
+                    pendingLabel="Removing…"
+                    variant="secondary"
+                  />
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <AlertForm
+            action={createAlertAction}
+            currency={currency}
+            currentPrice={currentPrice}
+            held={quantity > 0 && averageCost !== null}
+            ticker={ticker}
+          />
+        </Panel>
         <Panel subtitle="Why you bought it, in your own words." title="Your theses">
           {myTheses.length > 0 ? (
             <ul className="flex flex-col gap-3">
@@ -448,9 +491,17 @@ export default async function HoldingDetailPage({
             </Note>
           )}
         </Panel>
+        </div>
       </div>
     </>
   );
+}
+
+function alertText(kind: string, threshold: number | null, currency: string | null): string {
+  if (kind === "above") return `Price rises to ${priceText(threshold, currency)}`;
+  if (kind === "below") return `Price falls to ${priceText(threshold, currency)}`;
+  if (kind === "gain_pct") return `Gain on your average reaches ${threshold ?? EMPTY}%`;
+  return `Loss on your average reaches ${threshold ?? EMPTY}%`;
 }
 
 function Figure({

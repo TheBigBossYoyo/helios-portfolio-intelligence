@@ -434,6 +434,9 @@ MUTATING_ROUTES: list[tuple[str, str, str]] = [
     ("POST", "/api/v1/news/sync", "news-sync"),
     ("POST", "/api/v1/card/refresh", "card-refresh"),
     ("PUT", "/api/v1/card/budgets", "card-budget"),
+    ("POST", "/api/v1/alerts", "alerts-write"),
+    ("DELETE", "/api/v1/alerts/1", "alerts-write"),
+    ("POST", "/api/v1/notifications/1/delivered", "notifications-ack"),
     ("POST", "/api/v1/ai/analyse", "ai-analyse"),
     ("POST", "/api/v1/theses", "thesis-write"),
     ("PATCH", "/api/v1/theses/1", "thesis-write"),
@@ -495,6 +498,9 @@ def test_guard_covers_every_mutating_route_the_router_declares(tmp_path: Path) -
         ("POST", "/api/v1/news/sync"),
         ("POST", "/api/v1/card/refresh"),
         ("PUT", "/api/v1/card/budgets"),
+        ("POST", "/api/v1/alerts"),
+        ("DELETE", "/api/v1/alerts/{alert_id}"),
+        ("POST", "/api/v1/notifications/{notification_id}/delivered"),
         ("POST", "/api/v1/ai/analyse"),
         ("POST", "/api/v1/theses"),
         ("PATCH", "/api/v1/theses/{thesis_id}"),
@@ -1153,3 +1159,32 @@ def test_card_budgets_are_set_listed_and_removed(tmp_path: Path) -> None:
     assert listed == [{"category": "MEMBERSHIPS", "monthlyLimit": "50"}]
     assert negative.status_code == 422
     assert removed.json() == []
+
+
+def test_alerts_are_created_listed_and_deleted(tmp_path: Path) -> None:
+    app = create_app(Settings(data_dir=tmp_path))
+    headers = {"X-Helios-Local-Action": "alerts-write"}
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/alerts",
+            json={"ticker": "MU_US_EQ", "kind": "below", "threshold": "900", "note": " dip "},
+            headers=headers,
+        )
+        bad_kind = client.post(
+            "/api/v1/alerts",
+            json={"ticker": "MU_US_EQ", "kind": "sideways", "threshold": "1"},
+            headers=headers,
+        )
+        listed = client.get("/api/v1/alerts?ticker=MU_US_EQ").json()
+        deleted = client.delete(f"/api/v1/alerts/{created.json()['id']}", headers=headers)
+        gone = client.delete(f"/api/v1/alerts/{created.json()['id']}", headers=headers)
+        notifications = client.get("/api/v1/notifications?pending=true")
+
+    assert created.status_code == 200
+    assert created.json()["note"] == "dip"
+    assert created.json()["active"] is True
+    assert bad_kind.status_code == 422
+    assert [alert["kind"] for alert in listed] == ["below"]
+    assert (deleted.status_code, gone.status_code) == (204, 404)
+    assert notifications.json() == []

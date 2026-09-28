@@ -76,6 +76,31 @@ test.describe("pipeline controls", () => {
     expect(JSON.parse(call?.body ?? "{}")).toEqual({ category: "MEMBERSHIPS", monthlyLimit: "80.00" });
   });
 
+  test("setting and removing an alert carry the local-action header", async ({ page, request }) => {
+    await page.goto("/holdings/AAPL_US_EQ");
+
+    const alerts = page.locator("section", { hasText: "A Windows notification" }).last();
+    await alerts.getByLabel("When").selectOption("below");
+    await alerts.getByLabel(/^Price/).fill("150");
+    await alerts.getByLabel("Note (optional)").fill("buy more");
+    await alerts.getByRole("button", { name: "Set alert" }).click();
+    await expect(alerts.getByText(/Alert set/)).toBeVisible();
+
+    const created = lastFor(await recorded(request), "POST", /\/api\/v1\/alerts$/);
+    expect(created?.action).toBe("alerts-write");
+    expect(JSON.parse(created?.body ?? "{}")).toEqual({
+      ticker: "AAPL_US_EQ",
+      kind: "below",
+      threshold: "150",
+      note: "buy more",
+    });
+
+    await alerts.getByRole("button", { name: "Remove" }).first().click();
+    await expect(alerts.getByText("Alert removed.")).toBeVisible();
+    const removed = lastFor(await recorded(request), "DELETE", /\/api\/v1\/alerts\/1$/);
+    expect(removed?.action).toBe("alerts-write");
+  });
+
   test("a replay confirms first, then reports what it wrote", async ({ page, request }) => {
     await page.goto("/performance");
 

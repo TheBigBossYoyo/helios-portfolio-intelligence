@@ -7,8 +7,10 @@ import type {
   DatabaseList,
   Health,
   JournalEntry,
+  AppNotification,
   CardHistory,
   InstrumentDetail,
+  PriceAlert,
   NewsItem,
   NewsRelevance,
   PerformanceReport,
@@ -382,6 +384,19 @@ export function parseInstrumentDetail(value: unknown): InstrumentDetail | null {
 
 export function getInstrumentDetail(ticker: string): Promise<ApiResult<InstrumentDetail>> {
   return getJson(`/api/v1/instruments/${encodeURIComponent(ticker)}`, parseInstrumentDetail);
+}
+
+export function parseList<T>(value: unknown): T[] | null {
+  return Array.isArray(value) ? (value as T[]) : null;
+}
+
+export function getAlerts(ticker?: string): Promise<ApiResult<PriceAlert[]>> {
+  const query = ticker ? `?ticker=${encodeURIComponent(ticker)}` : "";
+  return getJson(`/api/v1/alerts${query}`, parseList<PriceAlert>);
+}
+
+export function getNotifications(limit = 10): Promise<ApiResult<AppNotification[]>> {
+  return getJson(`/api/v1/notifications?limit=${limit}`, parseList<AppNotification>);
 }
 
 export function parseCardHistory(value: unknown): CardHistory | null {

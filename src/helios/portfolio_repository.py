@@ -24,9 +24,11 @@ from .models import (
     JournalEntry,
     MarketPriceDaily,
     NewsItem,
+    Notification,
     OrderHistory,
     PositionLive,
     PositionReconciliation,
+    PriceAlert,
     RawNews,
     SyncStatus,
     T212Export,
@@ -426,6 +428,88 @@ class PortfolioRepository:
                 for row in rows:
                     await session.merge(row)
         return len(rows)
+
+    # -- Alerts and notifications ------------------------------------------------------------
+
+    async def list_price_alerts(
+        self, *, active_only: bool = False, ticker: str | None = None
+    ) -> list[PriceAlert]:
+        async with self._session_factory() as session:
+            statement = select(PriceAlert).order_by(PriceAlert.created_at.desc(), PriceAlert.id)
+            if active_only:
+                statement = statement.where(PriceAlert.active.is_(True))
+            if ticker is not None:
+                statement = statement.where(PriceAlert.ticker == ticker)
+            return list(await session.scalars(statement))
+
+    async def add_price_alert(self, alert: PriceAlert) -> PriceAlert:
+        async with self._session_factory() as session:
+            async with session.begin():
+                session.add(alert)
+            return alert
+
+    async def delete_price_alert(self, alert_id: int) -> bool:
+        async with self._session_factory() as session:
+            async with session.begin():
+                result = await session.execute(delete(PriceAlert).where(PriceAlert.id == alert_id))
+            return bool(getattr(result, "rowcount", 0))
+
+    async def fire_price_alert(self, alert_id: int, *, price: Decimal, now: datetime) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await session.execute(
+                    update(PriceAlert)
+                    .where(PriceAlert.id == alert_id)
+                    .values(active=False, triggered_at=now, triggered_price=price)
+                )
+
+    async def add_notification(self, notification: Notification) -> bool:
+        """Store a notification unless one with the same dedupe key exists. True if stored."""
+        async with self._session_factory() as session:
+            async with session.begin():
+                result = await session.execute(
+                    sqlite_insert(Notification)
+                    .values(
+                        kind=notification.kind,
+                        title=notification.title,
+                        body=notification.body,
+                        url=notification.url,
+                        created_at=notification.created_at,
+                        delivered_at=None,
+                        dedupe_key=notification.dedupe_key,
+                    )
+                    .on_conflict_do_nothing(index_elements=[Notification.dedupe_key])
+                )
+            return bool(getattr(result, "rowcount", 0))
+
+    async def has_notification(self, dedupe_key: str) -> bool:
+        async with self._session_factory() as session:
+            found = await session.scalar(
+                select(Notification.id).where(Notification.dedupe_key == dedupe_key)
+            )
+            return found is not None
+
+    async def list_notifications(
+        self, *, limit: int = 20, pending_only: bool = False
+    ) -> list[Notification]:
+        async with self._session_factory() as session:
+            statement = select(Notification).order_by(
+                Notification.created_at.desc(), Notification.id.desc()
+            )
+            if pending_only:
+                statement = statement.where(Notification.delivered_at.is_(None))
+            return list(await session.scalars(statement.limit(limit)))
+
+    async def mark_notification_delivered(self, notification_id: int, *, now: datetime) -> bool:
+        async with self._session_factory() as session:
+            async with session.begin():
+                result = await session.execute(
+                    update(Notification)
+                    .where(Notification.id == notification_id)
+                    .where(Notification.delivered_at.is_(None))
+                    .values(delivered_at=now)
+                )
+            return bool(getattr(result, "rowcount", 0))
 
     async def list_card_budgets(self) -> list[CardBudget]:
         async with self._session_factory() as session:

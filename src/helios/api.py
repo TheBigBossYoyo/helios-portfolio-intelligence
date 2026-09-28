@@ -58,6 +58,7 @@ from .dependencies import (
 )
 from .instrument_detail import InstrumentDetailService, UnknownInstrumentError
 from .logging import get_logger
+from .models import PriceAlert
 from .news import NewsSyncService
 from .performance import (
     MarketDataProviderError,
@@ -90,10 +91,13 @@ from .schemas import (
     JournalEntryModel,
     NewsItemModel,
     NewsSyncSummaryModel,
+    NotificationModel,
     PerformanceReplaySummaryModel,
     PerformanceReportModel,
     PortfolioSyncSummary,
     Position,
+    PriceAlertCreateRequest,
+    PriceAlertModel,
     QualityReport,
     RestartResponse,
     SettingsSnapshotModel,
@@ -356,6 +360,85 @@ async def get_instrument_detail(
             status_code=status.HTTP_404_NOT_FOUND, detail="Unknown instrument"
         ) from exc
     return InstrumentDetailModel.model_validate(detail, from_attributes=True)
+
+
+@router.get("/api/v1/alerts", response_model=list[PriceAlertModel])
+async def list_alerts(
+    container: Annotated[Container, Depends(get_container)],
+    ticker: str | None = None,
+) -> list[PriceAlertModel]:
+    alerts = await container.portfolio_repository.list_price_alerts(ticker=ticker)
+    return [PriceAlertModel.model_validate(alert, from_attributes=True) for alert in alerts]
+
+
+@router.post("/api/v1/alerts", response_model=PriceAlertModel)
+async def create_alert(
+    request: PriceAlertCreateRequest,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("alerts-write"))],
+) -> PriceAlertModel:
+    """Add an alert, then check it at once: one that is already met fires straight away."""
+
+    alert = await container.portfolio_repository.add_price_alert(
+        PriceAlert(
+            ticker=request.ticker,
+            kind=request.kind,
+            threshold=request.threshold,
+            note=(request.note or "").strip() or None,
+            created_at=datetime.now(UTC),
+            active=True,
+        )
+    )
+    try:
+        await container.alert_service.evaluate()
+    except Exception as exc:  # the alert is saved; the next scheduled check will retry
+        logger.warning("helios.alert_check_failed", error=exc.__class__.__name__)
+    refreshed = next(
+        (
+            item
+            for item in await container.portfolio_repository.list_price_alerts(
+                ticker=request.ticker
+            )
+            if item.id == alert.id
+        ),
+        alert,
+    )
+    return PriceAlertModel.model_validate(refreshed, from_attributes=True)
+
+
+@router.delete("/api/v1/alerts/{alert_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_alert(
+    alert_id: int,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("alerts-write"))],
+) -> None:
+    if not await container.portfolio_repository.delete_price_alert(alert_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown alert")
+
+
+@router.get("/api/v1/notifications", response_model=list[NotificationModel])
+async def list_notifications(
+    container: Annotated[Container, Depends(get_container)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    pending: bool = False,
+) -> list[NotificationModel]:
+    """Recent notifications; with ``pending``, only those the desktop has not shown yet."""
+
+    rows = await container.portfolio_repository.list_notifications(
+        limit=limit, pending_only=pending
+    )
+    return [NotificationModel.model_validate(row, from_attributes=True) for row in rows]
+
+
+@router.post("/api/v1/notifications/{notification_id}/delivered", status_code=204)
+async def mark_notification_delivered(
+    notification_id: int,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("notifications-ack"))],
+) -> None:
+    await container.portfolio_repository.mark_notification_delivered(
+        notification_id, now=datetime.now(UTC)
+    )
 
 
 @router.get("/api/v1/card", response_model=CardHistoryModel)

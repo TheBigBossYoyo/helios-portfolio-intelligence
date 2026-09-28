@@ -34,6 +34,7 @@ import argparse
 import contextlib
 import ctypes
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -1031,6 +1032,83 @@ def _active_paths() -> DesktopPaths:
     return _PATHS
 
 
+#: How often the tray asks the API for notifications to show.
+NOTIFICATION_POLL_SECONDS = 60.0
+#: At most this many are shown at once (after a long time away); the rest are summarised.
+MAX_TOASTS_PER_POLL = 3
+#: Windows truncates longer notification text anyway; cut it cleanly instead.
+MAX_TOAST_CHARS = 250
+
+
+def _fetch_pending(api_url: str) -> list[dict[str, Any]]:
+    with urllib.request.urlopen(
+        f"{api_url}/api/v1/notifications?pending=true&limit=50", timeout=10.0
+    ) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+
+
+def _ack(api_url: str, notification_id: int) -> None:
+    request = urllib.request.Request(
+        f"{api_url}/api/v1/notifications/{notification_id}/delivered",
+        method="POST",
+        headers={"X-Helios-Local-Action": "notifications-ack"},
+    )
+    with urllib.request.urlopen(request, timeout=10.0):
+        pass
+
+
+class NotificationRelay:
+    """Shows the API's undelivered notifications (alerts, the daily summary) from the tray.
+
+    Each is shown once, then marked delivered, so a restart never repeats one. After a long
+    time away only the newest few are shown and the rest are counted in one line, rather than
+    a burst of stale pop-ups.
+    """
+
+    def __init__(
+        self,
+        api_url: str,
+        show: Callable[[str, str], None],
+        *,
+        fetch: Callable[[str], list[dict[str, Any]]] = _fetch_pending,
+        ack: Callable[[str, int], None] = _ack,
+    ) -> None:
+        self._api_url = api_url
+        self._show = show
+        self._fetch = fetch
+        self._ack = ack
+
+    def poll_once(self) -> int:
+        try:
+            pending = self._fetch(self._api_url)
+        except (urllib.error.URLError, OSError, ValueError):
+            return 0  # the API is starting or restarting; try again next minute
+        shown = 0
+        for item in pending[:MAX_TOASTS_PER_POLL]:
+            self._show(str(item.get("title", APP_NAME)), _clip(str(item.get("body", ""))))
+            shown += 1
+        if len(pending) > MAX_TOASTS_PER_POLL:
+            extra = len(pending) - MAX_TOASTS_PER_POLL
+            self._show(APP_NAME, f"{extra} more notification(s) are waiting in Helios.")
+        for item in pending:
+            identifier = item.get("id")
+            if isinstance(identifier, int):
+                try:
+                    self._ack(self._api_url, identifier)
+                except (urllib.error.URLError, OSError, ValueError):
+                    logger.warning("could not mark notification %s delivered", identifier)
+        return shown
+
+    def run(self, stop: threading.Event, interval: float = NOTIFICATION_POLL_SECONDS) -> None:
+        while not stop.wait(interval):
+            self.poll_once()
+
+
+def _clip(text: str) -> str:
+    return text if len(text) <= MAX_TOAST_CHARS else text[: MAX_TOAST_CHARS - 1].rstrip() + "\u2026"
+
+
 class DesktopApp:
     """Ties it together: build if needed, start the services, open the window, supervise."""
 
@@ -1042,10 +1120,17 @@ class DesktopApp:
         self.supervisor: Supervisor | None = None
         self._notify: Callable[[str], None] = console_notice
         self._status: Callable[[str], None] = lambda _status: None
+        self._toast: Callable[[str, str], None] | None = None
 
-    def bind_tray(self, notify: Callable[[str], None], status: Callable[[str], None]) -> None:
+    def bind_tray(
+        self,
+        notify: Callable[[str], None],
+        status: Callable[[str], None],
+        toast: Callable[[str, str], None] | None = None,
+    ) -> None:
         self._notify = notify
         self._status = status
+        self._toast = toast
 
     def start(self) -> None:
         if not web_build_is_current(self.paths):
@@ -1068,6 +1153,13 @@ class DesktopApp:
             name="helios-supervisor",
             daemon=True,
         ).start()
+        if self._toast is not None:
+            threading.Thread(
+                target=NotificationRelay(self.ports.api_url, self._toast).run,
+                args=(self.stop_event,),
+                name="helios-notifications",
+                daemon=True,
+            ).start()
         self._status("running")
         if self.open_window:
             self.show()
@@ -1100,6 +1192,12 @@ def run_with_tray(app: DesktopApp) -> None:
             icon.notify(message, APP_NAME)
         except Exception:  # a notification is a courtesy; never let it break startup
             logger.warning("tray notification failed: %s", message)
+
+    def toast(title: str, message: str) -> None:
+        try:
+            icon.notify(message, title)
+        except Exception:  # a notification is a courtesy; never let it break the tray
+            logger.warning("tray notification failed: %s", title)
 
     def on_open(_icon: Any, _item: Any) -> None:
         app.show()
@@ -1135,7 +1233,7 @@ def run_with_tray(app: DesktopApp) -> None:
             pystray.MenuItem("Quit Helios", on_quit),
         ),
     )
-    app.bind_tray(notify, status)
+    app.bind_tray(notify, status, toast)
 
     def setup(tray: Any) -> None:
         tray.visible = True

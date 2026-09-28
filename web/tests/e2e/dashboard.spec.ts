@@ -124,6 +124,16 @@ test.describe("overview", () => {
     await expect(movers.getByRole("columnheader", { name: "Price move" })).toBeVisible();
   });
 
+  test("lists recent notifications with links to what they are about", async ({ page }) => {
+    await page.goto("/");
+
+    const panel = page.locator("section", { hasText: "Fired price alerts and daily summaries" }).last();
+    await expect(panel.getByRole("link", { name: "Today: +€12.40 (+0.36%)" })).toBeVisible();
+    await expect(
+      panel.getByRole("link", { name: "AAPL: up 10% or more on your average cost" }),
+    ).toHaveAttribute("href", "/holdings/AAPL_US_EQ");
+  });
+
   test("says which Trading 212 account the figures come from", async ({ page }) => {
     await page.goto("/");
 
@@ -314,6 +324,16 @@ test.describe("holding detail", () => {
     await expect(page.getByRole("heading", { name: "Your result by period" })).toBeVisible();
     await expect(page.getByRole("cell", { name: "Bought" })).toBeVisible();
     await expect(page.getByRole("link", { name: /Apple beats expectations/ })).toBeVisible();
+  });
+
+  test("lists its alerts, waiting and fired", async ({ page }) => {
+    await page.goto("/holdings/AAPL_US_EQ");
+
+    const alerts = page.locator("section", { hasText: "A Windows notification" }).last();
+    await expect(alerts.getByText("Price rises to 200.00 USD")).toBeVisible();
+    await expect(alerts.getByText(/Waiting · take some profit/)).toBeVisible();
+    await expect(alerts.getByText("Gain on your average reaches 10%")).toBeVisible();
+    await expect(alerts.getByText(/Fired .* at 168.20 USD/)).toBeVisible();
   });
 
   test("changes the price range from the URL", async ({ page }) => {

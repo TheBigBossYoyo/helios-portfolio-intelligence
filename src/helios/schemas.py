@@ -397,6 +397,37 @@ class CardSummaryModel(DTOModel):
     )
 
 
+class PriceAlertModel(DTOModel):
+    id: int
+    ticker: str
+    kind: str
+    threshold: Decimal
+    note: str | None = None
+    created_at: datetime = Field(alias="createdAt")
+    active: bool
+    triggered_at: datetime | None = Field(default=None, alias="triggeredAt")
+    triggered_price: Decimal | None = Field(default=None, alias="triggeredPrice")
+
+
+class PriceAlertCreateRequest(DTOModel):
+    ticker: str = Field(min_length=1, max_length=64)
+    #: above / below: a price in the instrument's currency; gain_pct / loss_pct: percent on the
+    #: average price paid.
+    kind: Literal["above", "below", "gain_pct", "loss_pct"]
+    threshold: Decimal = Field(gt=0)
+    note: str | None = Field(default=None, max_length=200)
+
+
+class NotificationModel(DTOModel):
+    id: int
+    kind: str
+    title: str
+    body: str
+    url: str | None = None
+    created_at: datetime = Field(alias="createdAt")
+    delivered_at: datetime | None = Field(default=None, alias="deliveredAt")
+
+
 class CardBudgetModel(DTOModel):
     category: str
     monthly_limit: Decimal = Field(alias="monthlyLimit")

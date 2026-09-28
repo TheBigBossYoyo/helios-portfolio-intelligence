@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import time as dt_time
 from decimal import Decimal
 from pathlib import Path
 from typing import Final, Literal
@@ -128,6 +129,12 @@ class Settings(BaseSettings):
     card_history_enabled: bool = True
     card_export_cadence_hours: int = 24
     card_history_poll_minutes: int = 15
+    # Price alerts are checked this often against Trading 212's live prices.
+    alerts_poll_minutes: int = 5
+    # One notification a day, after this local time: the day's result, movers, card spending
+    # and news about your holdings. Shown by the desktop tray.
+    daily_summary_enabled: bool = True
+    daily_summary_time: str = "21:00"
     sync_lease_minutes: int = 15
     ecb_base_url: str = "https://data-api.ecb.europa.eu/service/data"
     market_data_provider: str = "disabled"
@@ -292,6 +299,7 @@ class Settings(BaseSettings):
         "news_sync_cadence_minutes",
         "card_export_cadence_hours",
         "card_history_poll_minutes",
+        "alerts_poll_minutes",
         "anthropic_max_tokens",
         "anthropic_timeout_seconds",
         "ai_max_news_items",
@@ -301,6 +309,21 @@ class Settings(BaseSettings):
         if value <= 0:
             raise ValueError("value must be positive")
         return value
+
+    @field_validator("daily_summary_time")
+    @classmethod
+    def valid_summary_time(cls, value: str) -> str:
+        try:
+            hours, minutes = (int(part) for part in value.strip().split(":"))
+            dt_time(hours, minutes)
+        except ValueError as exc:
+            raise ValueError("daily_summary_time must be HH:MM, e.g. 21:00") from exc
+        return f"{hours:02d}:{minutes:02d}"
+
+    @property
+    def daily_summary_at(self) -> dt_time:
+        hours, minutes = (int(part) for part in self.daily_summary_time.split(":"))
+        return dt_time(hours, minutes)
 
     @field_validator("base_currency")
     @classmethod

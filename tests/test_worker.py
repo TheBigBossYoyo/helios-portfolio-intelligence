@@ -60,11 +60,30 @@ class FakeCardService:
 
 
 @dataclass
+class FakeAlertService:
+    calls: int = 0
+
+    async def evaluate(self) -> list[object]:
+        self.calls += 1
+        return []
+
+
+@dataclass
+class FakeSummaryService:
+    calls: int = 0
+
+    async def maybe_create(self) -> None:
+        self.calls += 1
+
+
+@dataclass
 class FakeContainer:
     sync_service: FakeSyncService
     replay_service: FakeReplayService = field(default_factory=FakeReplayService)
     news_service: FakeNewsService = field(default_factory=FakeNewsService)
     card_service: FakeCardService = field(default_factory=FakeCardService)
+    alerts: FakeAlertService = field(default_factory=FakeAlertService)
+    summary: FakeSummaryService = field(default_factory=FakeSummaryService)
     startup_calls: int = 0
     shutdown_calls: int = 0
 
@@ -83,6 +102,14 @@ class FakeContainer:
     @property
     def card_history_service(self) -> FakeCardService:
         return self.card_service
+
+    @property
+    def alert_service(self) -> FakeAlertService:
+        return self.alerts
+
+    @property
+    def daily_summary_service(self) -> FakeSummaryService:
+        return self.summary
 
     async def startup(self) -> None:
         self.startup_calls += 1
@@ -143,7 +170,13 @@ async def test_worker_starts_without_credentials(tmp_path: Path) -> None:
     try:
         assert started_scheduler.running is True
         # Portfolio sync needs credentials and is skipped; news does not, so it still runs.
-        assert [job["id"] for job in scheduler.jobs] == ["news-sync"]
+        # Without credentials there is no sync; alerts (on stored closes), the summary and news
+        # still run.
+        assert [job["id"] for job in scheduler.jobs] == [
+            "price-alerts",
+            "daily-summary",
+            "news-sync",
+        ]
         assert container.sync_service.calls == 0
         assert container.news_service.calls == 1
         assert container.startup_calls == 1
@@ -173,13 +206,18 @@ async def test_worker_registers_interval_job_and_runs_initial_sync(tmp_path: Pat
     await asyncio.sleep(0)
     try:
         assert started_scheduler.running is True
-        assert [job["id"] for job in scheduler.jobs] == ["portfolio-sync", "news-sync"]
+        assert [job["id"] for job in scheduler.jobs] == [
+            "portfolio-sync",
+            "price-alerts",
+            "daily-summary",
+            "news-sync",
+        ]
         job = scheduler.jobs[0]
         assert job["trigger"] == "interval"
         assert job["minutes"] == 60
         assert job["max_instances"] == 1
         assert job["coalesce"] is True
-        news_job = scheduler.jobs[1]
+        news_job = next(job for job in scheduler.jobs if job["id"] == "news-sync")
         assert news_job["minutes"] == 180
         assert news_job["max_instances"] == 1
         assert news_job["coalesce"] is True
@@ -322,3 +360,23 @@ async def test_card_history_is_scheduled_and_a_new_export_triggers_a_replay(
         assert container.replay_service.calls == replays_before + 1
     finally:
         await worker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_alert_and_summary_jobs_call_their_services(tmp_path: Path) -> None:
+    container = FakeContainer(sync_service=FakeSyncService())
+    worker = HeliosWorker(
+        Settings(data_dir=tmp_path),
+        container_factory=lambda _settings: container,
+        scheduler=FakeScheduler(),
+    )
+    worker._logger = FakeLogger()
+
+    await worker.start()
+    try:
+        await worker._run_scheduled_alerts()
+        await worker._run_scheduled_summary()
+    finally:
+        await worker.shutdown()
+
+    assert (container.alerts.calls, container.summary.calls) == (1, 1)

@@ -37,6 +37,7 @@ import {
   getAccountSummary,
   getHealth,
   getLatestAiAnalysis,
+  getNotifications,
   getNews,
   getPerformanceReport,
   getPositions,
@@ -80,7 +81,7 @@ export default async function OverviewPage({
   searchParams: Promise<{ period?: string }>;
 }) {
   const { period: requestedPeriod } = await searchParams;
-  const [health, report, positions, news, insight, quality, account] = await Promise.all([
+  const [health, report, positions, news, insight, quality, account, notifications] = await Promise.all([
     getHealth(),
     getPerformanceReport(),
     getPositions(),
@@ -90,6 +91,7 @@ export default async function OverviewPage({
     getLatestAiAnalysis(),
     getQualityReport(),
     getAccountSummary(),
+    getNotifications(6),
   ]);
 
   const navSeries = report.ok ? report.data.navSeries : [];
@@ -456,6 +458,33 @@ export default async function OverviewPage({
         </Panel>
       ) : null}
       </section>
+
+      {notifications.ok && notifications.data.length > 0 ? (
+        <Panel
+          subtitle="Fired price alerts and daily summaries, also shown as Windows notifications from the tray."
+          title="Notifications"
+        >
+          <ul className="flex flex-col divide-y divide-border">
+            {notifications.data.map((item) => (
+              <li className="flex flex-col gap-0.5 py-2.5 first:pt-0 last:pb-0" key={item.id}>
+                <div className="flex items-baseline justify-between gap-3">
+                  {item.url ? (
+                    <Link className="text-sm font-medium text-ink hover:text-accent hover:underline" href={item.url}>
+                      {item.title}
+                    </Link>
+                  ) : (
+                    <span className="text-sm font-medium text-ink">{item.title}</span>
+                  )}
+                  <time className="shrink-0 text-xs text-ink-3" dateTime={item.createdAt}>
+                    {formatDateTime(item.createdAt)}
+                  </time>
+                </div>
+                <p className="text-sm text-ink-3">{item.body}</p>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      ) : null}
 
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Panel
