@@ -3,8 +3,9 @@
 import {
   Bar,
   BarChart,
+  type BarShapeProps,
   CartesianGrid,
-  Cell,
+  Rectangle,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -61,11 +62,11 @@ export function MonthlyChart({ data }: { data: MonthlyBar[] }) {
             maxBarSize={MARK.maxBarThickness}
             name="Investment result"
             radius={MARK.barRadius}
-          >
-            {rows.map((row) => (
-              <Cell fill={row.tone} key={row.label} />
-            ))}
-          </Bar>
+            // Each bar takes its own sign's colour from its row: blue up, red down.
+            shape={(props: BarShapeProps) => (
+              <Rectangle {...props} fill={(props.payload as { tone?: string } | undefined)?.tone} />
+            )}
+          />
           <Bar
             dataKey="moved"
             fill={SERIES.three}

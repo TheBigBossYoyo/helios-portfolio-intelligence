@@ -62,7 +62,7 @@ def dotenv_disabled() -> bool:
 
 
 SUPPORTED_BASE_CURRENCY = "EUR"
-MARKET_DATA_PROVIDERS = frozenset({"disabled", "alphavantage", "twelvedata"})
+MARKET_DATA_PROVIDERS = frozenset({"disabled", "alphavantage", "twelvedata", "eodhd"})
 FACTOR_DATA_PROVIDERS = frozenset({"disabled", "kenfrench"})
 FlowTiming = Literal["flow_at_open", "flow_at_close", "intraday_split"]
 AnthropicEffort = Literal["low", "medium", "high", "xhigh", "max"]
@@ -135,6 +135,10 @@ class Settings(BaseSettings):
     market_data_api_key: SecretStr | None = None
     market_data_timeout_seconds: float = 15.0
     twelvedata_base_url: str = "https://api.twelvedata.com/time_series"
+    # EODHD end-of-day API: full daily history for US and international listings (LSE, XETRA,
+    # Euronext...) on its paid plans; the free plan gives 20 calls a day and one year of history.
+    eodhd_base_url: str = "https://eodhd.com/api"
+    eodhd_min_interval_seconds: float = 0.2
     # Exchanges the configured Twelve Data plan can serve, comma-separated, as the exchange keys
     # in performance.YAHOO_EXCHANGE_SUFFIXES ("US" for listings without a suffix). The free Basic
     # plan is US-only, so a London symbol is not even requested there -- it goes straight to the

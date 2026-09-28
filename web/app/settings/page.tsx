@@ -31,6 +31,7 @@ export const dynamic = "force-dynamic";
 const MARKET_DATA_PROVIDERS: Choice[] = [
   { value: "twelvedata", label: "Twelve Data" },
   { value: "alphavantage", label: "Alpha Vantage" },
+  { value: "eodhd", label: "EODHD" },
   { value: "disabled", label: "Disabled" },
 ];
 
@@ -164,7 +165,7 @@ export default async function SettingsPage() {
                 action={saveSettingAction}
                 choices={MARKET_DATA_PROVIDERS}
                 current={snapshot.editable.market_data_provider ?? ""}
-                description="Daily prices. Twelve Data's free tier allows 800 calls a day, which is ample for one portfolio. Set to Disabled and every price-dependent metric reports unavailable rather than being estimated."
+                description="Daily prices. Twelve Data's free tier allows 800 calls a day for US listings. With a paid EODHD plan, pick EODHD here: it prices US and international listings, with full history, in one call per holding. Set to Disabled and every price-dependent metric reports unavailable rather than being estimated."
                 field="market_data_provider"
                 label="Price provider"
               />
@@ -172,7 +173,7 @@ export default async function SettingsPage() {
                 action={saveSettingAction}
                 choices={MARKET_DATA_PROVIDERS}
                 current={snapshot.editable.market_data_fallback_provider ?? "disabled"}
-                description="Asked only for holdings the main provider cannot price. Twelve Data's free tier covers US listings only, so pick Alpha Vantage here (free, 25 requests a day) for London-listed ETFs like VUAG or VWRP, and add its key below."
+                description="Asked only for holdings the main provider cannot price. Twelve Data's free tier covers US listings only. For London-listed ETFs like VUAG or VWRP pick EODHD (full history) or Alpha Vantage (free, 25 requests a day, only the last ~100 trading days), and add its key below."
                 field="market_data_fallback_provider"
                 label="Second price source (London listings)"
               />

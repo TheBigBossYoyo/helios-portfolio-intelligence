@@ -4,9 +4,10 @@ import { useRouter } from "next/navigation";
 import {
   Bar,
   BarChart,
+  type BarShapeProps,
   CartesianGrid,
-  Cell,
   LabelList,
+  Rectangle,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -81,14 +82,18 @@ export function SpendingChart({
             name="Spent"
             onClick={(_entry, index) => open(index)}
             radius={MARK.barRadius}
+            // The selected bar stays full-strength; the others step back.
+            shape={(props: BarShapeProps) => {
+              const key = (props.payload as SpendingBar | undefined)?.key;
+              return (
+                <Rectangle
+                  {...props}
+                  fill={SERIES.three}
+                  fillOpacity={selectedKey && key !== selectedKey ? 0.4 : 1}
+                />
+              );
+            }}
           >
-            {data.map((bar) => (
-              <Cell
-                fill={SERIES.three}
-                fillOpacity={selectedKey && bar.key !== selectedKey ? 0.4 : 1}
-                key={bar.key ?? bar.label}
-              />
-            ))}
             {labelled ? (
               <LabelList
                 dataKey="spent"

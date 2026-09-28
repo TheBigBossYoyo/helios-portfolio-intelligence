@@ -100,14 +100,17 @@ CREDENTIAL_IMPACT: Final[dict[str, dict[str, str]]] = {
         "signup": "https://www.trading212.com",
     },
     "market_data_api_key": {
-        "label": "Twelve Data API key",
+        "label": "Price data API key (main source)",
         "requirement": "recommended",
-        "unlocks": "Daily prices, and through them TWR, Sharpe, VaR, drawdown, beta, NAV chart",
+        "unlocks": (
+            "Daily prices from the main source picked above (Twelve Data, EODHD or Alpha "
+            "Vantage), and through them TWR, Sharpe, VaR, drawdown, beta, NAV chart"
+        ),
         "without": "Every price-dependent metric reports unavailable",
         "signup": "https://twelvedata.com/pricing",
     },
     "market_data_fallback_api_key": {
-        "label": "Alpha Vantage API key (London listings)",
+        "label": "Price data API key (fallback source)",
         "requirement": "optional",
         "unlocks": (
             "A second market-data account for symbols the primary provider's plan does not "

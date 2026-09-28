@@ -945,6 +945,158 @@ class AlphaVantageMarketDataProvider:
         return results
 
 
+#: Yahoo exchange suffix -> EODHD exchange code. No suffix is a US listing.
+EODHD_EXCHANGES: dict[str | None, str] = {
+    None: "US",
+    "L": "LSE",
+    "IL": "IL",
+    "DE": "XETRA",
+    "F": "F",
+    "PA": "PA",
+    "AS": "AS",
+    "BR": "BR",
+    "LS": "LS",
+    "MI": "MI",
+    "MC": "MC",
+    "SW": "SW",
+    "VI": "VI",
+    "ST": "ST",
+    "CO": "CO",
+    "OL": "OL",
+    "HE": "HE",
+    "IR": "IR",
+    "TO": "TO",
+    "V": "V",
+    "HK": "HK",
+    "AX": "AU",
+    "T": "TSE",
+}
+
+#: Account-level refusals: every other symbol in the run would fail the same way, so these
+#: stop the fetch. 401 is a bad token; 402 is EODHD's "daily limit reached / plan required".
+_EODHD_ACCOUNT_STATUSES = frozenset({401, 402})
+#: Symbol-level refusals: not in the database (404) or not in this plan (403). Skipped.
+_EODHD_SYMBOL_STATUSES = frozenset({403, 404})
+
+
+def _eodhd_symbol(yahoo_ticker: str) -> str | None:
+    """``VUAG.L`` -> ``VUAG.LSE``, ``MU`` -> ``MU.US``; None for an exchange EODHD's map lacks.
+
+    A Yahoo symbol's text after the last dot is its exchange (share classes use a hyphen there,
+    ``BRK-B``), so any unmapped suffix is refused rather than sent as if it were a US ticker.
+    """
+    base, dot, suffix = yahoo_ticker.rpartition(".")
+    exchange: str | None = suffix.upper() if dot and base else None
+    code = EODHD_EXCHANGES.get(exchange)
+    symbol = base if exchange is not None else yahoo_ticker
+    return f"{symbol}.{code}" if code else None
+
+
+class EodhdMarketDataProvider:
+    """Daily closes from EODHD's end-of-day API.
+
+    Verified 2026-09-28 against https://eodhd.com/financial-apis/api-for-historical-data-and-volumes:
+    ``GET /api/eod/{SYMBOL}.{EXCHANGE}?api_token=...&fmt=json&period=d&from=...&to=...`` returns
+    a list of ``{date, open, high, low, close, adjusted_close, volume}``. ``close`` is the raw
+    printed close -- what this provider stores, like the others, because the replay values
+    actual share counts and an adjusted close would double-count splits and dividends.
+
+    One request per symbol covers the whole missing window, so a first backfill of a London ETF
+    costs one call instead of the ~100-trading-day slices Alpha Vantage's free plan allows. The
+    quote currency is not in the response; it comes from Trading 212's instrument metadata, and
+    a symbol without it is skipped rather than guessed (LSE lines quote in GBP or in pence).
+    """
+
+    def __init__(self, settings: Settings, *, api_key: SecretStr | None = None) -> None:
+        self._settings = settings
+        self._api_key = api_key if api_key is not None else settings.market_data_api_key
+        self._client = httpx.AsyncClient(timeout=settings.market_data_timeout_seconds)
+        self._pacer = RequestPacer(settings.eodhd_min_interval_seconds)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def fetch_daily_closes(
+        self,
+        *,
+        requests: Sequence[PriceRequest],
+        start_date: date,
+        end_date: date,
+        skip_notes: dict[str, str] | None = None,
+    ) -> dict[str, list[DailyPricePoint]]:
+        api_key = self._api_key
+        if api_key is None:
+            return {}
+        results: dict[str, list[DailyPricePoint]] = {}
+        for request in requests:
+            symbol = _eodhd_symbol(request.provider_symbol)
+            if symbol is None or request.currency_code is None:
+                if skip_notes is not None:
+                    skip_notes[request.key] = (
+                        f"EODHD: no exchange mapping for {request.provider_symbol!r}"
+                        if symbol is None
+                        else "EODHD: no trusted instrument currency configured; refusing to guess"
+                    )
+                continue
+            response = await _provider_get(
+                self._client,
+                f"{self._settings.eodhd_base_url.rstrip('/')}/eod/{symbol}",
+                params={
+                    "api_token": api_key.get_secret_value(),
+                    "fmt": "json",
+                    "period": "d",
+                    "order": "a",
+                    "from": start_date.isoformat(),
+                    "to": end_date.isoformat(),
+                },
+                provider="EODHD",
+                pacer=self._pacer,
+                passthrough=_EODHD_ACCOUNT_STATUSES | _EODHD_SYMBOL_STATUSES,
+            )
+            if response.status_code in _EODHD_ACCOUNT_STATUSES:
+                raise MarketDataProviderError(
+                    "EODHD rejected the API key (HTTP 401)."
+                    if response.status_code == 401
+                    else "EODHD refused the request (HTTP 402): the plan's daily limit is used up "
+                    "or the data needs a higher plan."
+                )
+            if response.status_code in _EODHD_SYMBOL_STATUSES:
+                if skip_notes is not None:
+                    skip_notes[request.key] = (
+                        f"EODHD: {symbol} not found"
+                        if response.status_code == 404
+                        else f"EODHD: {symbol} is not included in this plan"
+                    )
+                continue
+            payload = response.json()
+            if not isinstance(payload, list):
+                if skip_notes is not None:
+                    skip_notes[request.key] = "EODHD: response was not a list of daily bars"
+                continue
+            points: list[DailyPricePoint] = []
+            for raw in payload:
+                if not isinstance(raw, Mapping):
+                    continue
+                raw_date, close = raw.get("date"), raw.get("close")
+                if not isinstance(raw_date, str) or not isinstance(close, (int, float, str)):
+                    continue
+                point_date = date.fromisoformat(raw_date)
+                if point_date < start_date or point_date > end_date:
+                    continue
+                points.append(
+                    DailyPricePoint(
+                        as_of_date=point_date,
+                        close_price=Decimal(str(close)),
+                        currency_code=request.currency_code,
+                        provider="eodhd",
+                        source_date=point_date,
+                        provenance=PROVENANCE_EXACT,
+                    )
+                )
+            results[request.key] = sorted(points, key=lambda item: item.as_of_date)
+        return results
+
+
 class CompositeMarketDataProvider:
     """Ask a primary provider for every symbol, then ask a fallback only for what it missed.
 
@@ -1077,6 +1229,7 @@ async def _provider_get(
     provider: str,
     pacer: RequestPacer,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    passthrough: frozenset[int] = frozenset(),
 ) -> httpx.Response:
     """One paced GET, with a single wait-and-retry on HTTP 429 and URL-free errors.
 
@@ -1102,7 +1255,7 @@ async def _provider_get(
                 f"{provider} is rate-limiting requests (HTTP 429): the free plan's per-minute or "
                 "daily allowance is used up. Wait a minute and run the replay again."
             )
-        if response.status_code >= 400:
+        if response.status_code >= 400 and response.status_code not in passthrough:
             raise MarketDataProviderError(f"{provider} returned HTTP {response.status_code}.")
         return response
     raise AssertionError("unreachable")

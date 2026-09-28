@@ -28,6 +28,7 @@ def _disable_os_keyring() -> object:
     # suite sleeping 7.6s between mocked requests would take minutes for nothing.
     patcher.setenv("HELIOS_TWELVEDATA_MIN_INTERVAL_SECONDS", "0")
     patcher.setenv("HELIOS_ALPHAVANTAGE_MIN_INTERVAL_SECONDS", "0")
+    patcher.setenv("HELIOS_EODHD_MIN_INTERVAL_SECONDS", "0")
     # The automatic replay + news refresh after a sync is exercised by its own tests; elsewhere a
     # stubbed sync must not quietly start a real replay against the test database.
     patcher.setenv("HELIOS_REFRESH_AFTER_SYNC", "0")

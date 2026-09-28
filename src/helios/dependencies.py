@@ -18,6 +18,7 @@ from .performance import (
     AlphaVantageMarketDataProvider,
     CompositeMarketDataProvider,
     EcbFxRateProvider,
+    EodhdMarketDataProvider,
     KenFrenchFactorDataProvider,
     MarketDataProvider,
     NullFactorDataProvider,
@@ -89,6 +90,8 @@ def _build_single_market_data_provider(
 ) -> MarketDataProvider:
     if provider_name == "twelvedata":
         return TwelveDataMarketDataProvider(settings, api_key=api_key)
+    if provider_name == "eodhd":
+        return EodhdMarketDataProvider(settings, api_key=api_key)
     if provider_name == "alphavantage":
         return AlphaVantageMarketDataProvider(settings, api_key=api_key)
     return NullMarketDataProvider()
