@@ -760,6 +760,10 @@ class NavPointModel(DTOModel):
     net_deposits_to_date_eur: Decimal = Field(
         default=Decimal("0"), alias="netDepositsToDateEur"
     )
+    deposit_eur: Decimal = Field(default=Decimal("0"), alias="depositEur")
+    withdrawal_eur: Decimal = Field(default=Decimal("0"), alias="withdrawalEur")
+    card_spending_eur: Decimal = Field(default=Decimal("0"), alias="cardSpendingEur")
+    cashback_eur: Decimal = Field(default=Decimal("0"), alias="cashbackEur")
 
 
 class HoldingMovementModel(DTOModel):

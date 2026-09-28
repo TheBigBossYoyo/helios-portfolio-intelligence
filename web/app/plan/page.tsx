@@ -4,7 +4,13 @@ import { DataTable, type Column } from "@/components/data-table";
 import { Note, PageHeader, Panel, Unavailable } from "@/components/panel";
 import { getAccountSummary, getPerformanceReport } from "@/lib/api";
 import { decimalToNumber, formatEur, formatPercent } from "@/lib/format";
-import { type CashflowMonth, type ProjectionPoint, averageOf, project } from "@/lib/projection";
+import {
+  type CashflowMonth,
+  type ProjectionPoint,
+  averageOf,
+  cashflowByMonth,
+  project,
+} from "@/lib/projection";
 import { latestValuedNav } from "@/lib/series";
 import { BUTTON, CARD, FIELD, LABEL } from "@/lib/ui";
 
@@ -73,20 +79,7 @@ export default async function PlanPage({
     );
   }
 
-  const months: CashflowMonth[] = (report.data.monthlySummaries ?? [])
-    .map((month) => {
-      const withdrawals = -(decimalToNumber(month.withdrawalsEur) ?? 0);
-      const card = -(decimalToNumber(month.cardSpendingEur ?? null) ?? 0);
-      return {
-        key: month.key,
-        label: month.label,
-        deposited: decimalToNumber(month.depositsEur) ?? 0,
-        spentByCard: card,
-        withdrawnToBank: Math.max(withdrawals - card, 0),
-        kept: decimalToNumber(month.netDepositsEur) ?? 0,
-      };
-    })
-    .slice(-SHOWN_MONTHS);
+  const months: CashflowMonth[] = cashflowByMonth(report.data.navSeries).slice(-SHOWN_MONTHS);
   // The month in progress is partial; the averages use the last full months.
   const full = months.slice(0, -1).slice(-RECENT_MONTHS);
   const avgIn = averageOf(full, "deposited");

@@ -170,6 +170,11 @@ class NavPoint:
     fee_eur: Decimal = ZERO
     #: Everything put in minus everything taken out, up to and including this day.
     net_deposits_to_date_eur: Decimal = ZERO
+    #: The day's money in and out, gross, with the card-payment part of what went out.
+    deposit_eur: Decimal = ZERO
+    withdrawal_eur: Decimal = ZERO
+    card_spending_eur: Decimal = ZERO
+    cashback_eur: Decimal = ZERO
 
 
 @dataclass(frozen=True)
@@ -3350,6 +3355,10 @@ def _nav_point(row: DailyNav, net_deposits_to_date: Decimal = ZERO) -> NavPoint:
         interest_eur=row.interest_eur or ZERO,
         fee_eur=row.fee_eur or ZERO,
         net_deposits_to_date_eur=net_deposits_to_date,
+        deposit_eur=row.deposit_eur or ZERO,
+        withdrawal_eur=row.withdrawal_eur or ZERO,
+        card_spending_eur=row.card_spending_eur or ZERO,
+        cashback_eur=row.cashback_eur or ZERO,
     )
 
 

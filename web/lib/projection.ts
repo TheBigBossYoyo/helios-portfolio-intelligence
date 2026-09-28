@@ -1,3 +1,6 @@
+import { decimalToNumber } from "./format";
+import type { NavPoint } from "./types";
+
 /**
  * Where the portfolio could be in a few years, as a range rather than one number.
  *
@@ -117,4 +120,51 @@ export interface CashflowMonth {
 export function averageOf(months: CashflowMonth[], field: keyof Omit<CashflowMonth, "key" | "label">): number {
   if (months.length === 0) return 0;
   return months.reduce((sum, month) => sum + month[field], 0) / months.length;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * Money in and out per calendar month, from the day each flow actually happened. (The period
+ * summaries measure between valued closes, so a flow on an unpriced day moves to the next
+ * period there; for cash flow, the calendar is what matters.)
+ */
+export function cashflowByMonth(series: NavPoint[]): CashflowMonth[] {
+  const months = new Map<string, CashflowMonth>();
+  for (const point of series) {
+    const key = point.asOfDate.slice(0, 7);
+    const month =
+      months.get(key) ??
+      ({
+        key,
+        label: `${MONTHS[Number(key.slice(5, 7)) - 1]} ${key.slice(0, 4)}`,
+        deposited: 0,
+        spentByCard: 0,
+        withdrawnToBank: 0,
+        kept: 0,
+      } satisfies CashflowMonth);
+    const net = decimalToNumber(point.externalFlowEur) ?? 0;
+    const hasGross = point.depositEur !== undefined && point.withdrawalEur !== undefined;
+    const deposit = hasGross ? (decimalToNumber(point.depositEur ?? null) ?? 0) : Math.max(net, 0);
+    const out = hasGross ? -(decimalToNumber(point.withdrawalEur ?? null) ?? 0) : Math.max(-net, 0);
+    const card = -(decimalToNumber(point.cardSpendingEur ?? null) ?? 0);
+    month.deposited += deposit;
+    month.spentByCard += card;
+    month.withdrawnToBank += Math.max(out - card, 0);
+    month.kept += deposit - out;
+    months.set(key, month);
+  }
+  return [...months.values()]
+    .sort((a, b) => a.key.localeCompare(b.key))
+    .map((month) => ({
+      ...month,
+      deposited: round2(month.deposited),
+      spentByCard: round2(month.spentByCard),
+      withdrawnToBank: round2(month.withdrawnToBank),
+      kept: round2(month.kept),
+    }));
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }

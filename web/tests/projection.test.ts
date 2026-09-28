@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { averageOf, deterministicValue, project } from "@/lib/projection";
+import { averageOf, cashflowByMonth, deterministicValue, project } from "@/lib/projection";
 
 describe("project", () => {
   const input = {
@@ -56,5 +56,30 @@ describe("averageOf", () => {
 
     expect(averageOf(months, "kept")).toBe(130);
     expect(averageOf([], "kept")).toBe(0);
+  });
+});
+
+describe("cashflowByMonth", () => {
+  it("buckets each day's flows into its own calendar month", () => {
+    const point = (asOfDate: string, flows: Record<string, string>) => ({
+      asOfDate,
+      navEur: null,
+      cashBalanceEur: "0",
+      securitiesValueEur: null,
+      externalFlowEur: flows.net ?? "0",
+      valuationStatus: "PARTIAL",
+      ...flows,
+    });
+    const months = cashflowByMonth([
+      // An unvalued April day still counts in April.
+      point("2026-04-08", { net: "551", depositEur: "551", withdrawalEur: "0", cardSpendingEur: "0" }),
+      point("2026-04-20", { net: "-40", depositEur: "0", withdrawalEur: "-40", cardSpendingEur: "-30" }),
+      point("2026-05-02", { net: "100", depositEur: "100", withdrawalEur: "0", cardSpendingEur: "0" }),
+    ]);
+
+    expect(months).toEqual([
+      { key: "2026-04", label: "Apr 2026", deposited: 551, spentByCard: 30, withdrawnToBank: 10, kept: 511 },
+      { key: "2026-05", label: "May 2026", deposited: 100, spentByCard: 0, withdrawnToBank: 0, kept: 100 },
+    ]);
   });
 });

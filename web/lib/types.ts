@@ -85,6 +85,11 @@ export interface NavPoint {
   feeEur?: string;
   /** Everything put in minus everything taken out, up to this day: the "money in" line. */
   netDepositsToDateEur?: string;
+  /** The day's money in and out, gross, and the card-payment part of what went out. */
+  depositEur?: string;
+  withdrawalEur?: string;
+  cardSpendingEur?: string;
+  cashbackEur?: string;
 }
 
 /**
