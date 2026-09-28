@@ -22,7 +22,7 @@ test.describe("navigation", () => {
 
     await nav.getByRole("link", { name: "Card" }).click();
     await expect(page).toHaveURL(/\/card$/);
-    await expect(page.getByRole("heading", { name: "Spending by month" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Spending over time" })).toBeVisible();
 
     await nav.getByRole("link", { name: "News", exact: true }).click();
     await expect(page).toHaveURL(/\/news$/);
@@ -246,32 +246,73 @@ test.describe("card", () => {
     await page.goto("/card");
 
     const totals = page.getByRole("region", { name: "Card totals" });
-    await expect(totals.getByText("€150.00")).toBeVisible();
+    await expect(totals.getByText("Cashback earned")).toBeVisible();
     await expect(totals.getByText("€1.20")).toBeVisible();
-    await expect(totals.getByText(/counted as income/)).toBeVisible();
     await expect(page.getByText(/never lowers your returns/)).toBeVisible();
   });
 
-  test("groups spending by category and merchant, with readable names", async ({ page }) => {
-    await page.goto("/card");
+  test("breaks a chosen day, week or month down by merchant and category", async ({ page }) => {
+    await page.goto("/card?view=week");
 
-    const categories = page.locator("section", { hasText: "By category" }).last();
-    await expect(categories.getByText("Miscellaneous")).toBeVisible();
-    await expect(categories.getByText("Memberships")).toBeVisible();
-    const merchants = page.locator("section", { hasText: "Top merchants" }).last();
-    await expect(merchants.getByText("Grocer")).toBeVisible();
-    await expect(merchants.getByText("60%")).toBeVisible();
+    const views = page.getByRole("navigation", { name: "Group spending by" });
+    await expect(views.getByRole("link", { name: "Week" })).toHaveAttribute("aria-current", "true");
+    // The latest week with spending is selected: yesterday's gym payment.
+    const scope = page.getByRole("region", { name: /^Spending:/ });
+    await expect(scope.getByRole("link", { name: "Gym Club" }).first()).toBeVisible();
+    // Listed under categories, and again on the payment row.
+    await expect(scope.getByText("Memberships").first()).toBeVisible();
+
+    await scope.getByRole("link", { name: "All time" }).click();
+    await expect(page).toHaveURL(/at=all/);
+    const all = page.getByRole("region", { name: "Spending: All time" });
+    await expect(all.getByRole("link", { name: "Grocer" }).first()).toBeVisible();
+    await expect(all.getByText("60%").first()).toBeVisible();
   });
 
-  test("filters payments by month", async ({ page }) => {
-    await page.goto("/card");
-    const payments = page.locator("section", { hasText: "Card payments" }).last();
-    await expect(payments.getByRole("cell", { name: "Gym Club" })).toBeVisible();
+  test("opens a merchant with where and when the money went", async ({ page }) => {
+    await page.goto("/card?view=month&at=all");
 
-    await payments.getByRole("link", { name: "Mar 2024" }).click();
-    await expect(page).toHaveURL(/month=2024-03/);
-    await expect(payments.getByRole("cell", { name: "Grocer" })).toBeVisible();
-    await expect(payments.getByRole("cell", { name: "Gym Club" })).not.toBeVisible();
+    await page
+      .getByRole("region", { name: "Spending: All time" })
+      .getByRole("link", { name: "Grocer" })
+      .first()
+      .click();
+    await expect(page).toHaveURL(/\/card\/merchant\/Grocer$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Grocer" })).toBeVisible();
+    const totals = page.getByRole("region", { name: "Merchant totals" });
+    await expect(totals.getByText("€90.00")).toBeVisible();
+    await expect(totals.getByText("2", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "By weekday" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Every payment" })).toBeVisible();
+  });
+});
+
+test.describe("holding detail", () => {
+  test("opens from the holdings list with price, position, trades and news", async ({ page }) => {
+    await page.goto("/holdings");
+    await page.getByRole("link", { name: "Apple Inc." }).first().click();
+
+    await expect(page).toHaveURL(/\/holdings\/AAPL_US_EQ$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Apple Inc." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Price", exact: true })).toBeVisible();
+    await expect(page.getByText("You bought").first()).toBeVisible();
+    await expect(page.getByText("Made in total")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Your result by period" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "Bought" })).toBeVisible();
+    await expect(page.getByRole("link", { name: /Apple beats expectations/ })).toBeVisible();
+  });
+
+  test("changes the price range from the URL", async ({ page }) => {
+    await page.goto("/holdings/AAPL_US_EQ?range=1M");
+
+    const ranges = page.getByRole("navigation", { name: "Price range" });
+    await expect(ranges.getByRole("link", { name: "1M" })).toHaveAttribute("aria-current", "true");
+  });
+
+  test("explains an unknown ticker instead of failing", async ({ page }) => {
+    await page.goto("/holdings/NOPE_EQ");
+
+    await expect(page.getByText("Unknown instrument")).toBeVisible();
   });
 });
 

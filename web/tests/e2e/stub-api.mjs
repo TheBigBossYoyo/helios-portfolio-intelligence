@@ -794,13 +794,20 @@ const databaseList = {
   ],
 };
 
-// Card history as the API reports it after one export: three payments over two months and
-// a little cashback. Amounts are EUR decimals as strings, like every money field.
+// Card history as the API reports it after one export: three payments dated relative to today
+// (yesterday, nine days ago, forty days ago) so the day, week and month views all have data.
+// Noon UTC keeps each on the same calendar day in any time zone the test machine uses.
+function daysAgo(days) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - days);
+  return `${date.toISOString().slice(0, 10)}T12:00:00Z`;
+}
+
 const cardHistory = {
   status: {
     enabled: true,
-    lastRequestedAt: "2024-04-29T08:00:00Z",
-    lastDownloadedAt: "2024-04-29T08:05:00Z",
+    lastRequestedAt: daysAgo(0),
+    lastDownloadedAt: daysAgo(0),
     pending: false,
     lastStatus: "Downloaded",
     cardRows: 3,
@@ -808,16 +815,13 @@ const cardHistory = {
   },
   summary: {
     currency: "EUR",
-    firstDate: "2024-03-12",
-    lastDate: "2024-04-20",
+    firstDate: daysAgo(40).slice(0, 10),
+    lastDate: daysAgo(1).slice(0, 10),
     spent: "150.00",
     refunded: "0",
     cashback: "1.20",
     cashbackRate: 0.008,
-    months: [
-      { key: "2024-03", label: "Mar 2024", spent: "40.00", cashback: "0.30", count: 1 },
-      { key: "2024-04", label: "Apr 2024", spent: "110.00", cashback: "0.90", count: 2 },
-    ],
+    months: [],
     categories: [
       { key: "MISCELLANEOUS", spent: "90.00", count: 2 },
       { key: "MEMBERSHIPS", spent: "60.00", count: 1 },
@@ -829,7 +833,7 @@ const cardHistory = {
     transactions: [
       {
         rowId: "c3",
-        ts: "2024-04-20T18:00:00Z",
+        ts: daysAgo(1),
         action: "Card debit",
         amount: "-60.00",
         currency: "EUR",
@@ -838,7 +842,7 @@ const cardHistory = {
       },
       {
         rowId: "c2",
-        ts: "2024-04-05T12:00:00Z",
+        ts: daysAgo(9),
         action: "Card debit",
         amount: "-50.00",
         currency: "EUR",
@@ -847,7 +851,7 @@ const cardHistory = {
       },
       {
         rowId: "c1",
-        ts: "2024-03-12T12:00:00Z",
+        ts: daysAgo(40),
         action: "Card debit",
         amount: "-40.00",
         currency: "EUR",
@@ -855,12 +859,82 @@ const cardHistory = {
         merchantCategory: "MISCELLANEOUS",
       },
     ],
+    cashbackEntries: [
+      { ts: daysAgo(0), amount: "0.90" },
+      { ts: daysAgo(30), amount: "0.30" },
+    ],
   },
+};
+
+// One instrument's detail page: a price path over the NAV fixture's dates, one buy on day one,
+// and the AAPL line of every period's stock-by-stock split.
+const appleDetail = {
+  ticker: "AAPL_US_EQ",
+  name: "Apple Inc.",
+  isin: "US0378331005",
+  currency: "USD",
+  instrumentType: "STOCK",
+  exchange: "NASDAQ",
+  marketSymbol: "AAPL",
+  sector: "Technology",
+  quantity: "10",
+  firstBought: "2024-01-01T14:30:00Z",
+  boughtEur: "1800.00",
+  soldEur: "0",
+  dividendsEur: "0",
+  realisedEur: "0",
+  valueEur: "2065.30",
+  resultEur: "265.30",
+  high: { asOfDate: "2024-04-26", close: "196.40", currency: "USD", closeEur: "183.10" },
+  low: { asOfDate: "2024-01-01", close: "150.00", currency: "USD", closeEur: "138.00" },
+  prices: navSeries.map((point, index) => ({
+    asOfDate: point.asOfDate,
+    close: (150 + index * 0.35 + Math.sin(index / 6) * 3).toFixed(2),
+    currency: "USD",
+    closeEur: ((150 + index * 0.35) * 0.92).toFixed(2),
+  })),
+  positions: navSeries.map((point, index) => ({
+    asOfDate: point.asOfDate,
+    quantity: "10",
+    valueEur: ((150 + index * 0.35) * 9.2 + 400).toFixed(2),
+    investedEur: "1800.00",
+  })),
+  trades: [
+    {
+      ts: "2024-01-01T14:30:00Z",
+      side: "BUY",
+      quantity: "10",
+      price: "150.00",
+      valueEur: "1800.00",
+      realisedEur: null,
+    },
+  ],
+  dividends: [],
+  priceReturns: [
+    { key: "1W", label: "1 week", startDate: "2024-04-22", changePct: 0.012 },
+    { key: "1M", label: "1 month", startDate: "2024-03-29", changePct: 0.051 },
+    { key: "3M", label: "3 months", startDate: "2024-01-29", changePct: 0.18 },
+    { key: "6M", label: "6 months", startDate: null, changePct: null },
+    { key: "YTD", label: "Year to date", startDate: "2024-01-01", changePct: 0.276 },
+    { key: "1Y", label: "1 year", startDate: null, changePct: null },
+    { key: "ALL", label: "All history", startDate: "2024-01-01", changePct: 0.276 },
+  ],
+  periods: periodSummaries.map((period) => {
+    const apple = period.holdings.find((item) => item.ticker === "AAPL_US_EQ");
+    return {
+      key: period.key,
+      label: period.label,
+      resultEur: apple.resultEur,
+      returnPct: apple.returnPct,
+      priceChangePct: apple.priceChangePct,
+    };
+  }),
 };
 
 const ROUTES = {
   "/health": health,
   "/api/v1/card": cardHistory,
+  "/api/v1/instruments/AAPL_US_EQ": appleDetail,
   "/api/v1/t212/positions": positions,
   "/api/v1/t212/account": {
     id: 1,

@@ -33,6 +33,8 @@ export function NavChart({
   passiveLabel,
   showInvested = false,
   height,
+  valueLabel = "Portfolio value",
+  investedLabel = "Money put in",
 }: {
   data: NavChartPoint[];
   passiveLabel?: string | null;
@@ -43,13 +45,16 @@ export function NavChart({
    */
   showInvested?: boolean;
   height?: number;
+  /** Series names, for when the chart shows one holding rather than the whole portfolio. */
+  valueLabel?: string;
+  investedLabel?: string;
 }) {
   const hasPassive = Boolean(passiveLabel) && data.some((point) => point.passive !== null);
   const hasInvested =
     showInvested && data.some((point) => point.invested !== null && point.invested !== undefined);
   const legendItems = [
-    { label: "Portfolio value", color: SERIES.one },
-    ...(hasInvested ? [{ label: "Money put in", color: SERIES.three }] : []),
+    { label: valueLabel, color: SERIES.one },
+    ...(hasInvested ? [{ label: investedLabel, color: SERIES.three }] : []),
     ...(hasPassive ? [{ label: passiveLabel ?? "Passive proxy", color: SERIES.two }] : []),
   ];
   const legend = legendItems.length > 1 ? legendItems : undefined;
@@ -88,7 +93,7 @@ export function NavChart({
             connectNulls={false}
             dataKey="nav"
             fill="url(#navFill)"
-            name="Portfolio value"
+            name={valueLabel}
             stroke="none"
             type="monotone"
           />
@@ -97,7 +102,7 @@ export function NavChart({
             connectNulls={false}
             dataKey="nav"
             dot={false}
-            name="Portfolio value"
+            name={valueLabel}
             stroke={SERIES.one}
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -110,7 +115,7 @@ export function NavChart({
               connectNulls={false}
               dataKey="invested"
               dot={false}
-              name="Money put in"
+              name={investedLabel}
               stroke={SERIES.three}
               strokeLinecap="round"
               strokeLinejoin="round"

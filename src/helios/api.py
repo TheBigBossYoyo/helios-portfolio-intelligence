@@ -41,6 +41,7 @@ from .dependencies import (
     get_ai_analysis_service,
     get_card_history_service,
     get_container,
+    get_instrument_detail_service,
     get_news_sync_service,
     get_performance_replay_service,
     get_portfolio_quality_report_service,
@@ -48,6 +49,7 @@ from .dependencies import (
     get_t212_service,
     get_thesis_service,
 )
+from .instrument_detail import InstrumentDetailService, UnknownInstrumentError
 from .logging import get_logger
 from .news import NewsSyncService
 from .performance import (
@@ -73,6 +75,7 @@ from .schemas import (
     EditableSettingRequest,
     EditableSettingResponse,
     HealthResponse,
+    InstrumentDetailModel,
     JournalCreateRequest,
     JournalEntryModel,
     NewsItemModel,
@@ -327,6 +330,22 @@ async def _replay_after_card_export(container: Container) -> None:
         await container.performance_replay_service.replay()
     except Exception as exc:
         logger.warning("helios.card_replay_failed", error=exc.__class__.__name__)
+
+
+@router.get("/api/v1/instruments/{ticker}", response_model=InstrumentDetailModel)
+async def get_instrument_detail(
+    ticker: str,
+    service: Annotated[InstrumentDetailService, Depends(get_instrument_detail_service)],
+) -> InstrumentDetailModel:
+    """Price history, your position, trades, dividends and per-period results for one ticker."""
+
+    try:
+        detail = await service.detail(ticker)
+    except UnknownInstrumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Unknown instrument"
+        ) from exc
+    return InstrumentDetailModel.model_validate(detail, from_attributes=True)
 
 
 @router.get("/api/v1/card", response_model=CardHistoryModel)

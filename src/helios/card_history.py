@@ -351,6 +351,12 @@ class CardTransaction:
 
 
 @dataclass(frozen=True)
+class CashbackEntry:
+    ts: datetime
+    amount: Decimal
+
+
+@dataclass(frozen=True)
 class SpendingGroup:
     key: str
     #: Spent, as a positive number (refunds netted off).
@@ -381,10 +387,20 @@ class CardSummary:
     categories: list[SpendingGroup] = field(default_factory=list)
     merchants: list[SpendingGroup] = field(default_factory=list)
     transactions: list[CardTransaction] = field(default_factory=list)
+    cashback_entries: list[CashbackEntry] = field(default_factory=list)
 
 
-def summarise_card_history(rows: Iterable[CardRow], *, max_transactions: int = 500) -> CardSummary:
+def summarise_card_history(
+    rows: Iterable[CardRow], *, max_transactions: int | None = None
+) -> CardSummary:
+    """All-time totals plus every payment and cashback entry.
+
+    Every payment is returned (a personal card makes a few thousand at most) so the dashboard
+    can group them by day, week or month in the reader's own time zone.
+    """
+
     card: list[CardTransaction] = []
+    cashback_entries: list[CashbackEntry] = []
     cashback_by_month: dict[str, Decimal] = defaultdict(lambda: ZERO)
     cashback = ZERO
     currencies: Counter[str] = Counter()
@@ -397,6 +413,7 @@ def summarise_card_history(rows: Iterable[CardRow], *, max_transactions: int = 5
         if label == "cashback":
             cashback += row.total
             cashback_by_month[_month_key(row.ts)] += row.total
+            cashback_entries.append(CashbackEntry(ts=row.ts, amount=row.total))
             continue
         card.append(
             CardTransaction(
@@ -439,7 +456,8 @@ def summarise_card_history(rows: Iterable[CardRow], *, max_transactions: int = 5
         ],
         categories=_groups(card, lambda item: item.merchant_category or "UNCATEGORISED"),
         merchants=_groups(card, lambda item: item.merchant_name or "Unknown merchant"),
-        transactions=card[:max_transactions],
+        transactions=card if max_transactions is None else card[:max_transactions],
+        cashback_entries=sorted(cashback_entries, key=lambda entry: entry.ts, reverse=True),
     )
 
 

@@ -12,6 +12,7 @@ import {
   formatPercent,
   formatQuantity,
   displayTicker,
+  holdingHref,
 } from "@/lib/format";
 import { paginate, parsePageParam } from "@/lib/pagination";
 import type { AccountSummary, Position } from "@/lib/types";
@@ -133,6 +134,7 @@ function HoldingsView({
               .filter((row) => row.value > 0)
               .map((row) => ({
                 label: displayTicker(row.position.instrument.ticker),
+                href: holdingHref(row.position.instrument.ticker),
                 sublabel: row.position.instrument.name,
                 value: row.value,
               }))}
@@ -189,7 +191,12 @@ function HoldingsTable({
       header: "Instrument",
       render: (row) => (
         <div className="flex flex-col gap-0.5 whitespace-normal">
-          <span className="font-medium text-ink">{row.position.instrument.name ?? EMPTY}</span>
+          <a
+            className="font-medium text-ink hover:text-accent hover:underline"
+            href={holdingHref(row.position.instrument.ticker)}
+          >
+            {row.position.instrument.name ?? displayTicker(row.position.instrument.ticker)}
+          </a>
           <span className="text-xs text-ink-3">
             {row.position.instrument.ticker}
             {row.position.instrument.isin ? ` · ${row.position.instrument.isin}` : ""}

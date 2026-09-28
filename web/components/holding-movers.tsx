@@ -5,6 +5,7 @@ import {
   EMPTY,
   decimalToNumber,
   displayTicker,
+  holdingHref,
   formatDay,
   formatEur,
   formatSignedPercent,
@@ -202,7 +203,9 @@ function MoverRow({ mover, scale }: { mover: Mover; scale: number }) {
     <li className="flex flex-col gap-1.5">
       <div className="flex items-baseline justify-between gap-3">
         <span className="min-w-0 truncate text-sm">
-          <span className="font-semibold text-ink">{displayTicker(item.ticker)}</span>
+          <a className="font-semibold text-ink hover:text-accent hover:underline" href={holdingHref(item.ticker)}>
+            {displayTicker(item.ticker)}
+          </a>
           {item.name ? <span className="ml-1.5 text-ink-3">{item.name}</span> : null}
         </span>
         <span className="flex shrink-0 items-baseline gap-2 tabular-nums">
@@ -294,7 +297,12 @@ function HoldingTable({ holdings }: { holdings: HoldingMovement[] }) {
             return (
               <tr className="border-b border-border last:border-b-0" key={item.ticker}>
                 <td className="px-3 py-2">
-                  <span className="font-medium text-ink">{displayTicker(item.ticker)}</span>
+                  <a
+                    className="font-medium text-ink hover:text-accent hover:underline"
+                    href={holdingHref(item.ticker)}
+                  >
+                    {displayTicker(item.ticker)}
+                  </a>
                   {item.name ? <span className="ml-1.5 text-ink-3">{item.name}</span> : null}
                 </td>
                 <td className="tabular-nums px-3 py-2 text-right text-ink-2">

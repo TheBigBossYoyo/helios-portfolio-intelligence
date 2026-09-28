@@ -297,6 +297,54 @@ export interface NewsItem {
   held?: boolean | null;
 }
 
+export interface InstrumentPricePoint {
+  asOfDate: string;
+  close: string;
+  currency: string;
+  closeEur: string | null;
+}
+
+export interface InstrumentDetail {
+  ticker: string;
+  name: string | null;
+  isin: string | null;
+  currency: string | null;
+  instrumentType: string | null;
+  exchange: string | null;
+  marketSymbol: string | null;
+  sector: string | null;
+  quantity: string;
+  firstBought: string | null;
+  boughtEur: string;
+  soldEur: string;
+  dividendsEur: string;
+  realisedEur: string;
+  valueEur: string | null;
+  /** value - bought + sold + dividends: everything this holding has made or lost. */
+  resultEur: string | null;
+  high: InstrumentPricePoint | null;
+  low: InstrumentPricePoint | null;
+  prices: InstrumentPricePoint[];
+  positions: { asOfDate: string; quantity: string; valueEur: string | null; investedEur: string }[];
+  trades: {
+    ts: string;
+    side: string;
+    quantity: string | null;
+    price: string | null;
+    valueEur: string | null;
+    realisedEur: string | null;
+  }[];
+  dividends: { paidOn: string; amountEur: string | null; quantity: string | null; perShare: string | null }[];
+  priceReturns: { key: string; label: string; startDate: string | null; changePct: number | null }[];
+  periods: {
+    key: string;
+    label: string;
+    resultEur: string | null;
+    returnPct: number | null;
+    priceChangePct: number | null;
+  }[];
+}
+
 export interface CardTransaction {
   rowId: string;
   ts: string;
@@ -334,6 +382,8 @@ export interface CardSummary {
   categories: SpendingGroup[];
   merchants: SpendingGroup[];
   transactions: CardTransaction[];
+  /** Every cashback payment, newest first, so it can be grouped like spending. */
+  cashbackEntries?: { ts: string; amount: string }[];
 }
 
 export interface CardHistoryStatus {

@@ -141,8 +141,9 @@ def test_summary_by_month_category_and_merchant() -> None:
     ]
     assert [group.key for group in summary.merchants] == ["Amazon", "Apple"]
     assert summary.categories[0].key == "OTHER"
-    # Newest first.
+    # Newest first, every payment and every cashback entry.
     assert [item.row_id for item in summary.transactions] == ["card-2", "card-1"]
+    assert [entry.amount for entry in summary.cashback_entries] == [Decimal("0.50")]
 
 
 # ---------------------------------------------------------------------------

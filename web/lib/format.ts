@@ -82,6 +82,11 @@ export function formatDay(value: string | null | undefined): string {
   return `${parsed.getUTCDate()} ${MONTHS[parsed.getUTCMonth()]} ${parsed.getUTCFullYear()}`;
 }
 
+/** The detail page of one holding: price, news, your position and trades. */
+export function holdingHref(ticker: string): string {
+  return `/holdings/${encodeURIComponent(ticker)}`;
+}
+
 /**
  * "VUAG" from Trading 212's "VUAGl_EQ": the part before the underscore, without the lowercase
  * exchange letter Trading 212 appends to non-US lines ("l" = London).

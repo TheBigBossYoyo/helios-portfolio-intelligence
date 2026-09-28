@@ -202,6 +202,11 @@ def _money_out(row: NavRow) -> Decimal:
     return min(row.external_flow_eur, ZERO)
 
 
+def months_back(day: date, months: int) -> date:
+    """The same day ``months`` earlier, clamped to that month's length (31 Mar -> 28 Feb)."""
+    return _months_back(day, months)
+
+
 def _months_back(day: date, months: int) -> date:
     month_index = day.year * 12 + (day.month - 1) - months
     year, month = divmod(month_index, 12)

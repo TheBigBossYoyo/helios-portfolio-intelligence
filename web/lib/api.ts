@@ -8,6 +8,7 @@ import type {
   Health,
   JournalEntry,
   CardHistory,
+  InstrumentDetail,
   NewsItem,
   NewsRelevance,
   PerformanceReport,
@@ -371,6 +372,16 @@ export function getHealth(): Promise<ApiResult<Health>> {
 
 export function getPositions(): Promise<ApiResult<Position[]>> {
   return getJson("/api/v1/t212/positions", parsePositions);
+}
+
+export function parseInstrumentDetail(value: unknown): InstrumentDetail | null {
+  const detail = parseShape<InstrumentDetail>(value, ["ticker", "prices", "positions", "trades"]);
+  if (!detail || !Array.isArray(detail.prices) || !Array.isArray(detail.trades)) return null;
+  return detail;
+}
+
+export function getInstrumentDetail(ticker: string): Promise<ApiResult<InstrumentDetail>> {
+  return getJson(`/api/v1/instruments/${encodeURIComponent(ticker)}`, parseInstrumentDetail);
 }
 
 export function parseCardHistory(value: unknown): CardHistory | null {

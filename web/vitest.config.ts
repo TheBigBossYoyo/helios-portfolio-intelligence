@@ -18,6 +18,9 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    // Card spending is grouped in local time; pin the zone so day/week buckets are the same on
+    // every machine that runs the suite.
+    env: { TZ: "UTC" },
     setupFiles: ["./tests/setup.ts"],
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
   },

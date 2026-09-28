@@ -553,6 +553,58 @@ class PortfolioRepository:
         async with self._session_factory() as session:
             return list(await session.scalars(select(DailyNav).order_by(DailyNav.as_of_date)))
 
+    # -- One instrument, for its detail page ------------------------------------------------
+
+    async def list_prices_for(self, ticker: str) -> list[MarketPriceDaily]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(MarketPriceDaily)
+                    .where(MarketPriceDaily.t212_ticker == ticker)
+                    .order_by(MarketPriceDaily.price_date)
+                )
+            )
+
+    async def list_daily_holdings_for(self, ticker: str) -> list[DailyHolding]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(DailyHolding)
+                    .where(DailyHolding.t212_ticker == ticker)
+                    .order_by(DailyHolding.as_of_date)
+                )
+            )
+
+    async def list_daily_holding_flows_for(self, ticker: str) -> list[DailyHoldingFlow]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(DailyHoldingFlow)
+                    .where(DailyHoldingFlow.t212_ticker == ticker)
+                    .order_by(DailyHoldingFlow.as_of_date)
+                )
+            )
+
+    async def list_orders_for(self, ticker: str) -> list[OrderHistory]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(OrderHistory)
+                    .where(OrderHistory.t212_ticker == ticker)
+                    .order_by(OrderHistory.fill_timestamp, OrderHistory.fill_id)
+                )
+            )
+
+    async def list_dividends_for(self, ticker: str) -> list[Dividend]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(Dividend)
+                    .where(Dividend.t212_ticker == ticker)
+                    .order_by(Dividend.paid_on)
+                )
+            )
+
     async def list_daily_holding_flows(self) -> list[DailyHoldingFlow]:
         async with self._session_factory() as session:
             return list(

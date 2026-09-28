@@ -261,6 +261,80 @@ class ExportReport(BaseModel):
     download_link: str | None = Field(default=None, alias="downloadLink")
 
 
+class InstrumentPricePointModel(DTOModel):
+    as_of_date: date = Field(alias="asOfDate")
+    close: Decimal
+    currency: str
+    close_eur: Decimal | None = Field(default=None, alias="closeEur")
+
+
+class InstrumentPositionPointModel(DTOModel):
+    as_of_date: date = Field(alias="asOfDate")
+    quantity: Decimal
+    value_eur: Decimal | None = Field(default=None, alias="valueEur")
+    invested_eur: Decimal = Field(alias="investedEur")
+
+
+class InstrumentTradeModel(DTOModel):
+    ts: datetime
+    side: str
+    quantity: Decimal | None = None
+    price: Decimal | None = None
+    value_eur: Decimal | None = Field(default=None, alias="valueEur")
+    realised_eur: Decimal | None = Field(default=None, alias="realisedEur")
+
+
+class InstrumentDividendModel(DTOModel):
+    paid_on: datetime = Field(alias="paidOn")
+    amount_eur: Decimal | None = Field(default=None, alias="amountEur")
+    quantity: Decimal | None = None
+    per_share: Decimal | None = Field(default=None, alias="perShare")
+
+
+class InstrumentPriceReturnModel(DTOModel):
+    key: str
+    label: str
+    start_date: date | None = Field(default=None, alias="startDate")
+    change_pct: float | None = Field(default=None, alias="changePct")
+
+
+class InstrumentPeriodResultModel(DTOModel):
+    key: str
+    label: str
+    result_eur: Decimal | None = Field(default=None, alias="resultEur")
+    return_pct: float | None = Field(default=None, alias="returnPct")
+    price_change_pct: float | None = Field(default=None, alias="priceChangePct")
+
+
+class InstrumentDetailModel(DTOModel):
+    """One instrument: its price history, your position in it, trades, dividends and results."""
+
+    ticker: str
+    name: str | None = None
+    isin: str | None = None
+    currency: str | None = None
+    instrument_type: str | None = Field(default=None, alias="instrumentType")
+    exchange: str | None = None
+    market_symbol: str | None = Field(default=None, alias="marketSymbol")
+    sector: str | None = None
+    quantity: Decimal
+    first_bought: datetime | None = Field(default=None, alias="firstBought")
+    bought_eur: Decimal = Field(alias="boughtEur")
+    sold_eur: Decimal = Field(alias="soldEur")
+    dividends_eur: Decimal = Field(alias="dividendsEur")
+    realised_eur: Decimal = Field(alias="realisedEur")
+    value_eur: Decimal | None = Field(default=None, alias="valueEur")
+    result_eur: Decimal | None = Field(default=None, alias="resultEur")
+    high: InstrumentPricePointModel | None = None
+    low: InstrumentPricePointModel | None = None
+    prices: list[InstrumentPricePointModel]
+    positions: list[InstrumentPositionPointModel]
+    trades: list[InstrumentTradeModel]
+    dividends: list[InstrumentDividendModel]
+    price_returns: list[InstrumentPriceReturnModel] = Field(alias="priceReturns")
+    periods: list[InstrumentPeriodResultModel]
+
+
 class CardHistoryStatusModel(DTOModel):
     enabled: bool
     last_requested_at: datetime | None = Field(default=None, alias="lastRequestedAt")
@@ -285,6 +359,11 @@ class CardTransactionModel(DTOModel):
     currency: str | None = None
     merchant_name: str | None = Field(default=None, alias="merchantName")
     merchant_category: str | None = Field(default=None, alias="merchantCategory")
+
+
+class CashbackEntryModel(DTOModel):
+    ts: datetime
+    amount: Decimal
 
 
 class SpendingGroupModel(DTOModel):
@@ -313,6 +392,9 @@ class CardSummaryModel(DTOModel):
     categories: list[SpendingGroupModel]
     merchants: list[SpendingGroupModel]
     transactions: list[CardTransactionModel]
+    cashback_entries: list[CashbackEntryModel] = Field(
+        default_factory=list, alias="cashbackEntries"
+    )
 
 
 class CardHistoryModel(DTOModel):

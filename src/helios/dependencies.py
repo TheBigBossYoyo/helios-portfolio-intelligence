@@ -12,6 +12,7 @@ from .card_history import CardHistoryService
 from .client import Trading212Client
 from .config import Settings, load_settings
 from .db import create_engine, create_session_factory, migrate_database
+from .instrument_detail import InstrumentDetailService
 from .news import NewsHttpClient, NewsReparseService, NewsSyncService
 from .performance import (
     AlphaVantageMarketDataProvider,
@@ -53,6 +54,7 @@ class Container:
     thesis_service: ThesisService
     t212_service: Trading212Service
     card_history_service: CardHistoryService
+    instrument_detail_service: InstrumentDetailService
     market_data_provider: object
     fx_rate_provider: object
     factor_data_provider: object
@@ -152,6 +154,7 @@ def build_container(settings: Settings | None = None) -> Container:
     thesis_service = ThesisService(portfolio_repository)
     service = Trading212Service(client)
     card_history_service = CardHistoryService(portfolio_repository, client, resolved_settings)
+    instrument_detail_service = InstrumentDetailService(portfolio_repository, resolved_settings)
     return Container(
         settings=resolved_settings,
         engine=engine,
@@ -170,6 +173,7 @@ def build_container(settings: Settings | None = None) -> Container:
         thesis_service=thesis_service,
         t212_service=service,
         card_history_service=card_history_service,
+        instrument_detail_service=instrument_detail_service,
         market_data_provider=market_data_provider,
         fx_rate_provider=fx_rate_provider,
         factor_data_provider=factor_data_provider,
@@ -196,6 +200,10 @@ def get_portfolio_quality_report_service(request: Request) -> PortfolioQualityRe
 
 def get_performance_replay_service(request: Request) -> PerformanceReplayService:
     return get_container(request).performance_replay_service
+
+
+def get_instrument_detail_service(request: Request) -> InstrumentDetailService:
+    return get_container(request).instrument_detail_service
 
 
 def get_card_history_service(request: Request) -> CardHistoryService:

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   ArrowUpRight,
   BrainCircuit,
@@ -52,6 +53,7 @@ import {
   formatRatio,
   formatSignedPercent,
   displayTicker,
+  holdingHref,
 } from "@/lib/format";
 import {
   compoundReturns,
@@ -386,9 +388,9 @@ export default async function OverviewPage({
 
         <Panel
           actions={
-            <a className={`${LINK} inline-flex items-center gap-1 text-sm`} href="/holdings">
+            <Link className={`${LINK} inline-flex items-center gap-1 text-sm`} href="/holdings">
               All holdings <ArrowUpRight aria-hidden="true" size={15} />
-            </a>
+            </Link>
           }
           subtitle="By current value, as a share of what is invested."
           title="Largest holdings"
@@ -398,6 +400,7 @@ export default async function OverviewPage({
               <BarList
                 items={largest.map((position) => ({
                   key: position.instrument.ticker,
+                  href: holdingHref(position.instrument.ticker),
                   label: displayTicker(position.instrument.ticker),
                   sublabel: position.instrument.name,
                   value: walletValue(position),
