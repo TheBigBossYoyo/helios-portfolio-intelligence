@@ -42,6 +42,7 @@ type LocalAction =
   | "card-refresh"
   | "card-budget"
   | "alerts-write"
+  | "watchlist-write"
   | "ai-analyse"
   | "thesis-write"
   | "journal-write"
@@ -256,6 +257,23 @@ export async function deleteAlertAction(id: number, ticker: string): Promise<Act
     method: "DELETE",
     successMessage: "Alert removed.",
     revalidate: [`/holdings/${encodeURIComponent(ticker)}`],
+  });
+}
+
+/** Follow an instrument: its prices and news are fetched in the background. */
+export async function watchTickerAction(ticker: string): Promise<ActionResult> {
+  return mutate("/api/v1/watchlist", "watchlist-write", {
+    body: { ticker },
+    successMessage: "Watching. Prices and news arrive within a minute or two.",
+    revalidate: ["/watchlist", `/holdings/${encodeURIComponent(ticker)}`],
+  });
+}
+
+export async function unwatchTickerAction(ticker: string): Promise<ActionResult> {
+  return mutate(`/api/v1/watchlist/${encodeURIComponent(ticker)}`, "watchlist-write", {
+    method: "DELETE",
+    successMessage: "Removed from the watchlist.",
+    revalidate: ["/watchlist", `/holdings/${encodeURIComponent(ticker)}`],
   });
 }
 

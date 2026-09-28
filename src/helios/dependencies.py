@@ -25,6 +25,7 @@ from .performance import (
     NullFactorDataProvider,
     NullMarketDataProvider,
     PerformanceReplayService,
+    QuoteProvider,
     TwelveDataMarketDataProvider,
 )
 from .portfolio_repository import PortfolioRepository
@@ -35,6 +36,7 @@ from .resolver import OpenFigiResolver
 from .services import Trading212Service
 from .t212_reparse import T212ReparseService
 from .thesis import ThesisService
+from .watchlist import WatchlistService
 
 
 @dataclass
@@ -58,6 +60,7 @@ class Container:
     card_history_service: CardHistoryService
     instrument_detail_service: InstrumentDetailService
     alert_service: AlertService
+    watchlist_service: WatchlistService
     daily_summary_service: DailySummaryService
     market_data_provider: object
     fx_rate_provider: object
@@ -161,7 +164,13 @@ def build_container(settings: Settings | None = None) -> Container:
     service = Trading212Service(client)
     card_history_service = CardHistoryService(portfolio_repository, client, resolved_settings)
     instrument_detail_service = InstrumentDetailService(portfolio_repository, resolved_settings)
-    alert_service = AlertService(portfolio_repository, service, resolved_settings)
+    alert_service = AlertService(
+        portfolio_repository,
+        service,
+        resolved_settings,
+        quotes=cast(QuoteProvider, market_data_provider),
+    )
+    watchlist_service = WatchlistService(portfolio_repository, resolver)
     daily_summary_service = DailySummaryService(
         portfolio_repository, performance_service, news_service, resolved_settings
     )
@@ -185,6 +194,7 @@ def build_container(settings: Settings | None = None) -> Container:
         card_history_service=card_history_service,
         instrument_detail_service=instrument_detail_service,
         alert_service=alert_service,
+        watchlist_service=watchlist_service,
         daily_summary_service=daily_summary_service,
         market_data_provider=market_data_provider,
         fx_rate_provider=fx_rate_provider,

@@ -4,6 +4,7 @@ import {
   BookOpen,
   ChartLine,
   CreditCard,
+  Eye,
   LayoutDashboard,
   Lock,
   Menu,
@@ -22,6 +23,7 @@ import { ThemeToggle } from "./theme-toggle";
 const LINKS = [
   { href: "/", label: "Overview", Icon: LayoutDashboard },
   { href: "/holdings", label: "Holdings", Icon: Wallet },
+  { href: "/watchlist", label: "Watchlist", Icon: Eye },
   { href: "/performance", label: "Performance", Icon: ChartLine },
   { href: "/card", label: "Card", Icon: CreditCard },
   { href: "/news", label: "News", Icon: Newspaper },

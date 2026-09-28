@@ -453,6 +453,16 @@ class T212ExportRow(Base):
     export_id: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class WatchlistItem(Base):
+    """An instrument followed without owning it: priced, in the news, and alertable."""
+
+    __tablename__ = "watchlist"
+
+    t212_ticker: Mapped[str] = mapped_column(String(64), primary_key=True)
+    added_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class PriceAlert(Base):
     """"Tell me when...": a price level, or a gain or loss on the average cost, for one ticker."""
 

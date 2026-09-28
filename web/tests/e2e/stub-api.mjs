@@ -994,8 +994,34 @@ const notifications = [
   },
 ];
 
+// One followed instrument, and a small slice of the catalogue for search.
+const watchlist = [
+  {
+    ticker: "ASML_US_EQ",
+    name: "ASML Holding",
+    currency: "USD",
+    instrumentType: "STOCK",
+    note: "wait for a pullback",
+    addedAt: "2024-04-01T10:00:00Z",
+    held: false,
+    priced: true,
+    lastClose: "912.40",
+    lastDate: "2024-04-26",
+    dayChangePct: -0.021,
+    monthChangePct: 0.064,
+    activeAlerts: 1,
+  },
+];
+
+const catalogue = [
+  { ticker: "AAPL_US_EQ", name: "Apple Inc.", isin: "US0378331005", currency: "USD", instrumentType: "STOCK", watched: false, held: true },
+  { ticker: "APLE_US_EQ", name: "Apple Hospitality REIT", isin: "US03784Y2000", currency: "USD", instrumentType: "STOCK", watched: false, held: false },
+  { ticker: "ASML_US_EQ", name: "ASML Holding", isin: "USN070592100", currency: "USD", instrumentType: "STOCK", watched: true, held: false },
+];
+
 const ROUTES = {
   "/health": health,
+  "/api/v1/watchlist": watchlist,
   "/api/v1/alerts": alerts,
   "/api/v1/notifications": notifications,
   "/api/v1/card": cardHistory,
@@ -1057,6 +1083,8 @@ const MUTATIONS = {
   "POST /api/v1/performance/replay": { action: "replay", body: replaySummary },
   "POST /api/v1/news/sync": { action: "news-sync", body: newsSyncSummary },
   "POST /api/v1/alerts": { action: "alerts-write", body: alerts[0] },
+  "POST /api/v1/watchlist": { action: "watchlist-write", body: watchlist },
+  "DELETE /api/v1/watchlist/{ticker}": { action: "watchlist-write", body: null },
   "DELETE /api/v1/alerts/{id}": { action: "alerts-write", body: null },
   "PUT /api/v1/card/budgets": {
     action: "card-budget",
@@ -1138,6 +1166,9 @@ function mutationKey(method, path) {
   if (/^\/api\/v1\/theses\/[^/]+\/transition$/.test(path) && method === "POST") {
     return "POST /api/v1/theses/{id}/transition";
   }
+  if (/^\/api\/v1\/watchlist\/[^/]+$/.test(path) && method === "DELETE") {
+    return "DELETE /api/v1/watchlist/{ticker}";
+  }
   if (/^\/api\/v1\/alerts\/[^/]+$/.test(path) && method === "DELETE") {
     return "DELETE /api/v1/alerts/{id}";
   }
@@ -1189,6 +1220,12 @@ createServer((request, response) => {
   }
 
   let body = ROUTES[path];
+  if (path === "/api/v1/instruments") {
+    const needle = (new URLSearchParams(query).get("q") || "").toLowerCase();
+    body = catalogue.filter(
+      (item) => item.name.toLowerCase().includes(needle) || item.ticker.toLowerCase().includes(needle),
+    );
+  }
   if (path === "/api/v1/news") {
     const params = new URLSearchParams(query);
     const ticker = params.get("ticker");

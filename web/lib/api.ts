@@ -10,7 +10,9 @@ import type {
   AppNotification,
   CardHistory,
   InstrumentDetail,
+  InstrumentMatch,
   PriceAlert,
+  WatchEntry,
   NewsItem,
   NewsRelevance,
   PerformanceReport,
@@ -388,6 +390,17 @@ export function getInstrumentDetail(ticker: string): Promise<ApiResult<Instrumen
 
 export function parseList<T>(value: unknown): T[] | null {
   return Array.isArray(value) ? (value as T[]) : null;
+}
+
+export function getWatchlist(): Promise<ApiResult<WatchEntry[]>> {
+  return getJson("/api/v1/watchlist", parseList<WatchEntry>);
+}
+
+export function searchInstruments(query: string): Promise<ApiResult<InstrumentMatch[]>> {
+  return getJson(
+    `/api/v1/instruments?q=${encodeURIComponent(query)}&limit=20`,
+    parseList<InstrumentMatch>,
+  );
 }
 
 export function getAlerts(ticker?: string): Promise<ApiResult<PriceAlert[]>> {

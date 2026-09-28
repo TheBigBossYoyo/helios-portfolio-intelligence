@@ -311,6 +311,31 @@ test.describe("card", () => {
   });
 });
 
+test.describe("watchlist", () => {
+  test("lists followed instruments with their moves and alerts", async ({ page }) => {
+    await page.goto("/watchlist");
+
+    const following = page.locator("section", { hasText: "Each opens the same page" }).last();
+    await expect(following.getByRole("link", { name: "ASML Holding" })).toHaveAttribute(
+      "href",
+      "/holdings/ASML_US_EQ",
+    );
+    await expect(following.getByText("912.40 USD")).toBeVisible();
+    await expect(following.getByText("+6.4%")).toBeVisible();
+    await expect(following.getByText("1 waiting")).toBeVisible();
+  });
+
+  test("searches the catalogue and marks what is already followed or owned", async ({ page }) => {
+    await page.goto("/watchlist");
+    await page.getByLabel("Search instruments").fill("apple");
+    await page.getByRole("button", { name: "Search" }).click();
+
+    await expect(page).toHaveURL(/q=apple/);
+    await expect(page.getByRole("button", { name: "Watch (you own it)" })).toBeVisible();
+    await expect(page.getByText("Apple Hospitality REIT")).toBeVisible();
+  });
+});
+
 test.describe("holding detail", () => {
   test("opens from the holdings list with price, position, trades and news", async ({ page }) => {
     await page.goto("/holdings");

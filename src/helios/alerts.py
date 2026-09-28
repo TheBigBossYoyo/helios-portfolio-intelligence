@@ -20,7 +20,13 @@ from typing import Literal, Protocol
 from .config import Settings
 from .models import Notification
 from .news import RankedNewsItem
-from .performance import NoPerformanceDataError, PerformanceReport
+from .performance import (
+    MarketDataProviderError,
+    NoPerformanceDataError,
+    PerformanceReport,
+    PriceRequest,
+    QuoteProvider,
+)
 from .periods import PeriodSummary
 from .portfolio_repository import PortfolioRepository
 from .rate_limit import Clock, SystemClock
@@ -87,11 +93,13 @@ class AlertService:
         positions: PositionSource,
         settings: Settings,
         clock: Clock | None = None,
+        quotes: QuoteProvider | None = None,
     ) -> None:
         self._repository = repository
         self._positions = positions
         self._settings = settings
         self._clock = clock or SystemClock()
+        self._live_quotes = quotes
 
     async def evaluate(self) -> list[Notification]:
         """Check every active alert once; fire (and switch off) those that are met."""
@@ -144,14 +152,36 @@ class AlertService:
                         name=position.instrument.name,
                         live=True,
                     )
-        for ticker in tickers - set(quotes):
+        missing = tickers - set(quotes)
+        instruments = await self._repository.get_cached_instruments_by_tickers(missing)
+        for ticker in sorted(missing):
+            # Not held: a live (usually delayed) quote from the price provider where it offers
+            # one, so a watchlist alert fires during the day rather than on the next close.
+            instrument = instruments.get(ticker)
+            if self._live_quotes is not None and instrument and instrument.yahoo_ticker:
+                currency = (instrument.currency_code or "").upper() or None
+                try:
+                    price = await self._live_quotes.latest_price(
+                        PriceRequest(ticker, instrument.yahoo_ticker, currency)
+                    )
+                except MarketDataProviderError:
+                    price = None
+                if price is not None:
+                    quotes[ticker] = Quote(
+                        price=price,
+                        currency=currency,
+                        average_cost=None,
+                        name=instrument.name,
+                        live=True,
+                    )
+                    continue
             prices = await self._repository.list_prices_for(ticker)
             if prices:
                 quotes[ticker] = Quote(
                     price=prices[-1].close_price,
                     currency=prices[-1].currency_code,
                     average_cost=None,
-                    name=None,
+                    name=instrument.name if instrument else None,
                     live=False,
                 )
         return quotes

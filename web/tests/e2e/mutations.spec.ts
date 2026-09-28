@@ -101,6 +101,20 @@ test.describe("pipeline controls", () => {
     expect(removed?.action).toBe("alerts-write");
   });
 
+  test("watching and unwatching carry the local-action header", async ({ page, request }) => {
+    await page.goto("/watchlist?q=hospitality");
+    await page.getByRole("button", { name: "Watch", exact: true }).click();
+    await expect(page.getByText(/Watching\. Prices and news arrive/)).toBeVisible();
+    const added = lastFor(await recorded(request), "POST", /\/api\/v1\/watchlist$/);
+    expect(added?.action).toBe("watchlist-write");
+    expect(JSON.parse(added?.body ?? "{}")).toEqual({ ticker: "APLE_US_EQ" });
+
+    await page.getByRole("button", { name: "Remove" }).first().click();
+    await expect(page.getByText("Removed from the watchlist.")).toBeVisible();
+    const removed = lastFor(await recorded(request), "DELETE", /\/api\/v1\/watchlist\/ASML_US_EQ$/);
+    expect(removed?.action).toBe("watchlist-write");
+  });
+
   test("a replay confirms first, then reports what it wrote", async ({ page, request }) => {
     await page.goto("/performance");
 

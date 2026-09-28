@@ -35,6 +35,7 @@ from .models import (
     T212ExportRow,
     Thesis,
     Transaction,
+    WatchlistItem,
 )
 from .portfolio_transforms import InstrumentSeed
 
@@ -428,6 +429,90 @@ class PortfolioRepository:
                 for row in rows:
                     await session.merge(row)
         return len(rows)
+
+    # -- Watchlist ---------------------------------------------------------------------------
+
+    async def list_watchlist(self) -> list[WatchlistItem]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(select(WatchlistItem).order_by(WatchlistItem.added_at))
+            )
+
+    async def add_watch(self, ticker: str, *, note: str | None, now: datetime) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await session.merge(WatchlistItem(t212_ticker=ticker, added_at=now, note=note))
+
+    async def remove_watch(self, ticker: str) -> bool:
+        async with self._session_factory() as session:
+            async with session.begin():
+                result = await session.execute(
+                    delete(WatchlistItem).where(WatchlistItem.t212_ticker == ticker)
+                )
+            return bool(getattr(result, "rowcount", 0))
+
+    async def search_instruments(self, query: str, *, limit: int = 20) -> list[Instrument]:
+        """Catalogue search by ticker, short name or name; exact and prefix matches first."""
+        text = query.strip()
+        if not text:
+            return []
+        pattern = f"%{text}%"
+        upper = text.upper()
+        rank = case(
+            (func.upper(Instrument.short_name) == upper, 0),
+            (func.upper(Instrument.t212_ticker).like(f"{upper}\\_%", escape="\\"), 1),
+            (func.upper(Instrument.name).like(f"{upper}%"), 2),
+            else_=3,
+        )
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(Instrument)
+                    .where(
+                        Instrument.name.ilike(pattern)
+                        | Instrument.short_name.ilike(pattern)
+                        | Instrument.t212_ticker.ilike(pattern)
+                        | (Instrument.isin == upper)
+                    )
+                    .order_by(rank, func.length(Instrument.name), Instrument.t212_ticker)
+                    .limit(limit)
+                )
+            )
+
+    async def set_instrument_mapping(
+        self,
+        ticker: str,
+        *,
+        yahoo_ticker: str | None,
+        status: str,
+        source: str | None,
+        details: dict[str, object] | None,
+        now: datetime,
+    ) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await session.execute(
+                    update(Instrument)
+                    .where(Instrument.t212_ticker == ticker)
+                    .values(
+                        yahoo_ticker=yahoo_ticker,
+                        mapping_status=status,
+                        mapping_source=source,
+                        mapping_details_json=details,
+                        mapped_at=now,
+                    )
+                )
+
+    async def held_tickers(self) -> set[str]:
+        async with self._session_factory() as session:
+            latest_ts = await session.scalar(select(func.max(PositionLive.ts)))
+            if latest_ts is None:
+                return set()
+            return set(
+                await session.scalars(
+                    select(PositionLive.t212_ticker).where(PositionLive.ts == latest_ts)
+                )
+            )
 
     # -- Alerts and notifications ------------------------------------------------------------
 
@@ -843,19 +928,22 @@ class PortfolioRepository:
             )
 
     async def list_instrument_news_targets(self) -> list[InstrumentNewsTarget]:
-        """Instruments you currently hold, with the fields a news template can substitute.
+        """Instruments you hold or watch, with the fields a news template can substitute.
 
-        Scoped to live positions on purpose. The instruments table is the full Trading 212
-        catalogue -- around 17,000 rows -- and a news source is fetched once per target per feed,
-        so using it would issue tens of thousands of outbound requests per sync and get the
-        deployment rate-limited or blocked by the publisher. It would also be useless: news about
-        instruments you do not own is noise.
+        Scoped to live positions and the watchlist on purpose. The instruments table is the full
+        Trading 212 catalogue -- around 17,000 rows -- and a news source is fetched once per
+        target per feed, so using it would issue tens of thousands of outbound requests per sync
+        and get the deployment rate-limited or blocked by the publisher. It would also be useless:
+        news about instruments you neither own nor follow is noise.
         """
         async with self._session_factory() as session:
             latest_ts = await session.scalar(select(func.max(PositionLive.ts)))
-            if latest_ts is None:
-                return []
-            held = select(PositionLive.t212_ticker).where(PositionLive.ts == latest_ts)
+            watched = select(WatchlistItem.t212_ticker)
+            held = (
+                select(PositionLive.t212_ticker).where(PositionLive.ts == latest_ts)
+                if latest_ts is not None
+                else select(PositionLive.t212_ticker).where(PositionLive.ts.is_(None))
+            )
             rows = await session.execute(
                 select(
                     Instrument.t212_ticker,
@@ -863,7 +951,7 @@ class PortfolioRepository:
                     Instrument.yahoo_ticker,
                     Instrument.name,
                 )
-                .where(Instrument.t212_ticker.in_(held))
+                .where(Instrument.t212_ticker.in_(held) | Instrument.t212_ticker.in_(watched))
                 .order_by(Instrument.t212_ticker)
             )
             return [

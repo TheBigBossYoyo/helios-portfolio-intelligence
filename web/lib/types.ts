@@ -345,6 +345,33 @@ export interface InstrumentDetail {
   }[];
 }
 
+export interface InstrumentMatch {
+  ticker: string;
+  name: string | null;
+  isin: string | null;
+  currency: string | null;
+  instrumentType: string | null;
+  watched: boolean;
+  held: boolean;
+}
+
+export interface WatchEntry {
+  ticker: string;
+  name: string | null;
+  currency: string | null;
+  instrumentType: string | null;
+  note: string | null;
+  addedAt: string;
+  held: boolean;
+  /** False when no market symbol was found for the listing: no prices, no alerts. */
+  priced: boolean;
+  lastClose: string | null;
+  lastDate: string | null;
+  dayChangePct: number | null;
+  monthChangePct: number | null;
+  activeAlerts: number;
+}
+
 export type AlertKind = "above" | "below" | "gain_pct" | "loss_pct";
 
 export interface PriceAlert {

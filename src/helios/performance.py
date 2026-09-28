@@ -417,6 +417,12 @@ class MarketDataProvider(Protocol):
         ...
 
 
+class QuoteProvider(Protocol):
+    async def latest_price(self, request: PriceRequest) -> Decimal | None:
+        """The latest traded price (delayed on free plans), or None when not available."""
+        ...
+
+
 class FxRateProvider(Protocol):
     async def fetch_eur_base_rates(
         self,
@@ -449,6 +455,10 @@ class NullMarketDataProvider:
     ) -> dict[str, list[DailyPricePoint]]:
         del requests, start_date, end_date, skip_notes
         return {}
+
+    async def latest_price(self, request: PriceRequest) -> Decimal | None:
+        del request
+        return None
 
 
 class NullFactorDataProvider:
@@ -670,6 +680,12 @@ class TwelveDataMarketDataProvider:
                 )
             results[request.key] = sorted(points, key=lambda item: item.as_of_date)
         return results
+
+    async def latest_price(self, request: PriceRequest) -> Decimal | None:
+        _, exchange = _split_yahoo_symbol(request.provider_symbol)
+        if (exchange or "US") not in self._covered_exchanges:
+            return None
+        return await _twelvedata_latest(self, request)
 
     @staticmethod
     def _resolve_currency(request: PriceRequest, payload: Mapping[str, object]) -> str | None:
@@ -944,6 +960,11 @@ class AlphaVantageMarketDataProvider:
             results[request.key] = sorted(points, key=lambda item: item.as_of_date)
         return results
 
+    async def latest_price(self, request: PriceRequest) -> Decimal | None:
+        """Not offered: 25 free calls a day cannot be spent on intraday quotes."""
+        del request
+        return None
+
 
 #: Yahoo exchange suffix -> EODHD exchange code. No suffix is a US listing.
 EODHD_EXCHANGES: dict[str | None, str] = {
@@ -1096,6 +1117,52 @@ class EodhdMarketDataProvider:
             results[request.key] = sorted(points, key=lambda item: item.as_of_date)
         return results
 
+    async def latest_price(self, request: PriceRequest) -> Decimal | None:
+        """EODHD's real-time endpoint (delayed ~15 minutes): ``{"close": ...}``."""
+
+        symbol = _eodhd_symbol(request.provider_symbol)
+        if self._api_key is None or symbol is None:
+            return None
+        response = await _provider_get(
+            self._client,
+            f"{self._settings.eodhd_base_url.rstrip('/')}/real-time/{symbol}",
+            params={"api_token": self._api_key.get_secret_value(), "fmt": "json"},
+            provider="EODHD",
+            pacer=self._pacer,
+            passthrough=_EODHD_ACCOUNT_STATUSES | _EODHD_SYMBOL_STATUSES,
+        )
+        if response.status_code >= 400:
+            return None
+        payload = response.json()
+        close = payload.get("close") if isinstance(payload, dict) else None
+        if not isinstance(close, (int, float, str)) or str(close) in {"NA", ""}:
+            return None
+        return Decimal(str(close))
+
+
+async def _twelvedata_latest(
+    provider: TwelveDataMarketDataProvider, request: PriceRequest
+) -> Decimal | None:
+    """Twelve Data's ``/price`` endpoint: one credit, the latest price in ``{"price": "..."}``."""
+
+    api_key = provider._api_key
+    if api_key is None:
+        return None
+    root = provider._settings.twelvedata_base_url.rsplit("/", 1)[0]
+    response = await _provider_get(
+        provider._client,
+        f"{root}/price",
+        params={
+            **_twelvedata_symbol_params(request.provider_symbol),
+            "apikey": api_key.get_secret_value(),
+        },
+        provider="Twelve Data",
+        pacer=provider._pacer,
+    )
+    payload = response.json()
+    price = payload.get("price") if isinstance(payload, dict) else None
+    return Decimal(str(price)) if isinstance(price, (str, int, float)) else None
+
 
 class CompositeMarketDataProvider:
     """Ask a primary provider for every symbol, then ask a fallback only for what it missed.
@@ -1127,6 +1194,19 @@ class CompositeMarketDataProvider:
             close = getattr(provider, "aclose", None)
             if close is not None:
                 await close()
+
+    async def latest_price(self, request: PriceRequest) -> Decimal | None:
+        for provider in (self._primary, self._fallback):
+            quote = getattr(provider, "latest_price", None)
+            if quote is None:
+                continue
+            try:
+                price = await quote(request)
+            except MarketDataProviderError:
+                price = None
+            if price is not None:
+                return cast(Decimal, price)
+        return None
 
     async def fetch_daily_closes(
         self,

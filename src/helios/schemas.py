@@ -397,6 +397,37 @@ class CardSummaryModel(DTOModel):
     )
 
 
+class InstrumentMatchModel(DTOModel):
+    ticker: str
+    name: str | None = None
+    isin: str | None = None
+    currency: str | None = None
+    instrument_type: str | None = Field(default=None, alias="instrumentType")
+    watched: bool
+    held: bool
+
+
+class WatchEntryModel(DTOModel):
+    ticker: str
+    name: str | None = None
+    currency: str | None = None
+    instrument_type: str | None = Field(default=None, alias="instrumentType")
+    note: str | None = None
+    added_at: datetime = Field(alias="addedAt")
+    held: bool
+    priced: bool
+    last_close: Decimal | None = Field(default=None, alias="lastClose")
+    last_date: date | None = Field(default=None, alias="lastDate")
+    day_change_pct: float | None = Field(default=None, alias="dayChangePct")
+    month_change_pct: float | None = Field(default=None, alias="monthChangePct")
+    active_alerts: int = Field(alias="activeAlerts")
+
+
+class WatchRequest(DTOModel):
+    ticker: str = Field(min_length=1, max_length=64)
+    note: str | None = Field(default=None, max_length=200)
+
+
 class PriceAlertModel(DTOModel):
     id: int
     ticker: str

@@ -13,6 +13,7 @@ import {
   getInstrumentDetail,
   getNews,
   getAlerts,
+  getWatchlist,
   getPositions,
   getTheses,
 } from "@/lib/api";
@@ -27,7 +28,12 @@ import {
   formatQuantity,
   formatSignedPercent,
 } from "@/lib/format";
-import { createAlertAction, deleteAlertAction } from "@/lib/actions";
+import {
+  createAlertAction,
+  deleteAlertAction,
+  unwatchTickerAction,
+  watchTickerAction,
+} from "@/lib/actions";
 import type { InstrumentDetail } from "@/lib/types";
 import { CARD, LINK } from "@/lib/ui";
 
@@ -191,13 +197,14 @@ export default async function HoldingDetailPage({
   const range: RangeKey = RANGES.some((item) => item.key === rawRange)
     ? (rawRange as RangeKey)
     : "6M";
-  const [result, positions, account, news, theses, alerts] = await Promise.all([
+  const [result, positions, account, news, theses, alerts, watchlist] = await Promise.all([
     getInstrumentDetail(ticker),
     getPositions(),
     getAccountSummary(),
     getNews({ ticker, limit: 8, mentionsOnly: true }),
     getTheses(),
     getAlerts(ticker),
+    getWatchlist(),
   ]);
 
   const back = (
@@ -253,11 +260,35 @@ export default async function HoldingDetailPage({
     }));
   const myTheses = theses.ok ? theses.data.filter((item) => item.t212Ticker === ticker) : [];
   const title = detail.name ?? displayTicker(ticker);
+  // Never owned: a watched (or just looked-up) instrument. The position sections would be empty.
+  const everOwned = detail.trades.length > 0 || quantity > 0;
+  const watching = watchlist.ok && watchlist.data.some((item) => item.ticker === ticker);
+  const watchButton =
+    quantity > 0 ? null : watching ? (
+      <ActionButton
+        action={unwatchTickerAction.bind(null, ticker)}
+        label="Watching · remove"
+        pendingLabel="Removing…"
+        variant="secondary"
+      />
+    ) : (
+      <ActionButton
+        action={watchTickerAction.bind(null, ticker)}
+        label="Watch"
+        pendingLabel="Adding…"
+        variant="primary"
+      />
+    );
 
   return (
     <>
       <PageHeader
-        actions={back}
+        actions={
+          <div className="flex items-center gap-3">
+            {watchButton}
+            {back}
+          </div>
+        }
         description={
           <>
             <span className="font-medium text-ink-2">{displayTicker(ticker)}</span>
@@ -284,6 +315,7 @@ export default async function HoldingDetailPage({
               : "No price history yet"}
           </span>
         </div>
+        {everOwned ? (
         <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:col-span-2">
           <Figure label="You own" value={quantity > 0 ? `${formatQuantity(String(quantity))} shares` : "None now"} />
           <Figure
@@ -310,6 +342,14 @@ export default async function HoldingDetailPage({
             value={detail.firstBought ? formatDay(detail.firstBought) : EMPTY}
           />
         </dl>
+        ) : (
+          <div className="flex items-center lg:col-span-2">
+            <Note>
+              You don&apos;t own this. {watching ? "You're watching it: " : "Watch it to get "}
+              its daily prices, the news that names it, and price alerts.
+            </Note>
+          </div>
+        )}
       </section>
 
       <Panel
@@ -359,6 +399,8 @@ export default async function HoldingDetailPage({
         ) : null}
       </Panel>
 
+      {everOwned ? (
+      <>
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <Panel
           subtitle="What your shares were worth each day, against the money you had in them. The gap is your result."
@@ -399,6 +441,8 @@ export default async function HoldingDetailPage({
           rows={[...detail.trades].reverse()}
         />
       </Panel>
+      </>
+      ) : null}
 
       {detail.dividends.length > 0 ? (
         <Panel subtitle="Paid into your account." title="Dividends">

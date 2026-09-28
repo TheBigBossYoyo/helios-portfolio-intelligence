@@ -87,6 +87,7 @@ from .schemas import (
     EditableSettingResponse,
     HealthResponse,
     InstrumentDetailModel,
+    InstrumentMatchModel,
     JournalCreateRequest,
     JournalEntryModel,
     NewsItemModel,
@@ -108,6 +109,8 @@ from .schemas import (
     ThesisTransitionRequest,
     Trading212ConnectRequest,
     Trading212ConnectResponse,
+    WatchEntryModel,
+    WatchRequest,
 )
 from .services import Trading212Service
 from .settings_service import (
@@ -129,6 +132,7 @@ from .thesis import (
     allowed_transitions,
     is_editable,
 )
+from .watchlist import UnknownInstrumentError as WatchUnknownInstrumentError
 
 logger = get_logger(__name__)
 
@@ -360,6 +364,60 @@ async def get_instrument_detail(
             status_code=status.HTTP_404_NOT_FOUND, detail="Unknown instrument"
         ) from exc
     return InstrumentDetailModel.model_validate(detail, from_attributes=True)
+
+
+@router.get("/api/v1/instruments", response_model=list[InstrumentMatchModel])
+async def search_instruments(
+    container: Annotated[Container, Depends(get_container)],
+    q: Annotated[str, Query(min_length=1, max_length=64)],
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> list[InstrumentMatchModel]:
+    """Search Trading 212's instrument catalogue by ticker, name or ISIN."""
+
+    matches = await container.watchlist_service.search(q, limit=limit)
+    return [InstrumentMatchModel.model_validate(item, from_attributes=True) for item in matches]
+
+
+@router.get("/api/v1/watchlist", response_model=list[WatchEntryModel])
+async def list_watchlist(
+    container: Annotated[Container, Depends(get_container)],
+) -> list[WatchEntryModel]:
+    entries = await container.watchlist_service.entries()
+    return [WatchEntryModel.model_validate(entry, from_attributes=True) for entry in entries]
+
+
+@router.post("/api/v1/watchlist", response_model=list[WatchEntryModel])
+async def add_to_watchlist(
+    request: WatchRequest,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("watchlist-write"))],
+) -> list[WatchEntryModel]:
+    """Follow an instrument; its prices and news are fetched in the background."""
+
+    try:
+        await container.watchlist_service.add(
+            request.ticker, note=(request.note or "").strip() or None
+        )
+    except WatchUnknownInstrumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not in Trading 212's instrument list. Sync once so Helios has the catalogue.",
+        ) from exc
+    task = asyncio.create_task(_refresh_after_sync(container))
+    _background_refreshes.add(task)
+    task.add_done_callback(_background_refreshes.discard)
+    entries = await container.watchlist_service.entries()
+    return [WatchEntryModel.model_validate(entry, from_attributes=True) for entry in entries]
+
+
+@router.delete("/api/v1/watchlist/{ticker}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_from_watchlist(
+    ticker: str,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("watchlist-write"))],
+) -> None:
+    if not await container.watchlist_service.remove(ticker):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not on the watchlist")
 
 
 @router.get("/api/v1/alerts", response_model=list[PriceAlertModel])
