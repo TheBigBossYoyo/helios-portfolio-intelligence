@@ -397,11 +397,31 @@ class CardSummaryModel(DTOModel):
     )
 
 
+class CardBudgetModel(DTOModel):
+    category: str
+    monthly_limit: Decimal = Field(alias="monthlyLimit")
+
+
+class CardBudgetWriteRequest(DTOModel):
+    category: str = Field(min_length=1, max_length=64)
+    #: None (or omitted) removes the budget.
+    monthly_limit: Decimal | None = Field(default=None, alias="monthlyLimit", ge=0)
+
+
+class UnlabelledWithdrawalModel(DTOModel):
+    reference: str
+    ts: datetime
+    amount: Decimal
+    currency: str | None = None
+
+
 class CardHistoryModel(DTOModel):
     """Card spending from Trading 212 exports, and where the export pipeline stands."""
 
     status: CardHistoryStatusModel
     summary: CardSummaryModel
+    budgets: list[CardBudgetModel] = Field(default_factory=list)
+    unlabelled: list[UnlabelledWithdrawalModel] = Field(default_factory=list)
 
 
 class NewsItemModel(DTOModel):

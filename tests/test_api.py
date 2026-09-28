@@ -433,6 +433,7 @@ MUTATING_ROUTES: list[tuple[str, str, str]] = [
     ("POST", "/api/v1/performance/replay", "replay"),
     ("POST", "/api/v1/news/sync", "news-sync"),
     ("POST", "/api/v1/card/refresh", "card-refresh"),
+    ("PUT", "/api/v1/card/budgets", "card-budget"),
     ("POST", "/api/v1/ai/analyse", "ai-analyse"),
     ("POST", "/api/v1/theses", "thesis-write"),
     ("PATCH", "/api/v1/theses/1", "thesis-write"),
@@ -493,6 +494,7 @@ def test_guard_covers_every_mutating_route_the_router_declares(tmp_path: Path) -
         ("POST", "/api/v1/performance/replay"),
         ("POST", "/api/v1/news/sync"),
         ("POST", "/api/v1/card/refresh"),
+        ("PUT", "/api/v1/card/budgets"),
         ("POST", "/api/v1/ai/analyse"),
         ("POST", "/api/v1/theses"),
         ("PATCH", "/api/v1/theses/{thesis_id}"),
@@ -1122,3 +1124,32 @@ def test_card_history_reads_freely_but_refreshing_needs_the_local_action(tmp_pat
     # No credentials in this test: nothing is requested, and the answer says why.
     assert allowed.status_code == 200
     assert allowed.json()["action"] == "disabled"
+
+
+def test_card_budgets_are_set_listed_and_removed(tmp_path: Path) -> None:
+    app = create_app(Settings(data_dir=tmp_path))
+    headers = {"X-Helios-Local-Action": "card-budget"}
+
+    with TestClient(app) as client:
+        denied = client.put(
+            "/api/v1/card/budgets", json={"category": "MEMBERSHIPS", "monthlyLimit": "50"}
+        )
+        created = client.put(
+            "/api/v1/card/budgets",
+            json={"category": "memberships", "monthlyLimit": "50"},
+            headers=headers,
+        )
+        listed = client.get("/api/v1/card").json()["budgets"]
+        negative = client.put(
+            "/api/v1/card/budgets", json={"category": "X", "monthlyLimit": "-1"}, headers=headers
+        )
+        removed = client.put(
+            "/api/v1/card/budgets", json={"category": "MEMBERSHIPS"}, headers=headers
+        )
+
+    assert denied.status_code == 403
+    assert created.status_code == 200
+    # Categories are stored in Trading 212's own upper-case codes.
+    assert listed == [{"category": "MEMBERSHIPS", "monthlyLimit": "50"}]
+    assert negative.status_code == 422
+    assert removed.json() == []

@@ -99,6 +99,7 @@ export function displayTicker(ticker: string): string {
 /** "SERVICE_PROVIDERS" -> "Service providers": Trading 212's category codes, read as words. */
 export function categoryLabel(code: string | null): string {
   if (!code || code === "UNCATEGORISED") return "Uncategorised";
+  if (code === "PENDING_EXPORT") return "Awaiting export";
   const words = code.toLowerCase().replace(/_/g, " ");
   return words.charAt(0).toUpperCase() + words.slice(1);
 }

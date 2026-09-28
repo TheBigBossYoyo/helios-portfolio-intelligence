@@ -154,6 +154,53 @@ class ExportClient(Protocol):
     async def download_export(self, url: str) -> str: ...
 
 
+def unlabelled_withdrawals(
+    transactions: Sequence[TransactionLike],
+    labelled_ids: set[str],
+    conversion_legs: set[str],
+) -> list[UnlabelledWithdrawal]:
+    """Withdrawals no export has labelled yet (newest first), currency conversions excluded.
+
+    Until the next daily export, a card payment is a bare WITHDRAW in the API. On this kind of
+    account nearly every one is a card payment, so the card page lists them as "not labelled
+    yet" rather than leaving the last day of spending out.
+    """
+
+    found = [
+        UnlabelledWithdrawal(
+            reference=item.reference,
+            ts=item.ts,
+            amount=item.amount,
+            currency=item.currency_code,
+        )
+        for item in transactions
+        if item.ts is not None
+        and item.amount is not None
+        and item.amount < 0
+        and (item.transaction_type or "").upper() in {"WITHDRAW", "WITHDRAWAL"}
+        and item.reference not in labelled_ids
+        and item.reference not in conversion_legs
+    ]
+    return sorted(found, key=lambda entry: entry.ts, reverse=True)
+
+
+class TransactionLike(Protocol):
+    @property
+    def reference(self) -> str: ...
+
+    @property
+    def ts(self) -> datetime | None: ...
+
+    @property
+    def transaction_type(self) -> str | None: ...
+
+    @property
+    def amount(self) -> Decimal | None: ...
+
+    @property
+    def currency_code(self) -> str | None: ...
+
+
 class CardHistoryRepository(Protocol):
     async def latest_export(self) -> T212Export | None: ...
 
@@ -348,6 +395,17 @@ class CardTransaction:
     currency: str | None
     merchant_name: str | None
     merchant_category: str | None
+
+
+@dataclass(frozen=True)
+class UnlabelledWithdrawal:
+    """Cash that left the account after the last export, not yet labelled as card or bank."""
+
+    reference: str
+    ts: datetime
+    #: Negative, in the transaction's own currency.
+    amount: Decimal
+    currency: str | None
 
 
 @dataclass(frozen=True)

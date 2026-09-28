@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 from sqlalchemy import Select, case, delete, func, select, update
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from .models import (
     AiObservation,
     AiRun,
+    CardBudget,
     DailyHolding,
     DailyHoldingFlow,
     DailyNav,
@@ -424,6 +426,34 @@ class PortfolioRepository:
                 for row in rows:
                     await session.merge(row)
         return len(rows)
+
+    async def list_card_budgets(self) -> list[CardBudget]:
+        async with self._session_factory() as session:
+            return list(await session.scalars(select(CardBudget).order_by(CardBudget.category)))
+
+    async def set_card_budget(
+        self, category: str, monthly_limit: Decimal | None, *, now: datetime
+    ) -> None:
+        """Set a category's monthly limit; ``None`` removes it."""
+        async with self._session_factory() as session:
+            async with session.begin():
+                if monthly_limit is None:
+                    await session.execute(delete(CardBudget).where(CardBudget.category == category))
+                    return
+                await session.merge(
+                    CardBudget(category=category, monthly_limit=monthly_limit, updated_at=now)
+                )
+
+    async def list_withdrawals_since(self, since: datetime) -> list[Transaction]:
+        """Cash leaving the account from ``since`` on, with anything sharing their instants."""
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(Transaction)
+                    .where(Transaction.ts >= since)
+                    .order_by(Transaction.ts, Transaction.reference)
+                )
+            )
 
     async def list_export_rows(self) -> list[T212ExportRow]:
         async with self._session_factory() as session:

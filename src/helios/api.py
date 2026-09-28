@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -20,7 +21,13 @@ from .api_guards import (
     restart_limiter,
     settings_write_limiter,
 )
-from .card_history import CardHistoryService, ExportFormatError, summarise_card_history
+from .card_history import (
+    CardHistoryService,
+    ExportFormatError,
+    UnlabelledWithdrawal,
+    summarise_card_history,
+    unlabelled_withdrawals,
+)
 from .client import (
     Trading212CredentialsError,
     Trading212Error,
@@ -56,6 +63,7 @@ from .performance import (
     MarketDataProviderError,
     NoPerformanceDataError,
     PerformanceReplayService,
+    currency_conversion_legs,
 )
 from .portfolio_repository import SyncAlreadyRunningError
 from .portfolio_sync import PortfolioSyncService
@@ -63,6 +71,8 @@ from .reporting import NoQualityReportDataError, PortfolioQualityReportService
 from .schemas import (
     AccountSummary,
     AiAnalysisModel,
+    CardBudgetModel,
+    CardBudgetWriteRequest,
     CardHistoryModel,
     CardRefreshModel,
     CredentialWriteRequest,
@@ -353,11 +363,44 @@ async def get_card_history(
     container: Annotated[Container, Depends(get_container)],
     service: Annotated[CardHistoryService, Depends(get_card_history_service)],
 ) -> CardHistoryModel:
-    rows = await container.portfolio_repository.list_export_rows()
+    repository = container.portfolio_repository
+    rows = await repository.list_export_rows()
+    latest = await repository.latest_downloaded_export()
+    unlabelled: list[UnlabelledWithdrawal] = []
+    if latest is not None:
+        recent = await repository.list_withdrawals_since(latest.time_from)
+        unlabelled = unlabelled_withdrawals(
+            recent,
+            labelled_ids={row.row_id for row in rows},
+            conversion_legs=currency_conversion_legs(recent),
+        )
     return CardHistoryModel.model_validate(
-        {"status": await service.status(), "summary": summarise_card_history(rows)},
+        {
+            "status": await service.status(),
+            "summary": summarise_card_history(rows),
+            "budgets": await repository.list_card_budgets(),
+            "unlabelled": unlabelled,
+        },
         from_attributes=True,
     )
+
+
+@router.put("/api/v1/card/budgets", response_model=list[CardBudgetModel])
+async def set_card_budget(
+    request: CardBudgetWriteRequest,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("card-budget"))],
+) -> list[CardBudgetModel]:
+    """Set (or, with no limit, remove) one category's monthly card budget."""
+
+    repository = container.portfolio_repository
+    await repository.set_card_budget(
+        request.category.strip().upper(), request.monthly_limit, now=datetime.now(UTC)
+    )
+    return [
+        CardBudgetModel.model_validate(item, from_attributes=True)
+        for item in await repository.list_card_budgets()
+    ]
 
 
 @router.post("/api/v1/card/refresh", response_model=CardRefreshModel)

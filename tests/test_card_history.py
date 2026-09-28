@@ -23,6 +23,7 @@ from helios.card_history import (
     card_label,
     parse_export_csv,
     summarise_card_history,
+    unlabelled_withdrawals,
 )
 from helios.client import (
     EXPORTS_PATH,
@@ -36,7 +37,7 @@ from helios.performance import (
     FxRatePoint,
     NullMarketDataProvider,
     PerformanceReplayService,
-    _currency_conversion_legs,
+    currency_conversion_legs,
 )
 from helios.portfolio_repository import PortfolioRepository
 from helios.rate_limit import Clock
@@ -326,7 +327,7 @@ def test_conversion_legs_need_opposite_directions_in_different_currencies_at_one
         _transaction("gbp-dep", instant + timedelta(hours=2), "DEPOSIT", "50", "GBP"),
     ]
 
-    assert _currency_conversion_legs(transactions) == {"out", "in"}
+    assert currency_conversion_legs(transactions) == {"out", "in"}
 
 
 # ---------------------------------------------------------------------------
@@ -434,3 +435,27 @@ async def test_download_rejects_non_https_links() -> None:
     with pytest.raises(Exception, match="https"):
         await client.download_export("http://files.example.com/r.csv")
     await client.aclose()
+
+
+def test_withdrawals_no_export_has_labelled_are_listed_newest_first() -> None:
+    instant = datetime(2024, 3, 2, 9, tzinfo=UTC)
+    transactions = [
+        _transaction("card-1", instant - timedelta(days=1), "WITHDRAW", "-40", "EUR"),
+        _transaction("new-1", instant, "WITHDRAW", "-12.50", "EUR"),
+        _transaction("new-2", instant + timedelta(hours=3), "WITHDRAW", "-3", "EUR"),
+        _transaction("dep", instant, "DEPOSIT", "100", "EUR"),
+        # A conversion's outgoing leg is not a withdrawal.
+        _transaction("conv-out", instant + timedelta(hours=5), "WITHDRAW", "-10", "GBP"),
+        _transaction("conv-in", instant + timedelta(hours=5), "DEPOSIT", "11.5", "EUR"),
+    ]
+
+    pending = unlabelled_withdrawals(
+        transactions,
+        labelled_ids={"card-1"},
+        conversion_legs=currency_conversion_legs(transactions),
+    )
+
+    assert [(item.reference, item.amount) for item in pending] == [
+        ("new-2", Decimal("-3")),
+        ("new-1", Decimal("-12.50")),
+    ]

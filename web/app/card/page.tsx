@@ -5,23 +5,31 @@ import { SpendingChart } from "@/components/charts/spending-chart";
 import { DataTable, type Column } from "@/components/data-table";
 import { Note, PageHeader, Panel, Unavailable } from "@/components/panel";
 import { Pager } from "@/components/pager";
-import { refreshCardHistoryAction } from "@/lib/actions";
+import { BudgetForm } from "@/components/budget-form";
+import { refreshCardHistoryAction, setCardBudgetAction } from "@/lib/actions";
 import { getCardHistory } from "@/lib/api";
 import {
   type Bucket,
+  type BudgetLine,
   GRANULARITIES,
   type Granularity,
   amountOf,
   bucketKey,
   bucketLabel,
+  budgetLines,
   buildBuckets,
+  detectRecurring,
   formatLocalDateTime,
   groupBy,
   inBucket,
+  isPending,
   merchantHref,
   merchantOf,
   normaliseBucketKey,
   parseGranularity,
+  pendingAsTransactions,
+  type Recurring,
+  type RecurringStatus,
   shiftBucket,
 } from "@/lib/card";
 import {
@@ -36,6 +44,8 @@ import {
 import { paginate, parsePageParam } from "@/lib/pagination";
 import type { CardHistoryStatus, CardTransaction } from "@/lib/types";
 import { CARD } from "@/lib/ui";
+import { STATUS } from "@/lib/viz";
+import { MONEY_MOVED_COLOR } from "@/components/period-change";
 
 export const dynamic = "force-dynamic";
 
@@ -121,6 +131,7 @@ export default async function CardPage({
   }
 
   const { status, summary } = result.data;
+  const now = new Date();
   if (status.cardRows === 0 || summary.transactions.length === 0) {
     return (
       <>
@@ -132,8 +143,16 @@ export default async function CardPage({
     );
   }
 
-  const transactions = summary.transactions;
-  const now = new Date();
+  // Withdrawals since the last export count as spending straight away, marked as not labelled.
+  const pending = pendingAsTransactions(result.data.unlabelled ?? []);
+  const transactions = [...pending, ...summary.transactions].sort((a, b) =>
+    b.ts.localeCompare(a.ts),
+  );
+  const pendingSpent = pending.reduce((sum, item) => sum - amountOf(item), 0);
+  const recurring = detectRecurring(summary.transactions, now);
+  const activeRecurring = recurring.filter((item) => item.status !== "lapsed");
+  const recurringMonthly = activeRecurring.reduce((sum, item) => sum + item.monthlyCost, 0);
+  const budgets = budgetLines(summary.transactions, result.data.budgets ?? [], now);
   const within = (key: string, g: Granularity) =>
     transactions.filter((item) => inBucket(item.ts, key, g));
   const spentOf = (items: CardTransaction[]) => items.reduce((sum, item) => sum - amountOf(item), 0);
@@ -166,9 +185,22 @@ export default async function CardPage({
     <>
       {header}
       <StatusNote status={status} />
+      {pending.length > 0 ? (
+        <Note>
+          {pending.length} withdrawal(s) since the last export ({formatEur(pendingSpent)}) are
+          counted as card spending and shown as &ldquo;Not labelled yet&rdquo;. The next daily
+          export names the merchant, or shows it was a bank withdrawal.
+        </Note>
+      ) : null}
 
       <section aria-label="Card totals" className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Stat detail={`${today.length} payment(s)`} label="Today" value={formatEur(spentOf(today))} />
+        <Stat
+          detail={`${today.length} payment(s)${
+            today.some(isPending) ? " · some not labelled yet" : ""
+          }`}
+          label="Today"
+          value={formatEur(spentOf(today))}
+        />
         <Stat
           detail={`${thisWeek.length} payment(s) since Monday`}
           label="This week"
@@ -314,7 +346,166 @@ export default async function CardPage({
           </>
         )}
       </section>
+
+      <Panel
+        subtitle={
+          activeRecurring.length > 0
+            ? `About ${formatEur(recurringMonthly)} a month across ${activeRecurring.length} regular charge(s): the same merchant charging about the same amount at a steady interval.`
+            : "Charges that repeat at a steady interval, found from your payment history."
+        }
+        title="Recurring payments"
+      >
+        {recurring.length > 0 ? (
+          <DataTable
+            caption="Recurring card payments"
+            columns={RECURRING_COLUMNS}
+            rowKey={(row) => `${row.merchant}-${row.amount}`}
+            rows={recurring}
+          />
+        ) : (
+          <p className="py-6 text-center text-sm text-ink-3">
+            No regular charges found yet: it takes two payments a month apart, or three at a steady
+            interval.
+          </p>
+        )}
+      </Panel>
+
+      <Panel
+        subtitle={`This month so far, and where it is heading at the same daily rate. Set a monthly budget per category; leave it empty to remove one.`}
+        title="Monthly budgets"
+      >
+        <ul className="flex flex-col divide-y divide-border">
+          {budgets.map((line) => (
+            <BudgetRow key={line.category} line={line} />
+          ))}
+        </ul>
+      </Panel>
     </>
+  );
+}
+
+const STATUS_TEXT: Record<RecurringStatus, { label: string; className: string }> = {
+  active: { label: "Active", className: "bg-surface-3 text-ink-2" },
+  new: { label: "New", className: "bg-accent-soft text-accent-ink" },
+  "price-up": { label: "Price up", className: "bg-warning-soft text-warning" },
+  lapsed: { label: "Maybe cancelled", className: "bg-surface-3 text-ink-3" },
+};
+
+const RECURRING_COLUMNS: Column<Recurring>[] = [
+  {
+    key: "merchant",
+    header: "Merchant",
+    render: (row) => (
+      <a
+        className="font-medium text-ink hover:text-accent hover:underline"
+        href={merchantHref(row.merchant)}
+      >
+        {row.merchant}
+      </a>
+    ),
+  },
+  { key: "cadence", header: "How often", render: (row) => <span className="text-ink-2">{row.cadence}</span> },
+  {
+    key: "amount",
+    header: "Charge",
+    numeric: true,
+    render: (row) => (
+      <span>
+        {formatEur(row.amount)}
+        {row.previousAmount !== null ? (
+          <span className="ml-1.5 text-xs text-ink-3">was {formatEur(row.previousAmount)}</span>
+        ) : null}
+      </span>
+    ),
+  },
+  {
+    key: "monthly",
+    header: "Per month",
+    numeric: true,
+    render: (row) => <span className="font-medium text-ink">{formatEur(row.monthlyCost)}</span>,
+  },
+  {
+    key: "last",
+    header: "Last paid",
+    render: (row) => <span className="whitespace-nowrap text-ink-2">{formatDay(row.last)}</span>,
+  },
+  {
+    key: "next",
+    header: "Next expected",
+    render: (row) => (
+      <span className="whitespace-nowrap text-ink-2">
+        {row.status === "lapsed" ? EMPTY : formatDay(row.next)}
+      </span>
+    ),
+  },
+  {
+    key: "status",
+    header: "Status",
+    render: (row) => (
+      <span
+        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_TEXT[row.status].className}`}
+      >
+        {STATUS_TEXT[row.status].label}
+      </span>
+    ),
+  },
+];
+
+/**
+ * One category: spent this month against its budget. The bar turns to the warning colour as the
+ * month's pace heads past the budget and to the critical colour once it is exceeded — with the
+ * words said too, never colour alone.
+ */
+function BudgetRow({ line }: { line: BudgetLine }) {
+  const label = categoryLabel(line.category);
+  const share = line.limit ? line.spent / line.limit : null;
+  const state =
+    line.limit === null
+      ? null
+      : line.spent > line.limit
+        ? "over"
+        : line.projected > line.limit
+          ? "heading-over"
+          : "within";
+  const color =
+    state === "over" ? STATUS.critical : state === "heading-over" ? STATUS.warning : MONEY_MOVED_COLOR;
+  return (
+    <li className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:gap-6">
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex items-baseline justify-between gap-3 text-sm">
+          <span className="font-medium text-ink">{label}</span>
+          <span className="tabular-nums text-ink">
+            {formatEur(line.spent)}
+            {line.limit !== null ? (
+              <span className="text-ink-3"> of {formatEur(line.limit)}</span>
+            ) : null}
+          </span>
+        </div>
+        {line.limit !== null ? (
+          <div aria-hidden="true" className="h-1.5 w-full rounded-full bg-surface-3">
+            <div
+              className="h-full rounded-full"
+              style={{ width: `${Math.min(100, Math.max((share ?? 0) * 100, 1.5))}%`, background: color }}
+            />
+          </div>
+        ) : null}
+        <span className="text-xs text-ink-3">
+          {state === "over"
+            ? `Over budget by ${formatEur(line.spent - (line.limit ?? 0))}`
+            : state === "heading-over"
+              ? `On pace for ${formatEur(line.projected)} — over budget by month end`
+              : state === "within"
+                ? `On pace for ${formatEur(line.projected)} this month`
+                : `On pace for ${formatEur(line.projected)} this month · no budget set`}
+        </span>
+      </div>
+      <BudgetForm
+        action={setCardBudgetAction}
+        category={line.category}
+        current={line.limit}
+        label={label}
+      />
+    </li>
   );
 }
 

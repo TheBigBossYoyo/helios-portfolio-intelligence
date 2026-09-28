@@ -62,6 +62,20 @@ test.describe("pipeline controls", () => {
     expect(call?.action).toBe("card-refresh");
   });
 
+  test("saving a card budget carries the local-action header", async ({ page, request }) => {
+    await page.goto("/card");
+
+    const budgets = page.locator("section", { hasText: "Monthly budgets" }).last();
+    const input = budgets.getByLabel("Monthly budget for Memberships (EUR)");
+    await input.fill("80");
+    await input.locator("xpath=ancestor::form").getByRole("button", { name: "Save" }).click();
+
+    await expect(budgets.getByText("Budget saved.")).toBeVisible();
+    const call = lastFor(await recorded(request), "PUT", /\/api\/v1\/card\/budgets$/);
+    expect(call?.action).toBe("card-budget");
+    expect(JSON.parse(call?.body ?? "{}")).toEqual({ category: "MEMBERSHIPS", monthlyLimit: "80.00" });
+  });
+
   test("a replay confirms first, then reports what it wrote", async ({ page, request }) => {
     await page.goto("/performance");
 

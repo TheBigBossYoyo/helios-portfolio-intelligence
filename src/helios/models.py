@@ -453,6 +453,16 @@ class T212ExportRow(Base):
     export_id: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class CardBudget(Base):
+    """The owner's monthly spending limit for one Trading 212 merchant category (EUR)."""
+
+    __tablename__ = "card_budgets"
+
+    category: Mapped[str] = mapped_column(String(64), primary_key=True)
+    monthly_limit: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
 class DailyNav(Base):
     __tablename__ = "daily_nav"
 

@@ -40,6 +40,7 @@ type LocalAction =
   | "replay"
   | "news-sync"
   | "card-refresh"
+  | "card-budget"
   | "ai-analyse"
   | "thesis-write"
   | "journal-write"
@@ -199,6 +200,28 @@ export async function refreshCardHistoryAction(): Promise<ActionResult> {
     successMessage: "Card history refreshed.",
     messageFromResponse: true,
     revalidate: ["/", "/card", "/performance"],
+  });
+}
+
+/** Set a category's monthly card budget; an empty amount removes it. */
+export async function setCardBudgetAction(form: FormData): Promise<ActionResult> {
+  const category = optionalField(form, "category");
+  if (category === null) return missingFieldResult("Category");
+  const raw = optionalField(form, "limit");
+  const limit = raw === null ? null : Number(raw.replace(",", "."));
+  if (limit !== null && (!Number.isFinite(limit) || limit < 0)) {
+    return {
+      ok: false,
+      error: "Enter a budget of zero or more, or leave it empty to remove it.",
+      status: null,
+      timestamp: new Date().toISOString(),
+    };
+  }
+  return mutate("/api/v1/card/budgets", "card-budget", {
+    method: "PUT",
+    body: { category, monthlyLimit: limit === null ? null : limit.toFixed(2) },
+    successMessage: limit === null ? "Budget removed." : "Budget saved.",
+    revalidate: ["/card"],
   });
 }
 

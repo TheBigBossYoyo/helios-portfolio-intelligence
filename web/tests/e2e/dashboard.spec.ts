@@ -256,17 +256,31 @@ test.describe("card", () => {
 
     const views = page.getByRole("navigation", { name: "Group spending by" });
     await expect(views.getByRole("link", { name: "Week" })).toHaveAttribute("aria-current", "true");
-    // The latest week with spending is selected: yesterday's gym payment.
+    // The current week is selected: it holds today's withdrawal, not labelled yet.
     const scope = page.getByRole("region", { name: /^Spending:/ });
-    await expect(scope.getByRole("link", { name: "Gym Club" }).first()).toBeVisible();
-    // Listed under categories, and again on the payment row.
-    await expect(scope.getByText("Memberships").first()).toBeVisible();
+    await expect(scope.getByRole("link", { name: "Not labelled yet" }).first()).toBeVisible();
+    await expect(scope.getByText("Awaiting export").first()).toBeVisible();
 
     await scope.getByRole("link", { name: "All time" }).click();
     await expect(page).toHaveURL(/at=all/);
     const all = page.getByRole("region", { name: "Spending: All time" });
     await expect(all.getByRole("link", { name: "Grocer" }).first()).toBeVisible();
-    await expect(all.getByText("60%").first()).toBeVisible();
+    // Grocer: 90 of 184.17 — the stub's subscription and today's unlabelled 4.20 included.
+    await expect(all.getByText("49%").first()).toBeVisible();
+  });
+
+  test("finds recurring charges, budgets and not-yet-labelled payments", async ({ page }) => {
+    await page.goto("/card");
+
+    const recurring = page.locator("section", { hasText: "Recurring payments" }).last();
+    await expect(recurring.getByRole("link", { name: "Streamflix" })).toBeVisible();
+    await expect(recurring.getByRole("cell", { name: "Monthly" })).toBeVisible();
+
+    const budgets = page.locator("section", { hasText: "Monthly budgets" }).last();
+    await expect(budgets.getByText("Memberships", { exact: true })).toBeVisible();
+    await expect(budgets.getByLabel("Monthly budget for Memberships (EUR)")).toHaveValue("50.00");
+
+    await expect(page.getByText(/1 withdrawal\(s\) since the last export/)).toBeVisible();
   });
 
   test("opens a merchant with where and when the money went", async ({ page }) => {

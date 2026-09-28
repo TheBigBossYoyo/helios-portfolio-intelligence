@@ -399,6 +399,10 @@ export interface CardHistoryStatus {
 export interface CardHistory {
   status: CardHistoryStatus;
   summary: CardSummary;
+  /** Monthly limit per Trading 212 category code, EUR. */
+  budgets?: { category: string; monthlyLimit: string }[];
+  /** Withdrawals since the last export that no export has labelled yet (newest first). */
+  unlabelled?: { reference: string; ts: string; amount: string; currency: string | null }[];
 }
 
 export type NewsRelevance = "headline" | "summary" | "unconfirmed" | "market";

@@ -2536,7 +2536,7 @@ def _build_daily_replay(
     money_in: dict[date, Decimal] = defaultdict(lambda: ZERO)
     money_out: dict[date, Decimal] = defaultdict(lambda: ZERO)
     cashback_cash: dict[date, Decimal] = defaultdict(lambda: ZERO)
-    conversion_legs = _currency_conversion_legs(replay_input.transactions)
+    conversion_legs = currency_conversion_legs(replay_input.transactions)
     if conversion_legs:
         notes.add(
             f"Treated {len(conversion_legs)} currency-conversion leg(s) as moves between your own "
@@ -2713,7 +2713,7 @@ def _build_daily_replay(
     )
 
 
-def _currency_conversion_legs(transactions: Sequence[Transaction]) -> set[str]:
+def currency_conversion_legs(transactions: Sequence[Transaction]) -> set[str]:
     """References of transactions that are the two legs of a currency conversion.
 
     Trading 212 reports converting cash between currencies as a WITHDRAW in one currency and a

@@ -864,7 +864,23 @@ const cardHistory = {
       { ts: daysAgo(30), amount: "0.30" },
     ],
   },
+  budgets: [{ category: "MEMBERSHIPS", monthlyLimit: "50.00" }],
+  // A withdrawal after the export: shown as card spending, "not labelled yet".
+  unlabelled: [{ reference: "w-new", ts: daysAgo(0), amount: "-4.20", currency: "EUR" }],
 };
+
+// A monthly subscription, 30 days apart, so the recurring-payments view has one to find.
+for (const [index, days] of [3, 33, 63].entries()) {
+  cardHistory.summary.transactions.push({
+    rowId: `s${index}`,
+    ts: daysAgo(days),
+    action: "Card debit",
+    amount: "-9.99",
+    currency: "EUR",
+    merchantName: "Streamflix",
+    merchantCategory: "UTILITIES",
+  });
+}
 
 // One instrument's detail page: a price path over the NAV fixture's dates, one buy on day one,
 // and the AAPL line of every period's stock-by-stock split.
@@ -991,6 +1007,10 @@ const MUTATIONS = {
   "POST /api/v1/portfolio/sync": { action: "sync", body: portfolioSyncSummary },
   "POST /api/v1/performance/replay": { action: "replay", body: replaySummary },
   "POST /api/v1/news/sync": { action: "news-sync", body: newsSyncSummary },
+  "PUT /api/v1/card/budgets": {
+    action: "card-budget",
+    body: [{ category: "MEMBERSHIPS", monthlyLimit: "80.00" }],
+  },
   "POST /api/v1/card/refresh": {
     action: "card-refresh",
     body: { action: "downloaded", detail: "Stored 5 cash rows from the export.", rowsStored: 5 },

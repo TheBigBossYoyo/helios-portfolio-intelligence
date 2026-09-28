@@ -251,3 +251,236 @@ export function normaliseBucketKey(value: string | undefined, granularity: Granu
   if (!value || !/^\d{4}-\d{2}(-\d{2})?$/.test(value)) return null;
   return bucketKey(keyToDate(value.length === 7 ? `${value}-01` : value), granularity);
 }
+
+// ---------------------------------------------------------------------------
+// Payments not labelled yet
+// ---------------------------------------------------------------------------
+
+export const PENDING_CATEGORY = "PENDING_EXPORT";
+export const PENDING_MERCHANT = "Not labelled yet";
+
+/**
+ * Withdrawals made after the last export, as card rows. On this account almost every
+ * withdrawal is a card payment, so they count toward today's and this week's spending, marked
+ * as not labelled until the next daily export names the merchant.
+ */
+export function pendingAsTransactions(
+  unlabelled: { reference: string; ts: string; amount: string; currency: string | null }[],
+): CardTransaction[] {
+  return unlabelled.map((item) => ({
+    rowId: `pending-${item.reference}`,
+    ts: item.ts,
+    action: "Pending",
+    amount: item.amount,
+    currency: item.currency,
+    merchantName: PENDING_MERCHANT,
+    merchantCategory: PENDING_CATEGORY,
+  }));
+}
+
+export function isPending(item: CardTransaction): boolean {
+  return item.action === "Pending";
+}
+
+// ---------------------------------------------------------------------------
+// Recurring payments
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 86_400_000;
+const DAYS_PER_MONTH = 30.44;
+
+export type RecurringStatus = "active" | "new" | "price-up" | "lapsed";
+
+export interface Recurring {
+  merchant: string;
+  category: string | null;
+  cadence: string;
+  intervalDays: number;
+  /** The usual charge, positive. */
+  amount: number;
+  /** The charge before the latest one, when it differs. */
+  previousAmount: number | null;
+  /** What it costs per month at its cadence. */
+  monthlyCost: number;
+  count: number;
+  first: string;
+  last: string;
+  next: string;
+  status: RecurringStatus;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function cadenceLabel(days: number): string {
+  if (days >= 6 && days <= 8) return "Weekly";
+  if (days >= 13 && days <= 16) return "Every 2 weeks";
+  if (days >= 26 && days <= 35) return "Monthly";
+  if (days >= 80 && days <= 100) return "Quarterly";
+  if (days >= 340 && days <= 390) return "Yearly";
+  return `Every ~${Math.round(days)} days`;
+}
+
+/**
+ * How many charges fall in a month. A named cadence uses its calendar meaning -- a monthly
+ * charge is exactly one a month even though February makes the measured gap ~28.6 days --
+ * and anything irregular uses the measured interval.
+ */
+function chargesPerMonth(days: number): number {
+  const label = cadenceLabel(days);
+  if (label === "Weekly") return 52 / 12;
+  if (label === "Every 2 weeks") return 26 / 12;
+  if (label === "Monthly") return 1;
+  if (label === "Quarterly") return 1 / 3;
+  if (label === "Yearly") return 1 / 12;
+  return DAYS_PER_MONTH / days;
+}
+
+/** The next charge: same day next month (or year) for calendar cadences, else by interval. */
+function nextCharge(last: string, days: number): Date {
+  const next = new Date(last);
+  const label = cadenceLabel(days);
+  if (label === "Monthly") next.setUTCMonth(next.getUTCMonth() + 1);
+  else if (label === "Yearly") next.setUTCFullYear(next.getUTCFullYear() + 1);
+  else next.setTime(next.getTime() + days * DAY_MS);
+  return next;
+}
+
+/** Charges of about the same amount (within 15%) are one subscription; others are separate. */
+function amountClusters(items: CardTransaction[]): CardTransaction[][] {
+  const clusters: CardTransaction[][] = [];
+  for (const item of [...items].sort((a, b) => a.ts.localeCompare(b.ts))) {
+    const amount = -amountOf(item);
+    const home = clusters.find((cluster) => {
+      const typical = median(cluster.map((entry) => -amountOf(entry)));
+      return Math.abs(amount - typical) <= typical * 0.15;
+    });
+    if (home) home.push(item);
+    else clusters.push([item]);
+  }
+  return clusters;
+}
+
+/**
+ * Subscriptions and other regular charges: the same merchant charging about the same amount at
+ * a steady interval. Two charges count when they are a month (or a year) apart; three or more
+ * when most gaps are within a quarter of the usual one. A charge that is overdue by half its
+ * interval again is flagged as possibly cancelled.
+ */
+export function detectRecurring(transactions: CardTransaction[], now: Date = new Date()): Recurring[] {
+  const byMerchant = new Map<string, CardTransaction[]>();
+  for (const item of transactions) {
+    if (isPending(item) || amountOf(item) >= 0) continue;
+    const key = merchantOf(item);
+    byMerchant.set(key, [...(byMerchant.get(key) ?? []), item]);
+  }
+
+  const found: Recurring[] = [];
+  for (const [merchant, items] of byMerchant) {
+    for (const cluster of amountClusters(items)) {
+      if (cluster.length < 2) continue;
+      const times = cluster.map((item) => new Date(item.ts).getTime());
+      const gaps = times.slice(1).map((time, index) => (time - times[index]) / DAY_MS);
+      if (gaps.some((gap) => gap < 3)) continue; // same-week repeats are not a schedule
+      const interval = median(gaps);
+      const regular =
+        cluster.length === 2
+          ? (interval >= 26 && interval <= 35) || (interval >= 340 && interval <= 390)
+          : interval >= 6 &&
+            interval <= 400 &&
+            gaps.filter((gap) => Math.abs(gap - interval) <= interval * 0.25).length >=
+              Math.ceil(gaps.length * 0.7);
+      if (!regular) continue;
+
+      const amounts = cluster.map((item) => -amountOf(item));
+      const latest = amounts.at(-1) ?? 0;
+      const before = amounts.at(-2) ?? latest;
+      const last = cluster.at(-1)?.ts ?? cluster[0].ts;
+      const lastTime = new Date(last).getTime();
+      const overdue = (now.getTime() - lastTime) / DAY_MS > interval * 1.5;
+      // New: only its first couple of charges so far, and those recent.
+      const young = cluster.length <= 2 && (now.getTime() - times[0]) / DAY_MS < interval * 2.5;
+      const status: RecurringStatus = overdue
+        ? "lapsed"
+        : latest > before * 1.01
+          ? "price-up"
+          : young
+            ? "new"
+            : "active";
+      found.push({
+        merchant,
+        category: cluster.at(-1)?.merchantCategory ?? null,
+        cadence: cadenceLabel(interval),
+        intervalDays: interval,
+        amount: round(latest),
+        previousAmount: Math.abs(latest - before) >= 0.01 ? round(before) : null,
+        monthlyCost: round(latest * chargesPerMonth(interval)),
+        count: cluster.length,
+        first: cluster[0].ts,
+        last,
+        next: nextCharge(last, interval).toISOString(),
+        status,
+      });
+    }
+  }
+  // Still-running charges first, most expensive per month first.
+  return found.sort(
+    (a, b) =>
+      Number(a.status === "lapsed") - Number(b.status === "lapsed") || b.monthlyCost - a.monthlyCost,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Budgets
+// ---------------------------------------------------------------------------
+
+export interface BudgetLine {
+  category: string;
+  limit: number | null;
+  spent: number;
+  /** Spent so far, extrapolated to the whole month at the same daily rate. */
+  projected: number;
+}
+
+/** This month's spending per category against its budget, budgeted categories first. */
+export function budgetLines(
+  transactions: CardTransaction[],
+  budgets: { category: string; monthlyLimit: string }[],
+  now: Date = new Date(),
+): BudgetLine[] {
+  const month = bucketKey(now, "month");
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const elapsed = Math.max(now.getDate(), 1);
+  const spent = new Map<string, number>();
+  for (const item of transactions) {
+    if (isPending(item) || bucketKey(item.ts, "month") !== month) continue;
+    const key = item.merchantCategory ?? "UNCATEGORISED";
+    spent.set(key, (spent.get(key) ?? 0) - amountOf(item));
+  }
+  const categories = new Set([
+    ...budgets.map((budget) => budget.category),
+    ...transactions
+      .filter((item) => !isPending(item))
+      .map((item) => item.merchantCategory ?? "UNCATEGORISED"),
+  ]);
+  const limits = new Map(budgets.map((budget) => [budget.category, Number(budget.monthlyLimit)]));
+  return [...categories]
+    .map((category) => {
+      const value = round(spent.get(category) ?? 0);
+      return {
+        category,
+        limit: limits.get(category) ?? null,
+        spent: value,
+        projected: round((value / elapsed) * daysInMonth),
+      };
+    })
+    .sort(
+      (a, b) =>
+        Number(b.limit !== null) - Number(a.limit !== null) ||
+        b.spent - a.spent ||
+        a.category.localeCompare(b.category),
+    );
+}
