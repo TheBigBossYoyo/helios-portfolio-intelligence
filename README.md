@@ -13,8 +13,12 @@ Trading 212's app shows you positions and a simple return figure, but nothing li
 - Compares your portfolio against configurable ETF benchmark proxies and against the Kenneth French factor library (FF5 + momentum).
 - Pulls in free news feeds (Yahoo Finance, SEC filings, Google News, optionally Marketaux) with cross-source deduplication.
 - Optionally asks Claude to describe what the computed analytics show, in plain language, with every claim tied to a specific number.
+- Splits every period (a day, a week, a month, the year, since you started) into money you moved in or out and what the investments actually made, and splits that result stock by stock, so a deposit never looks like a gain and you can see exactly which holding dropped.
+- Gives each holding its own page: price chart with your trades and average cost marked, your position against the money you put in, results by period, dividends, news that actually names the company, and price alerts.
+- Reads your 212 Card history from Trading 212's CSV export: spending by day, week and month, by merchant and category, recurring charges, monthly budgets, and cashback counted as income rather than as money you added.
+- Sends a Windows notification when an alert fires, plus a short summary each evening.
 - Lets you record an investment thesis before you know the outcome, then journal updates and later mark it validated, invalidated or closed.
-- Ships a dashboard (overview, holdings, performance, news, insights, journal, data-quality) that reads the same API as the CLI.
+- Ships a dashboard (overview, holdings, performance, card, news, insights, journal, data-quality, settings) that reads the same API as the CLI, and runs as a desktop app with a tray icon.
 
 ## How it works
 
@@ -27,6 +31,17 @@ The news pipeline has the same raw-first idea: every fetched response is stored 
 The AI analysis feature is built to avoid the obvious failure mode of an LLM "advising" trades. The structured output schema literally has no field for a rating, a price target or a buy/sell call, so there's nowhere for one to end up even if the model tried. Every observation it produces is required to cite the specific metric it's based on, and any metric the backend already flagged as unavailable is passed through as unavailable rather than estimated. It only ever runs when you ask for it, since each call costs a small amount of money and I didn't want it quietly running on a schedule.
 
 ## Running it
+
+As a desktop app (what I use day to day, no Docker):
+
+```bash
+make install                                  # pip install -e ".[dev,desktop]" -c constraints.txt
+helios-desktop --install-shortcut             # Desktop + Start Menu shortcuts
+```
+
+Then open Helios from the shortcut. It builds the dashboard the first time, starts the API, the worker and the web server, opens the app window and sits in the tray. Keys go in through the Settings page, which checks them before saving. `helios-desktop --autostart on` starts it with Windows.
+
+Or with Docker:
 
 ```bash
 cp .env.example .env      # add your Trading 212 key and any optional API keys
@@ -44,14 +59,16 @@ The only account you actually need is your own Trading 212 API key (Settings →
 
 | Account | Unlocks | Cost |
 | --- | --- | --- |
-| Twelve Data | Daily prices, so performance/risk metrics compute at all | free tier, 800 calls/day |
+| Twelve Data | Daily prices, so performance/risk metrics compute at all | free tier, 800 calls/day (US listings) |
+| EODHD | Full daily history for US and international listings (London, Xetra, Euronext...) | paid; free tier is 20 calls/day, one year |
+| Alpha Vantage | A free second source for London listings | free tier, 25 calls/day, last ~100 trading days only |
 | Anthropic | The Insights page (Claude describing your analytics) | pay-per-use, a small fraction of a cent to a few cents per run |
 | Marketaux | Ticker-tagged international news | free tier, 100 req/day |
 | OpenFIGI | Faster instrument mapping | free |
 
 ECB FX rates, the Kenneth French factor data, Yahoo Finance and Google News all work with no account. SEC EDGAR filings need one setting rather than an account: the SEC requires a User-Agent naming a real contact, so that feed is skipped until you set `HELIOS_NEWS_SEC_USER_AGENT="Your Name your@email.com"`.
 
-Twelve Data's free tier only covers US exchanges, which has two consequences: the default benchmarks are US-listed ETFs (`IVV`, `URTH`, `VT`) rather than the UCITS versions a European investor would actually buy, and European-listed holdings simply won't get a price. They report `unavailable` rather than being guessed at. Getting real EU coverage means paying for a broader data plan. AI analysis costs work the same way: Claude Opus is the default model for quality, Haiku is the cheap option, and the system prompt is cached so a second run in the same session costs less than the first.
+Twelve Data's free tier only covers US exchanges, so London-listed ETFs need a second price source, picked in Settings: Alpha Vantage's free key works but only reaches back about 100 trading days, and days it can't price are left out of returns rather than guessed at; EODHD gets the full history in one call per holding. AI analysis costs work the same way: Claude Opus is the default model for quality, Haiku is the cheap option, and the system prompt is cached so a second run in the same session costs less than the first.
 
 ## Not financial advice
 
@@ -59,11 +76,12 @@ The passive-benchmark comparison is a counterfactual built from proxy ETF prices
 
 ## Safety and privacy
 
-Trading 212 access is strictly read-only (GET requests only); no trade or account mutation is ever sent. Everything Helios computes stays in your own local SQLite database. Nothing is sent anywhere except the specific third-party API you've configured, and only the data that call needs (Trading 212 credentials never leave that one client, for instance). Keep demo and live Trading 212 keys separate, and don't commit secrets into tracked files.
+Trading 212 access is read-only: every request is a GET, with one exception. Card payments only get a merchant name in Trading 212's CSV export, so Helios asks for that report of your own history, at most once a day. That request has a fixed body and can't do anything else, and no trade or account change is ever sent. Trading 212 sends a notification to your phone each time a report is made, which is why it's daily and not more often. Everything Helios computes stays in your own local SQLite database. Nothing is sent anywhere except the specific third-party API you've configured, and only the data that call needs (Trading 212 credentials never leave that one client, for instance). Keep demo and live Trading 212 keys separate, and don't commit secrets into tracked files.
 
 ## Limitations and what I'd improve
 
 - Sector-level (Brinson-Fachler) attribution isn't implemented yet: there's no licensed index-constituent feed wired in, so that panel reports `unavailable`.
-- Non-US-listed holdings need a paid price provider; the free tier genuinely can't cover them.
+- Full price history for non-US holdings needs a paid provider (EODHD); the free sources cover the last few months at best.
 - The factor regression trails real time by about a month, since the Kenneth French library is only published monthly.
-- The dashboard is read-focused right now; most actions (sync, replay, journaling) still happen from the CLI, and I'd like more of that surfaced in the UI itself.
+- Card payments made since the last daily export show up as "not labelled yet" until the next export names the merchant; the transactions API alone can't tell a card payment from a bank withdrawal.
+- Price alerts use Trading 212's live price for things you hold and the last daily close for anything else, so an alert on a stock you don't own fires on the close, not intraday.
