@@ -16,9 +16,11 @@ Trading 212's app shows you positions and a simple return figure, but nothing li
 - Splits every period (a day, a week, a month, the year, since you started) into money you moved in or out and what the investments actually made, and splits that result stock by stock, so a deposit never looks like a gain and you can see exactly which holding dropped.
 - Gives each holding its own page: price chart with your trades and average cost marked, your position against the money you put in, results by period, dividends, news that actually names the company, and price alerts.
 - Reads your 212 Card history from Trading 212's CSV export: spending by day, week and month, by merchant and category, recurring charges, monthly budgets, and cashback counted as income rather than as money you added.
-- Sends a Windows notification when an alert fires, plus a short summary each evening.
+- Lets you follow stocks you don't own on a watchlist: same page as a holding, with daily prices, news and alerts on live quotes.
+- Shows how much you deposit each month, how much goes back out by card and how much stays invested, and projects where steady saving could take the portfolio as a range of outcomes from assumptions you set (not a forecast).
+- Sends a Windows notification when an alert fires, plus a short summary each evening, and can have Claude write a weekly review of what moved and why it made the news (on request, or weekly if you switch it on).
 - Lets you record an investment thesis before you know the outcome, then journal updates and later mark it validated, invalidated or closed.
-- Ships a dashboard (overview, holdings, performance, card, news, insights, journal, data-quality, settings) that reads the same API as the CLI, and runs as a desktop app with a tray icon.
+- Ships a dashboard (overview, holdings, watchlist, performance, card, plan, news, insights, journal, data-quality, settings) that reads the same API as the CLI, and runs as a desktop app with a tray icon.
 
 ## How it works
 
@@ -28,7 +30,7 @@ A rule I tried to follow everywhere: never fabricate a number to fill a gap. If 
 
 The news pipeline has the same raw-first idea: every fetched response is stored before parsing, so a parser bug can be fixed and replayed against history without re-downloading anything. Combining several feeds for the same story turned out to need more than matching URLs, since the same article shows up under three different links (the aggregator's, the source's, Yahoo's), so articles are deduplicated on a normalized canonical URL and a normalized headline within a time window, and when two sources cover the same story the more trustworthy one wins.
 
-The AI analysis feature is built to avoid the obvious failure mode of an LLM "advising" trades. The structured output schema literally has no field for a rating, a price target or a buy/sell call, so there's nowhere for one to end up even if the model tried. Every observation it produces is required to cite the specific metric it's based on, and any metric the backend already flagged as unavailable is passed through as unavailable rather than estimated. It only ever runs when you ask for it, since each call costs a small amount of money and I didn't want it quietly running on a schedule.
+The AI analysis feature is built to avoid the obvious failure mode of an LLM "advising" trades. The structured output schema literally has no field for a rating, a price target or a buy/sell call, so there's nowhere for one to end up even if the model tried. Every observation it produces is required to cite the specific metric it's based on, and any metric the backend already flagged as unavailable is passed through as unavailable rather than estimated. It only ever runs when you ask for it, since each call costs a small amount of money and I didn't want it quietly running on a schedule. The one exception is the weekly review, and only if you turn it on with `HELIOS_WEEKLY_REVIEW_ENABLED`; it's also told that a headline in the same week as a move is coverage, not a cause.
 
 ## Running it
 
