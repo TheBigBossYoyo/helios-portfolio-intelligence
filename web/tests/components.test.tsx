@@ -107,7 +107,7 @@ describe("charts", () => {
     );
 
     expect(container.querySelector("svg")).not.toBeNull();
-    expect(screen.queryByText("Portfolio NAV")).not.toBeInTheDocument();
+    expect(screen.queryByText("Portfolio value")).not.toBeInTheDocument();
   });
 
   it("adds a legend as soon as the counterfactual series is present", () => {
@@ -118,8 +118,21 @@ describe("charts", () => {
       />,
     );
 
-    expect(screen.getByText("Portfolio NAV")).toBeInTheDocument();
+    expect(screen.getByText("Portfolio value")).toBeInTheDocument();
     expect(screen.getByText("FTSE All-World ETF proxy")).toBeInTheDocument();
+  });
+
+  it("draws money put in beside the value, so deposits never read as profit", () => {
+    const rows = toNavRows([
+      { ...report.navSeries[0], netDepositsToDateEur: "1000" },
+      { ...report.navSeries[1], netDepositsToDateEur: "1500" },
+    ]);
+
+    render(<NavChart data={rows} passiveLabel={null} showInvested />);
+
+    expect(rows.map((row) => row.invested)).toEqual([1000, 1500]);
+    expect(screen.getByText("Money put in")).toBeInTheDocument();
+    expect(screen.getByText("Portfolio value")).toBeInTheDocument();
   });
 
   it("labels both rolling windows in the legend", () => {

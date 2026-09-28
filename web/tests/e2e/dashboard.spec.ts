@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { STUB_API_PORT } from "./ports";
 
 test.describe("navigation", () => {
   test("moves between every dashboard section", async ({ page }) => {
@@ -6,33 +7,40 @@ test.describe("navigation", () => {
     // exceeds the default per-test budget even though each hop is fast.
     test.slow();
     await page.goto("/");
-    await expect(page.getByRole("heading", { level: 1 })).toContainText("HELIOS");
+    // Scoped to the sidebar: page content has its own links ("All holdings", "All news").
+    const nav = page.getByRole("navigation", { name: "Primary" });
+    await expect(page.getByRole("heading", { level: 1, name: "Overview" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Helios" }).first()).toBeVisible();
 
-    await page.getByRole("link", { name: "Holdings" }).click();
+    await nav.getByRole("link", { name: "Holdings" }).click();
     await expect(page).toHaveURL(/\/holdings$/);
     await expect(page.getByRole("heading", { name: "Holdings" })).toBeVisible();
 
-    await page.getByRole("link", { name: "Performance" }).click();
+    await nav.getByRole("link", { name: "Performance" }).click();
     await expect(page).toHaveURL(/\/performance$/);
     await expect(page.getByRole("heading", { name: "Net asset value" })).toBeVisible();
 
-    await page.getByRole("link", { name: "News", exact: true }).click();
+    await nav.getByRole("link", { name: "Card" }).click();
+    await expect(page).toHaveURL(/\/card$/);
+    await expect(page.getByRole("heading", { name: "Spending by month" })).toBeVisible();
+
+    await nav.getByRole("link", { name: "News", exact: true }).click();
     await expect(page).toHaveURL(/\/news$/);
     await expect(page.getByRole("heading", { name: "News", exact: true })).toBeVisible();
 
-    await page.getByRole("link", { name: "Insights" }).click();
+    await nav.getByRole("link", { name: "Insights" }).click();
     await expect(page).toHaveURL(/\/insights$/);
     await expect(page.getByRole("heading", { name: "AI analysis" })).toBeVisible();
 
-    await page.getByRole("link", { name: "Journal" }).click();
+    await nav.getByRole("link", { name: "Journal" }).click();
     await expect(page).toHaveURL(/\/journal$/);
     await expect(page.getByRole("heading", { name: /Open theses/ })).toBeVisible();
 
-    await page.getByRole("link", { name: "Data quality" }).click();
+    await nav.getByRole("link", { name: "Data quality" }).click();
     await expect(page).toHaveURL(/\/data-quality$/);
     await expect(page.getByRole("heading", { name: "Ingestion" })).toBeVisible();
 
-    await page.getByRole("link", { name: "Overview" }).click();
+    await nav.getByRole("link", { name: "Overview" }).click();
     await expect(page).toHaveURL(/\/$/);
   });
 
@@ -50,10 +58,10 @@ test.describe("overview", () => {
   test("leads with the NAV hero figure and headline metrics", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.getByText("Portfolio NAV").first()).toBeVisible();
-    await expect(page.getByText("Cumulative TWR")).toBeVisible();
-    await expect(page.getByText("+2.59%")).toBeVisible();
-    await expect(page.getByText("Sharpe")).toBeVisible();
+    await expect(page.getByText("Portfolio value").first()).toBeVisible();
+    await expect(page.getByText("Total return (TWR)")).toBeVisible();
+    await expect(page.getByText("+2.59%").first()).toBeVisible();
+    await expect(page.getByText("Sharpe ratio")).toBeVisible();
     await expect(page.getByText("0.46")).toBeVisible();
   });
 
@@ -69,15 +77,58 @@ test.describe("overview", () => {
     await page.goto("/");
 
     const system = page.locator("section", { hasText: "Local stack reachability" }).first();
-    await expect(system.getByText("READY")).toBeVisible();
-    await expect(system.getByText("CONFIGURED")).toBeVisible();
+    await expect(system.getByText("Ready")).toBeVisible();
+    await expect(system.getByText("Connected")).toBeVisible();
   });
 
   test("lists the largest holdings", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.getByRole("cell", { name: "AAPL_US_EQ" })).toBeVisible();
-    await expect(page.getByRole("cell", { name: "Apple Inc." })).toBeVisible();
+    // The innermost panel: the row's own <section> also holds the allocation legend.
+    const largest = page.locator("section", { hasText: "Largest holdings" }).last();
+    await expect(largest.getByText("AAPL", { exact: true })).toBeVisible();
+    await expect(largest.getByText("Apple Inc.")).toBeVisible();
+    // Value and share of what is invested, printed rather than hover-only.
+    await expect(largest.getByText(/62\.5%/)).toBeVisible();
+  });
+
+  test("switches period and keeps deposits apart from the investment result", async ({ page }) => {
+    await page.goto("/");
+
+    const periodNav = page.getByRole("navigation", { name: "Period" });
+    await expect(periodNav.getByRole("link", { name: "1M" })).toHaveAttribute("aria-current", "true");
+
+    await periodNav.getByRole("link", { name: "All" }).click();
+    await expect(page).toHaveURL(/\?period=ALL$/);
+    await expect(periodNav.getByRole("link", { name: "All" })).toHaveAttribute("aria-current", "true");
+
+    // Since inception the stub deposited €1,500: shown as money added, never as profit.
+    const breakdown = page.locator("section", { hasText: "What changed" }).first();
+    await expect(breakdown.getByText("Money moved — changes your balance, not your performance")).toBeVisible();
+    await expect(breakdown.getByText("Deposits", { exact: true })).toBeVisible();
+    await expect(page.getByText("Money added").first()).toBeVisible();
+  });
+
+  test("splits the period's result stock by stock, with the news that names each", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    const movers = page.locator("section", { hasText: "Stock by stock" }).last();
+    await expect(movers.getByRole("region", { name: /^Rose/ })).toContainText("AAPL");
+    await expect(movers.getByRole("region", { name: /^Fell/ })).toContainText("SHEL");
+    // The newest story naming Apple in the period sits under its row.
+    await expect(movers.getByRole("link", { name: /Apple beats expectations/ })).toBeVisible();
+
+    await movers.getByText("Show every figure").click();
+    await expect(movers.getByRole("columnheader", { name: "Price move" })).toBeVisible();
+  });
+
+  test("says which Trading 212 account the figures come from", async ({ page }) => {
+    await page.goto("/");
+
+    // The stub reports the demo environment; the old header claimed demo unconditionally.
+    await expect(page.getByText("Practice account").first()).toBeVisible();
   });
 });
 
@@ -110,17 +161,24 @@ test.describe("performance", () => {
     await expect(page.getByText(/365/).first()).toBeVisible();
   });
 
-  test("renders NAV, drawdown, rolling and contribution charts", async ({ page }) => {
+  test("renders NAV, growth, drawdown, distribution, rolling, contribution and cluster charts", async ({
+    page,
+  }) => {
     await page.goto("/performance");
 
     await expect(page.getByRole("heading", { name: "Net asset value" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Growth of €100" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Drawdown" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Daily return distribution" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Rolling volatility" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Rolling beta" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Contribution" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Correlation clusters" })).toBeVisible();
 
-    // Five charts on the page, each an SVG surface.
-    await expect(page.locator(".recharts-surface")).toHaveCount(5);
+    // Nine charts on the page, each an SVG surface: month by month, NAV, growth, drawdown,
+    // return distribution, rolling volatility, rolling beta, contribution and correlation
+    // clusters. (Sector attribution's chart is skipped — the fixture reports it unavailable.)
+    await expect(page.locator(".recharts-surface")).toHaveCount(9);
   });
 
   test("shows a legend whenever two series share an axis", async ({ page }) => {
@@ -147,6 +205,18 @@ test.describe("performance", () => {
     ).toBeVisible();
   });
 
+  test("lists every period and every month, with the monthly chart's table twin", async ({ page }) => {
+    await page.goto("/performance");
+
+    const periods = page.locator("section", { hasText: "Returns by period" }).first();
+    await expect(periods.getByRole("link", { name: "Since you started" })).toBeVisible();
+    await expect(periods.getByRole("columnheader", { name: "Money added" })).toBeVisible();
+
+    const monthly = page.locator("section", { hasText: "Month by month" }).first();
+    await monthly.getByText("Show as a table").click();
+    await expect(monthly.getByRole("cell", { name: "Jan 2024" })).toBeVisible();
+  });
+
   test("discloses the flat-day caveat on the VaR panel", async ({ page }) => {
     await page.goto("/performance");
 
@@ -171,6 +241,40 @@ test.describe("performance", () => {
   });
 });
 
+test.describe("card", () => {
+  test("totals spending and cashback and never calls spending a loss", async ({ page }) => {
+    await page.goto("/card");
+
+    const totals = page.getByRole("region", { name: "Card totals" });
+    await expect(totals.getByText("€150.00")).toBeVisible();
+    await expect(totals.getByText("€1.20")).toBeVisible();
+    await expect(totals.getByText(/counted as income/)).toBeVisible();
+    await expect(page.getByText(/never lowers your returns/)).toBeVisible();
+  });
+
+  test("groups spending by category and merchant, with readable names", async ({ page }) => {
+    await page.goto("/card");
+
+    const categories = page.locator("section", { hasText: "By category" }).last();
+    await expect(categories.getByText("Miscellaneous")).toBeVisible();
+    await expect(categories.getByText("Memberships")).toBeVisible();
+    const merchants = page.locator("section", { hasText: "Top merchants" }).last();
+    await expect(merchants.getByText("Grocer")).toBeVisible();
+    await expect(merchants.getByText("60%")).toBeVisible();
+  });
+
+  test("filters payments by month", async ({ page }) => {
+    await page.goto("/card");
+    const payments = page.locator("section", { hasText: "Card payments" }).last();
+    await expect(payments.getByRole("cell", { name: "Gym Club" })).toBeVisible();
+
+    await payments.getByRole("link", { name: "Mar 2024" }).click();
+    await expect(page).toHaveURL(/month=2024-03/);
+    await expect(payments.getByRole("cell", { name: "Grocer" })).toBeVisible();
+    await expect(payments.getByRole("cell", { name: "Gym Club" })).not.toBeVisible();
+  });
+});
+
 test.describe("news", () => {
   test("attributes every headline and links to the publisher", async ({ page }) => {
     await page.goto("/news");
@@ -183,7 +287,8 @@ test.describe("news", () => {
   });
 
   test("labels undated and unattributed items honestly", async ({ page }) => {
-    await page.goto("/news");
+    // Market-wide and undated items are outside the default "about my holdings" view.
+    await page.goto("/news?show=all&page=2");
 
     // "Undated" is the date slot; the headline "Undated market note" is a separate element.
     await expect(page.getByText("Undated", { exact: true })).toBeVisible();
@@ -192,11 +297,30 @@ test.describe("news", () => {
 
   test("filters by holding", async ({ page }) => {
     await page.goto("/news");
-    await page.getByRole("link", { name: "AAPL_US_EQ", exact: true }).click();
+    await page.getByRole("link", { name: "AAPL", exact: true }).click();
 
     await expect(page).toHaveURL(/ticker=AAPL_US_EQ/);
     await expect(page.getByRole("link", { name: "Apple beats expectations" })).toBeVisible();
     await expect(page.getByText("Undated market note")).not.toBeVisible();
+  });
+
+  test("leads with stories that name a holding and says why each is there", async ({
+    page,
+  }) => {
+    await page.goto("/news");
+
+    await expect(page.getByRole("link", { name: "About my holdings" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    await expect(page.getByText("Names Apple").first()).toBeVisible();
+    // A story filed under Shell that never names it is noise until asked for.
+    await expect(page.getByText("Oil prices dip on demand concerns")).not.toBeVisible();
+
+    await page.getByRole("link", { name: "Everything" }).click();
+    await expect(page).toHaveURL(/show=all/);
+    await expect(page.getByText("Oil prices dip on demand concerns")).toBeVisible();
+    await expect(page.getByText("Doesn't name the holding").first()).toBeVisible();
   });
 
   test("states that article text is never stored", async ({ page }) => {
@@ -209,7 +333,7 @@ test.describe("news", () => {
     await page.goto("/");
 
     await expect(page.getByRole("heading", { name: "Latest news" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "All news →" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "All news" })).toBeVisible();
   });
 });
 
@@ -263,7 +387,8 @@ test.describe("thesis and journal", () => {
   test("shows the outcome note on a settled thesis", async ({ page }) => {
     await page.goto("/journal");
 
-    await expect(page.getByRole("cell", { name: /Programme slowed in Q1/ })).toBeVisible();
+    // Settled theses render as cards (with a stepper and outcome excerpt), not a table row.
+    await expect(page.getByText(/Programme slowed in Q1/)).toBeVisible();
   });
 
   test("explains why a live thesis is frozen", async ({ page }) => {
@@ -275,8 +400,9 @@ test.describe("thesis and journal", () => {
   test("lists journal entries with their scope", async ({ page }) => {
     await page.goto("/journal");
 
-    await expect(page.getByRole("cell", { name: /Added on the pullback/ })).toBeVisible();
-    await expect(page.getByRole("cell", { name: "general" })).toBeVisible();
+    // Journal entries render as a timeline, not a table row.
+    await expect(page.getByText(/Added on the pullback/)).toBeVisible();
+    await expect(page.getByText("general", { exact: true })).toBeVisible();
   });
 });
 
@@ -314,18 +440,17 @@ test.describe("safety posture", () => {
     await page.waitForLoadState("networkidle");
 
     // Every fetch is server-side; the browser only ever talks to the Next origin.
-    expect(requests.filter((url) => url.includes("8099"))).toHaveLength(0);
+    expect(requests.filter((url) => url.includes(String(STUB_API_PORT)))).toHaveLength(0);
 
     const html = await page.content();
     expect(html).not.toContain("HELIOS_API_URL");
-    expect(html).not.toContain("127.0.0.1:8099");
+    expect(html).not.toContain(`127.0.0.1:${STUB_API_PORT}`);
   });
 
   test("carries the read-only disclosure on every page", async ({ page }) => {
     for (const path of ["/", "/holdings", "/performance", "/data-quality"]) {
       await page.goto(path);
-      await expect(page.getByText("READ-ONLY / NO-TRADE")).toBeVisible();
-      await expect(page.getByText(/never places trades/)).toBeVisible();
+      await expect(page.getByText("Read-only · never places trades")).toBeVisible();
     }
   });
 });

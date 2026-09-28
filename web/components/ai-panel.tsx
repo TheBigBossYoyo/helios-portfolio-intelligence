@@ -1,13 +1,20 @@
-import { Unavailable } from "@/components/panel";
+import { Sparkles } from "lucide-react";
+import { Note, Unavailable } from "@/components/panel";
+import { StatusBadge } from "@/components/status-badge";
 import { humanizeStatus } from "@/lib/format";
 import type { AiAnalysis, AiObservation } from "@/lib/types";
-import { STATUS } from "@/lib/viz";
 
-const SEVERITY_COLOR: Record<string, string> = {
-  info: STATUS.good,
-  notable: STATUS.warning,
-  elevated: STATUS.serious,
+/** Severity is the model's own vocabulary; map it onto the shared status tones so a badge reads
+ * consistently with the rest of the app instead of inventing a second colour system. */
+const SEVERITY_STATUS: Record<string, string> = {
+  info: "ok",
+  notable: "warning",
+  elevated: "serious",
 };
+
+function severityStatus(severity: string): string {
+  return SEVERITY_STATUS[severity] ?? severity;
+}
 
 /**
  * Renders an AI analysis.
@@ -28,42 +35,43 @@ export function AiPanel({ analysis }: { analysis: AiAnalysis }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <p className="border-l-2 border-amber-accent/40 pl-3 text-[11px] leading-relaxed text-neutral-500">
-        {analysis.disclosure}
-      </p>
+      <Note>{analysis.disclosure}</Note>
 
       {analysis.summary ? (
-        <p className="text-sm leading-relaxed text-neutral-200">{analysis.summary}</p>
+        <div className="flex gap-3 rounded-xl bg-accent-soft px-4 py-3.5">
+          <Sparkles aria-hidden="true" className="mt-0.5 shrink-0 text-accent" size={17} />
+          <p className="text-sm leading-relaxed text-ink">{analysis.summary}</p>
+        </div>
       ) : null}
 
-      <ol className="flex flex-col divide-y divide-neutral-900">
+      <ol className="flex flex-col gap-3">
         {analysis.observations.map((item) => (
-          <ObservationRow item={item} key={`${item.rank}-${item.headline}`} />
+          <ObservationCard item={item} key={`${item.rank}-${item.headline}`} />
         ))}
       </ol>
 
       {analysis.unavailableMetrics.length > 0 ? (
-        <p className="text-[11px] leading-relaxed text-neutral-600">
+        <p className="text-xs leading-relaxed text-ink-3">
           Reported as unavailable in the source analytics:{" "}
-          <span className="text-neutral-500">{analysis.unavailableMetrics.join(", ")}</span>
+          <span className="text-ink-2">{analysis.unavailableMetrics.join(", ")}</span>
         </p>
       ) : null}
 
-      <dl className="flex flex-wrap gap-x-6 gap-y-1 border-t border-neutral-900 pt-3 text-[10px] text-neutral-600">
-        <div className="flex gap-1">
+      <dl className="flex flex-wrap gap-x-6 gap-y-1.5 border-t border-border pt-3.5 text-xs text-ink-3">
+        <div className="flex gap-1.5">
           <dt>Model</dt>
-          <dd className="text-neutral-400">{analysis.servedByModel ?? analysis.model}</dd>
+          <dd className="font-medium text-ink-2">{analysis.servedByModel ?? analysis.model}</dd>
         </div>
         {analysis.effort ? (
-          <div className="flex gap-1">
+          <div className="flex gap-1.5">
             <dt>Effort</dt>
-            <dd className="text-neutral-400">{analysis.effort}</dd>
+            <dd className="font-medium text-ink-2">{analysis.effort}</dd>
           </div>
         ) : null}
         {analysis.inputTokens !== null ? (
-          <div className="flex gap-1">
+          <div className="flex gap-1.5">
             <dt>Tokens</dt>
-            <dd className="tabular-nums text-neutral-400">
+            <dd className="tabular font-medium text-ink-2">
               {analysis.inputTokens} in / {analysis.outputTokens ?? 0} out
               {analysis.cacheReadTokens ? ` (${analysis.cacheReadTokens} cached)` : ""}
             </dd>
@@ -74,33 +82,33 @@ export function AiPanel({ analysis }: { analysis: AiAnalysis }) {
   );
 }
 
-function ObservationRow({ item }: { item: AiObservation }) {
+function ObservationCard({ item }: { item: AiObservation }) {
   return (
-    <li className="py-3 first:pt-0 last:pb-0">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] uppercase tracking-wider text-neutral-600">
-        <span
-          className="inline-flex items-center gap-1.5"
-          style={{ color: SEVERITY_COLOR[item.severity] ?? STATUS.good }}
-        >
-          <span aria-hidden="true">●</span>
-          <span className="text-neutral-400">{item.severity}</span>
+    <li className="rounded-xl border border-border bg-surface p-4 shadow-card">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        <StatusBadge label={capitalise(item.severity)} status={severityStatus(item.severity)} />
+        <span className="rounded-full bg-surface-3 px-2 py-0.5 text-xs font-medium text-ink-2">
+          {item.category.replace(/_/g, " ")}
         </span>
-        <span>{item.category.replace(/_/g, " ")}</span>
         {item.t212Ticker ? (
-          <span className="border border-neutral-800 px-1.5 py-0.5 text-neutral-500">
+          <span className="rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent-ink">
             {item.t212Ticker}
           </span>
         ) : (
-          <span className="text-neutral-700">portfolio-wide</span>
+          <span className="text-xs text-ink-4">Portfolio-wide</span>
         )}
       </div>
-      <h3 className="mt-1 text-sm leading-snug text-neutral-200">{item.headline}</h3>
-      <p className="mt-1 text-[12px] leading-relaxed text-neutral-400">{item.detail}</p>
+      <h3 className="mt-2 text-sm font-semibold leading-snug text-ink">{item.headline}</h3>
+      <p className="mt-1 text-sm leading-relaxed text-ink-2">{item.detail}</p>
       {/* The citation is the audit trail: it names the figure the claim rests on. */}
-      <p className="mt-1.5 font-mono text-[10px] text-neutral-600">
-        <span className="text-neutral-700">evidence </span>
+      <p className="mt-2 rounded-lg bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink-3">
+        <span className="text-ink-4">evidence </span>
         {item.evidence}
       </p>
     </li>
   );
+}
+
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }

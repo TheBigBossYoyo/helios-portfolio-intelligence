@@ -4,14 +4,28 @@ import {
   parsePerformanceReport,
   parsePositions,
   parseQualityReport,
+  parseThesisDetail,
 } from "@/lib/api";
-import { performanceReport, positions, qualityReport } from "./fixtures";
+import { performanceReport, positions, qualityReport, thesisDetail } from "./fixtures";
 
 describe("parseHealth", () => {
   it("accepts a well-formed payload", () => {
     expect(
       parseHealth({ status: "ok", trading212Configured: true, databaseReady: true }),
-    ).toEqual({ status: "ok", trading212Configured: true, databaseReady: true });
+    ).toEqual({
+      status: "ok",
+      trading212Configured: true,
+      databaseReady: true,
+      trading212Environment: null,
+    });
+    expect(
+      parseHealth({
+        status: "ok",
+        trading212Configured: true,
+        databaseReady: true,
+        trading212Environment: "live",
+      })?.trading212Environment,
+    ).toBe("live");
   });
 
   it("rejects payloads with the wrong types", () => {
@@ -72,5 +86,34 @@ describe("parseQualityReport", () => {
     const broken = { ...qualityReport(), unresolvedInstruments: null };
 
     expect(parseQualityReport(broken)).toBeNull();
+  });
+});
+
+describe("parseThesisDetail", () => {
+  it("accepts the full detail payload", () => {
+    expect(parseThesisDetail(thesisDetail())).toEqual(thesisDetail());
+  });
+
+  it("rejects a payload missing the state-machine fields", () => {
+    const broken: Record<string, unknown> = { ...thesisDetail() };
+    delete broken.allowedTransitions;
+
+    expect(parseThesisDetail(broken)).toBeNull();
+  });
+
+  it("rejects a payload whose journal is not an array", () => {
+    const broken = { ...thesisDetail(), journal: null };
+
+    expect(parseThesisDetail(broken)).toBeNull();
+  });
+
+  it("rejects a payload with no nested thesis or context object", () => {
+    expect(parseThesisDetail({ ...thesisDetail(), thesis: null })).toBeNull();
+    expect(parseThesisDetail({ ...thesisDetail(), context: undefined })).toBeNull();
+  });
+
+  it("rejects a non-object payload", () => {
+    expect(parseThesisDetail(null)).toBeNull();
+    expect(parseThesisDetail([])).toBeNull();
   });
 });

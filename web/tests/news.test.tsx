@@ -45,7 +45,8 @@ describe("NewsFeed", () => {
   it("marks an unattributed item as market-wide instead of guessing a ticker", () => {
     render(<NewsFeed items={newsItems()} />);
 
-    expect(screen.getByText("AAPL_US_EQ")).toBeInTheDocument();
+    // Shown as the market symbol, without Trading 212's suffix.
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
     expect(screen.getByText("Market-wide")).toBeInTheDocument();
   });
 

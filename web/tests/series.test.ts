@@ -27,27 +27,46 @@ describe("toNavRows", () => {
 });
 
 describe("toDrawdownRows", () => {
-  it("measures decline from the running peak", () => {
-    const rows = toDrawdownRows(report.navSeries);
+  it("measures decline of the time-weighted index from its running peak", () => {
+    const series: NavPoint[] = [
+      navPoint("2024-01-01", "1000"),
+      navPoint("2024-01-02", "1100"),
+      navPoint("2024-01-03", "1050"),
+    ];
+    const returns = [
+      { asOfDate: "2024-01-02", value: 0.1 },
+      { asOfDate: "2024-01-03", value: 1050 / 1100 - 1 },
+    ];
+
+    const rows = toDrawdownRows(series, returns);
 
     expect(rows[0].drawdown).toBe(0);
     expect(rows[1].drawdown).toBe(0);
-    expect(rows[2].drawdown).toBeNull();
     // 1050 against a 1100 peak.
-    expect(rows[3].drawdown).toBeCloseTo(1050 / 1100 - 1, 12);
+    expect(rows[2].drawdown).toBeCloseTo(1050 / 1100 - 1, 12);
   });
 
-  it("does not let an unvalued gap advance the peak", () => {
+  it("does not read a withdrawal as a loss", () => {
+    // NAV halves because money left, not because anything fell: the day's TWR is 0.
+    const series: NavPoint[] = [navPoint("2024-01-01", "1000"), navPoint("2024-01-02", "500")];
+
+    const rows = toDrawdownRows(series, [{ asOfDate: "2024-01-02", value: 0 }]);
+
+    expect(rows[1].drawdown).toBe(0);
+  });
+
+  it("carries the index across an unvalued gap instead of inventing a return", () => {
     const series: NavPoint[] = [
       navPoint("2024-01-01", "100"),
       navPoint("2024-01-02", null),
       navPoint("2024-01-03", "80"),
     ];
 
-    const rows = toDrawdownRows(series);
+    // The backend emits no return across a gap, so none is passed for 2024-01-03.
+    const rows = toDrawdownRows(series, []);
 
     expect(rows[1].drawdown).toBeNull();
-    expect(rows[2].drawdown).toBeCloseTo(-0.2, 12);
+    expect(rows[2].drawdown).toBe(0);
   });
 });
 

@@ -387,6 +387,72 @@ class DailyHolding(Base):
     valuation_status: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
+class DailyHoldingFlow(Base):
+    """Cash that moved in or out of one holding on one day, in EUR (all positive magnitudes).
+
+    With the daily market values in `daily_holdings`, this is what splits a period's investment
+    result by stock: result = end value - start value - bought + sold + dividends.
+    """
+
+    __tablename__ = "daily_holding_flows"
+
+    as_of_date: Mapped[date] = mapped_column(primary_key=True)
+    t212_ticker: Mapped[str] = mapped_column(String(64), primary_key=True)
+    bought_eur: Mapped[Decimal] = mapped_column(
+        MONEY_NUMERIC, nullable=False, default=Decimal("0"), server_default="0"
+    )
+    sold_eur: Mapped[Decimal] = mapped_column(
+        MONEY_NUMERIC, nullable=False, default=Decimal("0"), server_default="0"
+    )
+    dividend_eur: Mapped[Decimal] = mapped_column(
+        MONEY_NUMERIC, nullable=False, default=Decimal("0"), server_default="0"
+    )
+
+
+class T212Export(Base):
+    """One CSV report requested from Trading 212, and its raw body once downloaded.
+
+    Raw-first, like every other source: the CSV is stored exactly as served before any row is
+    parsed out of it, so a parser change can be re-run against history. The signed download
+    link is never stored -- it is a short-lived credential for the file.
+    """
+
+    __tablename__ = "t212_exports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    time_from: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    time_to: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    #: Trading 212's own status (Queued, Processing, Running, Finished, Failed, Canceled), or
+    #: "Downloaded" once the body is stored.
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    downloaded_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class T212ExportRow(Base):
+    """A cash row parsed from an export: card payments, cashback, deposits, conversions.
+
+    Keyed by Trading 212's own ID, which for card payments, cashback and deposits is the same
+    `reference` the transactions API returns -- that is how an API "WITHDRAW" learns it was a
+    card payment at a named merchant.
+    """
+
+    __tablename__ = "t212_export_rows"
+
+    row_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    action: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), index=True, nullable=False)
+    total: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    merchant_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    merchant_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    export_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class DailyNav(Base):
     __tablename__ = "daily_nav"
 
@@ -396,6 +462,34 @@ class DailyNav(Base):
     nav_eur: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
     external_flow_eur: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
     internal_cash_flow_eur: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    # The investment-result side of the day, so a period can show where a gain came from.
+    dividend_eur: Mapped[Decimal] = mapped_column(
+        MONEY_NUMERIC, nullable=False, default=Decimal("0"), server_default="0"
+    )
+    interest_eur: Mapped[Decimal] = mapped_column(
+        MONEY_NUMERIC, nullable=False, default=Decimal("0"), server_default="0"
+    )
+    fee_eur: Mapped[Decimal] = mapped_column(
+        MONEY_NUMERIC, nullable=False, default=Decimal("0"), server_default="0"
+    )
+    #: `external_flow_eur` split into money in and money out. A day with a deposit and a card
+    #: payment nets to one figure; these keep both, so a period's gross deposits and
+    #: withdrawals are real sums and card spending is always part of the withdrawals.
+    deposit_eur: Mapped[Decimal] = mapped_column(
+        MONEY_NUMERIC, nullable=False, default=Decimal("0"), server_default="0"
+    )
+    withdrawal_eur: Mapped[Decimal] = mapped_column(
+        MONEY_NUMERIC, nullable=False, default=Decimal("0"), server_default="0"
+    )
+    #: The card-spending part of `external_flow_eur` (negative for spending, positive for a
+    #: refund). Known only once a Trading 212 export has labelled the withdrawals.
+    card_spending_eur: Mapped[Decimal] = mapped_column(
+        MONEY_NUMERIC, nullable=False, default=Decimal("0"), server_default="0"
+    )
+    #: Card cashback: income, not money the owner added, so it is never an external flow.
+    cashback_eur: Mapped[Decimal] = mapped_column(
+        MONEY_NUMERIC, nullable=False, default=Decimal("0"), server_default="0"
+    )
     valuation_status: Mapped[str] = mapped_column(String(32), nullable=False)
     missing_price_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     missing_fx_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

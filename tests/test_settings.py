@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from pathlib import Path
 
@@ -11,6 +12,10 @@ from helios.config import Settings
 
 
 def test_settings_use_keyring_secret_fallback(monkeypatch: MonkeyPatch) -> None:
+    # The suite disables keyring reads session-wide so no test can adopt the developer's real
+    # credentials. This test is about the fallback itself, so it opts back in -- against a fake
+    # backend, which is what makes re-enabling safe here and nowhere else.
+    monkeypatch.delenv("HELIOS_DISABLE_KEYRING", raising=False)
     monkeypatch.setenv("HELIOS_T212_API_KEY", "demo-key")
     monkeypatch.delenv("HELIOS_T212_API_SECRET", raising=False)
 
@@ -149,6 +154,36 @@ def test_data_provider_settings_are_enumerated() -> None:
         Settings(factor_data_provider="kenneth-french")
 
 
+def test_market_data_fallback_provider_defaults_disabled_and_is_enumerated() -> None:
+    settings = Settings()
+
+    assert settings.market_data_fallback_provider == "disabled"
+    assert settings.market_data_fallback_api_key is None
+
+    with pytest.raises(ValueError, match="market_data_fallback_provider must be one of"):
+        Settings(market_data_fallback_provider="yfinance")
+
+    assert (
+        Settings(market_data_fallback_provider="alphavantage").market_data_fallback_provider
+        == "alphavantage"
+    )
+
+
+def test_blank_market_data_fallback_api_key_is_unset(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("HELIOS_MARKET_DATA_FALLBACK_API_KEY", "   ")
+
+    assert Settings().market_data_fallback_api_key is None
+
+
+def test_market_data_fallback_api_key_is_secret_and_masked(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("HELIOS_MARKET_DATA_FALLBACK_API_KEY", "av-secret")
+
+    settings = Settings()
+
+    assert settings.market_data_fallback_api_key == SecretStr("av-secret")
+    assert "av-secret" not in repr(settings)
+
+
 def test_passive_benchmark_key_must_be_a_known_proxy() -> None:
     with pytest.raises(ValueError, match="analytics_passive_benchmark_key must be one of"):
         Settings(analytics_passive_benchmark_key="sp500")
@@ -167,3 +202,86 @@ def test_blank_benchmark_currency_is_unset(monkeypatch: MonkeyPatch) -> None:
 def test_settings_has_no_ambient_clock() -> None:
     # The replay/report pipeline must take its clock by injection, never from date.today().
     assert not hasattr(Settings(), "today")
+
+
+def test_env_example_lists_every_setting() -> None:
+    """`.env.example` promises that nothing is configurable-but-undiscoverable. Hold it to that.
+
+    It drifted once already -- 25 real settings were missing from it -- and nothing noticed,
+    because nothing checked. A commented-out line counts: some settings are only worth touching
+    outside Docker and are shown commented for that reason.
+    """
+    example = Path(__file__).resolve().parents[1] / ".env.example"
+    listed = set(
+        re.findall(r"^#?\s*(HELIOS_[A-Z0-9_]+)=", example.read_text(encoding="utf-8"), re.M)
+    )
+    declared = {f"HELIOS_{name.upper()}" for name in Settings.model_fields}
+
+    assert declared - listed == set(), "settings missing from .env.example"
+
+
+def test_dotenv_is_read_and_environment_outranks_it(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """A bare install must see what the settings page saved to `.env`.
+
+    Before this, nothing loaded `.env` at all: a provider change saved from the dashboard was
+    written, the restart went through, and the old value came back. Environment variables still
+    win, so exporting one to override the file keeps working.
+    """
+    monkeypatch.delenv("HELIOS_DISABLE_DOTENV", raising=False)
+    monkeypatch.delenv("HELIOS_MARKET_DATA_PROVIDER", raising=False)
+    monkeypatch.delenv("HELIOS_ANTHROPIC_MODEL", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "HELIOS_MARKET_DATA_PROVIDER=twelvedata\nHELIOS_ANTHROPIC_MODEL=from-file\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HELIOS_ANTHROPIC_MODEL", "from-environment")
+
+    settings = Settings()
+
+    assert settings.market_data_provider == "twelvedata"
+    assert settings.anthropic_model == "from-environment"
+
+
+def test_dotenv_switch_keeps_a_developer_env_out_of_tests(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """The suite runs from the repository root, where the developer's real `.env` lives."""
+    monkeypatch.setenv("HELIOS_DISABLE_DOTENV", "1")
+    monkeypatch.delenv("HELIOS_MARKET_DATA_PROVIDER", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("HELIOS_MARKET_DATA_PROVIDER=twelvedata\n", encoding="utf-8")
+
+    assert Settings().market_data_provider == "disabled"
+
+
+def test_env_file_override_is_independent_of_the_working_directory(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """A shortcut does not choose where a process starts; `HELIOS_ENV_FILE` pins the file."""
+    elsewhere = tmp_path / "config-home"
+    elsewhere.mkdir()
+    (elsewhere / "helios.env").write_text("HELIOS_ANTHROPIC_MODEL=pinned\n", encoding="utf-8")
+    monkeypatch.delenv("HELIOS_DISABLE_DOTENV", raising=False)
+    monkeypatch.delenv("HELIOS_ANTHROPIC_MODEL", raising=False)
+    monkeypatch.setenv("HELIOS_ENV_FILE", str(elsewhere / "helios.env"))
+    monkeypatch.chdir(tmp_path)
+
+    assert Settings().anthropic_model == "pinned"
+
+
+def test_a_saved_fallback_key_alone_enables_alpha_vantage() -> None:
+    """Found live: the key was saved, the second dropdown was not, and London stayed unpriced."""
+    assert Settings().effective_market_data_fallback_provider == "disabled"
+    assert (
+        Settings(
+            market_data_fallback_api_key=SecretStr("av-key")
+        ).effective_market_data_fallback_provider
+        == "alphavantage"
+    )
+    explicit = Settings(
+        market_data_fallback_api_key=SecretStr("td-key"), market_data_fallback_provider="twelvedata"
+    )
+    assert explicit.effective_market_data_fallback_provider == "twelvedata"

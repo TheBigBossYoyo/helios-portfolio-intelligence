@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from .models import (
     AiObservation,
     AiRun,
     DailyHolding,
+    DailyHoldingFlow,
     DailyNav,
     Dividend,
     FactorReturnDaily,
@@ -25,6 +27,8 @@ from .models import (
     PositionReconciliation,
     RawNews,
     SyncStatus,
+    T212Export,
+    T212ExportRow,
     Thesis,
     Transaction,
 )
@@ -32,6 +36,13 @@ from .portfolio_transforms import InstrumentSeed
 
 METADATA_ENDPOINT = "/equity/metadata/instruments"
 PORTFOLIO_SYNC_LEASE_ENDPOINT = "__portfolio_sync__"
+#: Replay rewrites the whole daily_holdings/daily_nav pair, so two concurrent runs duplicate
+#: every provider fetch and race to be the last writer. It takes its own lease under a
+#: separate key so a running replay never blocks a sync, or the reverse.
+PERFORMANCE_REPLAY_LEASE_ENDPOINT = "__performance_replay__"
+#: Lease keys are internal bookkeeping rows in ``sync_status``, not real upstream endpoints,
+#: so every report that lists endpoint health filters them out.
+LEASE_ENDPOINTS = frozenset({PORTFOLIO_SYNC_LEASE_ENDPOINT, PERFORMANCE_REPLAY_LEASE_ENDPOINT})
 INSTRUMENT_UPSERT_CHUNK_SIZE = 500
 
 
@@ -68,6 +79,9 @@ class ReplayInputData:
     orders: list[OrderHistory]
     dividends: list[Dividend]
     transactions: list[Transaction]
+    #: Transaction reference -> export action ("Card debit", "Spending cashback", ...), for
+    #: the references a Trading 212 CSV export has labelled.
+    export_actions: dict[str, str] = field(default_factory=dict)
 
 
 class SyncAlreadyRunningError(RuntimeError):
@@ -142,12 +156,40 @@ class PortfolioRepository:
             )
             return {instrument.t212_ticker: instrument for instrument in result}
 
-    async def acquire_portfolio_sync_lease(
+    async def get_latest_positions(self) -> list[PositionLive]:
+        """The most recently stored live-positions snapshot, or `[]` when none has synced yet.
+
+        Used by `t212_reparse` to recompute reconciliation against a replayed order ledger
+        without any network access: the positions themselves are a moment-in-time snapshot only
+        a live sync can refresh, but reconciling them against a corrected order history is a
+        pure, offline computation reusing `portfolio_sync.build_reconciliations`.
+        """
+        async with self._session_factory() as session:
+            latest_ts = await session.scalar(select(func.max(PositionLive.ts)))
+            if latest_ts is None:
+                return []
+            result = await session.scalars(
+                select(PositionLive)
+                .where(PositionLive.ts == latest_ts)
+                .order_by(PositionLive.t212_ticker)
+            )
+            return list(result)
+
+    async def acquire_lease(
         self,
         *,
+        endpoint: str,
         acquired_at: datetime,
         lease_minutes: int,
+        busy_message: str,
     ) -> SyncLease:
+        """Take an exclusive lease on ``endpoint``, or refuse.
+
+        The claim is a single conditional UPDATE followed by a read-back of the token we
+        wrote: whoever's token survives holds the lease, so two callers racing on the same
+        key cannot both believe they won. A lease older than ``lease_minutes`` is treated as
+        abandoned, which is what stops a process killed mid-run from locking the key forever.
+        """
         expires_at = acquired_at + timedelta(minutes=lease_minutes)
         stale_before = acquired_at - timedelta(minutes=lease_minutes)
         token = uuid4().hex
@@ -155,12 +197,12 @@ class PortfolioRepository:
             async with session.begin():
                 await session.execute(
                     sqlite_insert(SyncStatus)
-                    .values(endpoint=PORTFOLIO_SYNC_LEASE_ENDPOINT)
+                    .values(endpoint=endpoint)
                     .on_conflict_do_nothing(index_elements=[SyncStatus.endpoint])
                 )
                 await session.execute(
                     update(SyncStatus)
-                    .where(SyncStatus.endpoint == PORTFOLIO_SYNC_LEASE_ENDPOINT)
+                    .where(SyncStatus.endpoint == endpoint)
                     .where(
                         (SyncStatus.last_status != "running")
                         | (SyncStatus.last_status.is_(None))
@@ -174,22 +216,22 @@ class PortfolioRepository:
                         last_error=token,
                     )
                 )
-                lease_status = await session.get(SyncStatus, PORTFOLIO_SYNC_LEASE_ENDPOINT)
+                lease_status = await session.get(SyncStatus, endpoint)
                 if (
                     lease_status is None
                     or lease_status.last_status != "running"
                     or lease_status.last_attempt_at != acquired_at
                     or lease_status.last_error != token
                 ):
-                    raise SyncAlreadyRunningError("Portfolio sync already running")
+                    raise SyncAlreadyRunningError(busy_message)
         return SyncLease(
-            endpoint=PORTFOLIO_SYNC_LEASE_ENDPOINT,
+            endpoint=endpoint,
             token=token,
             acquired_at=acquired_at,
             expires_at=expires_at,
         )
 
-    async def release_portfolio_sync_lease(
+    async def release_lease(
         self,
         *,
         lease: SyncLease,
@@ -197,6 +239,11 @@ class PortfolioRepository:
         succeeded: bool,
         error_message: str | None,
     ) -> None:
+        """Release a lease, but only if we still hold it.
+
+        The token check matters: if this run overran its lease and another already claimed
+        the key, releasing unconditionally would hand that live run's lease away.
+        """
         async with self._session_factory() as session:
             async with session.begin():
                 values: dict[str, object] = {
@@ -208,11 +255,67 @@ class PortfolioRepository:
                     values["last_success_at"] = completed_at
                 await session.execute(
                     update(SyncStatus)
-                    .where(SyncStatus.endpoint == PORTFOLIO_SYNC_LEASE_ENDPOINT)
+                    .where(SyncStatus.endpoint == lease.endpoint)
                     .where(SyncStatus.last_status == "running")
                     .where(SyncStatus.last_error == lease.token)
                     .values(values)
                 )
+
+    async def acquire_portfolio_sync_lease(
+        self,
+        *,
+        acquired_at: datetime,
+        lease_minutes: int,
+    ) -> SyncLease:
+        return await self.acquire_lease(
+            endpoint=PORTFOLIO_SYNC_LEASE_ENDPOINT,
+            acquired_at=acquired_at,
+            lease_minutes=lease_minutes,
+            busy_message="Portfolio sync already running",
+        )
+
+    async def release_portfolio_sync_lease(
+        self,
+        *,
+        lease: SyncLease,
+        completed_at: datetime,
+        succeeded: bool,
+        error_message: str | None,
+    ) -> None:
+        await self.release_lease(
+            lease=lease,
+            completed_at=completed_at,
+            succeeded=succeeded,
+            error_message=error_message,
+        )
+
+    async def acquire_performance_replay_lease(
+        self,
+        *,
+        acquired_at: datetime,
+        lease_minutes: int,
+    ) -> SyncLease:
+        return await self.acquire_lease(
+            endpoint=PERFORMANCE_REPLAY_LEASE_ENDPOINT,
+            acquired_at=acquired_at,
+            lease_minutes=lease_minutes,
+            busy_message="Performance replay already running",
+        )
+
+    async def release_performance_replay_lease(
+        self,
+        *,
+        lease: SyncLease,
+        completed_at: datetime,
+        succeeded: bool,
+        error_message: str | None,
+    ) -> None:
+        await self.release_lease(
+            lease=lease,
+            completed_at=completed_at,
+            succeeded=succeeded,
+            error_message=error_message,
+        )
 
     async def ingest_domain_snapshot(
         self,
@@ -245,7 +348,7 @@ class PortfolioRepository:
         async with self._session_factory() as session:
             result = await session.scalars(
                 select(SyncStatus)
-                .where(SyncStatus.endpoint != PORTFOLIO_SYNC_LEASE_ENDPOINT)
+                .where(SyncStatus.endpoint.not_in(sorted(LEASE_ENDPOINTS)))
                 .order_by(SyncStatus.endpoint)
             )
             return list(result)
@@ -270,12 +373,85 @@ class PortfolioRepository:
                     select(Transaction).order_by(Transaction.ts, Transaction.reference)
                 )
             )
+            export_actions = {
+                row_id: action
+                for row_id, action in (
+                    await session.execute(select(T212ExportRow.row_id, T212ExportRow.action))
+                ).all()
+            }
             return ReplayInputData(
                 instruments=instruments,
                 orders=orders,
                 dividends=dividends,
                 transactions=transactions,
+                export_actions=export_actions,
             )
+
+    # -- Card history (Trading 212 CSV exports) ---------------------------------------------
+
+    async def latest_export(self) -> T212Export | None:
+        async with self._session_factory() as session:
+            latest: T212Export | None = await session.scalar(
+                select(T212Export).order_by(T212Export.requested_at.desc(), T212Export.id.desc())
+            )
+            return latest
+
+    async def latest_downloaded_export(self) -> T212Export | None:
+        async with self._session_factory() as session:
+            latest: T212Export | None = await session.scalar(
+                select(T212Export)
+                .where(T212Export.downloaded_at.is_not(None))
+                .order_by(T212Export.downloaded_at.desc(), T212Export.id.desc())
+            )
+            return latest
+
+    async def add_export(self, export: T212Export) -> int:
+        async with self._session_factory() as session:
+            async with session.begin():
+                session.add(export)
+            return export.id
+
+    async def update_export(self, export_id: int, **values: object) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await session.execute(
+                    update(T212Export).where(T212Export.id == export_id).values(**values)
+                )
+
+    async def upsert_export_rows(self, rows: Sequence[T212ExportRow]) -> int:
+        async with self._session_factory() as session:
+            async with session.begin():
+                for row in rows:
+                    await session.merge(row)
+        return len(rows)
+
+    async def list_export_rows(self) -> list[T212ExportRow]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(select(T212ExportRow).order_by(T212ExportRow.ts.desc()))
+            )
+
+    async def count_export_rows(self) -> tuple[int, int]:
+        """(card rows, all cash rows) stored from exports."""
+        async with self._session_factory() as session:
+            total = await session.scalar(select(func.count()).select_from(T212ExportRow)) or 0
+            card = (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(T212ExportRow)
+                    .where(func.lower(T212ExportRow.action).like("card %"))
+                )
+                or 0
+            )
+            return int(card), int(total)
+
+    async def first_ledger_event_at(self) -> datetime | None:
+        """The earliest cash transaction or fill: where a first export should start."""
+        async with self._session_factory() as session:
+            first_transaction = await session.scalar(select(func.min(Transaction.ts)))
+            first_fill = await session.scalar(select(func.min(OrderHistory.fill_timestamp)))
+        candidates = [value for value in (first_transaction, first_fill) if value is not None]
+        return min(candidates) if candidates else None
 
     async def list_market_prices(
         self,
@@ -362,17 +538,30 @@ class PortfolioRepository:
         *,
         holdings: list[DailyHolding],
         nav_rows: list[DailyNav],
+        flows: Sequence[DailyHoldingFlow] = (),
     ) -> None:
         async with self._session_factory() as session:
             async with session.begin():
                 await session.execute(delete(DailyHolding))
                 await session.execute(delete(DailyNav))
+                await session.execute(delete(DailyHoldingFlow))
                 session.add_all(holdings)
                 session.add_all(nav_rows)
+                session.add_all(flows)
 
     async def list_daily_nav(self) -> list[DailyNav]:
         async with self._session_factory() as session:
             return list(await session.scalars(select(DailyNav).order_by(DailyNav.as_of_date)))
+
+    async def list_daily_holding_flows(self) -> list[DailyHoldingFlow]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(DailyHoldingFlow).order_by(
+                        DailyHoldingFlow.as_of_date, DailyHoldingFlow.t212_ticker
+                    )
+                )
+            )
 
     async def list_daily_holdings(self) -> list[DailyHolding]:
         async with self._session_factory() as session:
@@ -522,6 +711,35 @@ class PortfolioRepository:
                 session.add(row)
             return row.id
 
+    async def list_raw_news(self) -> list[RawNews]:
+        """Every stored raw feed body, oldest first -- the replay input for `news-reparse`."""
+        async with self._session_factory() as session:
+            statement = select(RawNews).order_by(RawNews.id)
+            return list(await session.scalars(statement))
+
+    async def list_all_instrument_news_targets(self) -> list[InstrumentNewsTarget]:
+        """Every instrument Helios has metadata for, not just ones currently held.
+
+        `list_instrument_news_targets` is scoped to live positions to bound how many outbound
+        requests a live sync issues. Replay makes no outbound requests at all, so it can attribute
+        a `url_template` feed's stored URL against the full instrument table -- including a
+        position closed since the row was fetched -- rather than losing that attribution just
+        because the holding is gone today.
+        """
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                select(
+                    Instrument.t212_ticker,
+                    Instrument.isin,
+                    Instrument.yahoo_ticker,
+                    Instrument.name,
+                ).order_by(Instrument.t212_ticker)
+            )
+            return [
+                InstrumentNewsTarget(t212_ticker=ticker, isin=isin, yahoo_ticker=yahoo, name=name)
+                for ticker, isin, yahoo, name in rows.all()
+            ]
+
     async def upsert_news_items(
         self, rows: list[NewsItem], *, dedupe_window_hours: int = 48
     ) -> int:
@@ -650,7 +868,7 @@ class PortfolioRepository:
         async with self._session_factory() as session:
             statement: Select[tuple[datetime | None]] = select(
                 func.max(SyncStatus.last_attempt_at)
-            ).where(SyncStatus.endpoint != PORTFOLIO_SYNC_LEASE_ENDPOINT)
+            ).where(SyncStatus.endpoint.not_in(sorted(LEASE_ENDPOINTS)))
             return await session.scalar(statement)
 
     async def _upsert_instrument_seeds(

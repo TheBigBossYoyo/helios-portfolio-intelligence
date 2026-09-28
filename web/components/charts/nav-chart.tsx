@@ -18,6 +18,7 @@ export interface NavChartPoint {
   date: string;
   nav: number | null;
   passive: number | null;
+  invested?: number | null;
 }
 
 /**
@@ -30,20 +31,31 @@ export interface NavChartPoint {
 export function NavChart({
   data,
   passiveLabel,
+  showInvested = false,
+  height,
 }: {
   data: NavChartPoint[];
   passiveLabel?: string | null;
+  /**
+   * Draw "money put in" (net deposits to date) under the value line. The gap between the two
+   * is what the investments made or lost -- deposits raise both lines, so they never look like
+   * profit.
+   */
+  showInvested?: boolean;
+  height?: number;
 }) {
   const hasPassive = Boolean(passiveLabel) && data.some((point) => point.passive !== null);
-  const legend = hasPassive
-    ? [
-        { label: "Portfolio NAV", color: SERIES.one },
-        { label: passiveLabel ?? "Passive proxy", color: SERIES.two },
-      ]
-    : undefined;
+  const hasInvested =
+    showInvested && data.some((point) => point.invested !== null && point.invested !== undefined);
+  const legendItems = [
+    { label: "Portfolio value", color: SERIES.one },
+    ...(hasInvested ? [{ label: "Money put in", color: SERIES.three }] : []),
+    ...(hasPassive ? [{ label: passiveLabel ?? "Passive proxy", color: SERIES.two }] : []),
+  ];
+  const legend = legendItems.length > 1 ? legendItems : undefined;
 
   return (
-    <ChartShell legend={legend}>
+    <ChartShell height={height} legend={legend}>
       <ResponsiveContainer height="100%" width="100%">
         <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
           <defs>
@@ -76,7 +88,7 @@ export function NavChart({
             connectNulls={false}
             dataKey="nav"
             fill="url(#navFill)"
-            name="Portfolio NAV"
+            name="Portfolio value"
             stroke="none"
             type="monotone"
           />
@@ -85,13 +97,28 @@ export function NavChart({
             connectNulls={false}
             dataKey="nav"
             dot={false}
-            name="Portfolio NAV"
+            name="Portfolio value"
             stroke={SERIES.one}
             strokeLinecap="round"
             strokeLinejoin="round"
             strokeWidth={MARK.lineWidth}
             type="monotone"
           />
+          {hasInvested ? (
+            <Line
+              activeDot={{ r: MARK.markerRadius, strokeWidth: MARK.ringWidth, stroke: INK.surface }}
+              connectNulls={false}
+              dataKey="invested"
+              dot={false}
+              name="Money put in"
+              stroke={SERIES.three}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={MARK.lineWidth}
+              // A step, not a slope: money arrives on a day, it does not drift in.
+              type="stepAfter"
+            />
+          ) : null}
           {hasPassive ? (
             <Line
               activeDot={{ r: MARK.markerRadius, strokeWidth: MARK.ringWidth, stroke: INK.surface }}

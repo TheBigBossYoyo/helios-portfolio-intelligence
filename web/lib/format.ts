@@ -21,7 +21,9 @@ const COMPACT_EUR = new Intl.NumberFormat("en-IE", {
   style: "currency",
   currency: "EUR",
   notation: "compact",
-  maximumFractionDigits: 1,
+  // Significant digits, not fraction digits: on a narrow axis (EUR 1,500-1,700) one fraction
+  // digit printed "EUR 1.6K" on two different ticks.
+  maximumSignificantDigits: 3,
 });
 
 /** Decimal strings arrive exact; parse only here, at the render boundary. */
@@ -66,6 +68,54 @@ export function formatQuantity(value: string | null | undefined): string {
 export function formatDate(value: string | null | undefined): string {
   if (!value) return EMPTY;
   return value.slice(0, 10);
+}
+
+// Spelled out rather than Intl: ICU versions disagree on en-GB's "Sep" vs "Sept", and the
+// server and the browser must render the same text.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "27 Sep 2026": for prose and labels. Tables keep ISO dates so columns sort and align. */
+export function formatDay(value: string | null | undefined): string {
+  if (!value) return EMPTY;
+  const parsed = new Date(`${value.slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return `${parsed.getUTCDate()} ${MONTHS[parsed.getUTCMonth()]} ${parsed.getUTCFullYear()}`;
+}
+
+/**
+ * "VUAG" from Trading 212's "VUAGl_EQ": the part before the underscore, without the lowercase
+ * exchange letter Trading 212 appends to non-US lines ("l" = London).
+ */
+export function displayTicker(ticker: string): string {
+  const base = ticker.split("_")[0] || ticker;
+  return base.replace(/[a-z]+$/, "") || base;
+}
+
+/** "SERVICE_PROVIDERS" -> "Service providers": Trading 212's category codes, read as words. */
+export function categoryLabel(code: string | null): string {
+  if (!code || code === "UNCATEGORISED") return "Uncategorised";
+  const words = code.toLowerCase().replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+const ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+  "#39": "'",
+};
+
+/** Feed summaries sometimes carry HTML (Google News wraps them in links); show the text only. */
+export function plainText(value: string | null | undefined): string {
+  if (!value) return "";
+  return value
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&(#?\w+);/g, (match, name: string) => ENTITIES[name] ?? match)
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function formatDateTime(value: string | null | undefined): string {

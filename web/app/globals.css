@@ -1,46 +1,179 @@
 @import "tailwindcss";
 
-@theme {
-  --color-amber-accent: #ffb000;
-  --color-acid-green: #ccff00;
-  --color-graphite: #09090b;
-  --color-graphite-light: #18181b;
-  --color-border: #27272a;
+/*
+ * Helios design tokens.
+ *
+ * Every colour in the app is a role, defined once per theme below and exposed to Tailwind as a
+ * utility (`bg-surface`, `text-ink-2`, `border-border`...). Components never name a hex or a
+ * Tailwind palette step, so the light and dark themes are the same markup.
+ *
+ * Light is the default. `data-theme` on <html> is set before first paint by the script in
+ * app/layout.tsx from the stored preference (light / dark / follow the system), so there is no
+ * flash of the wrong theme. The dark block is *selected* values, not an inversion.
+ *
+ * Chart series colours are the dataviz reference palette, validated against these exact
+ * surfaces (see lib/viz.ts for the commands and results).
+ */
 
-  /* Panel surfaces, one step apart, so nesting reads as depth rather than more borders. */
-  --color-panel: #101012;
-  --color-panel-raised: #141417;
+:root {
+  color-scheme: light;
 
-  --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  --font-sans: var(--font-ibm-plex-sans), ui-sans-serif, sans-serif;
+  /* Planes */
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f8f9fb;
+  --surface-3: #eff1f5;
+  --border: #e6e8ec;
+  --border-strong: #d3d8e0;
+
+  /* Ink. ink-3 is the quietest colour allowed for readable text (4.8:1 on white); ink-4 is for
+     axis ticks, placeholders and decoration only. */
+  --ink: #101828;
+  --ink-2: #475467;
+  --ink-3: #667085;
+  --ink-4: #98a2b3;
+
+  /* Interactive accent (UI chrome, never a data series) and the brand sun. */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef2ff;
+  --accent-ink: #3730a3;
+  --accent-contrast: #ffffff;
+  --brand: #f59e0b;
+
+  /* Meaning. Text-safe steps; the *-soft fills sit behind them. */
+  --positive: #067647;
+  --positive-soft: #ecfdf3;
+  --negative: #b42318;
+  --negative-soft: #fef3f2;
+  --warning: #b54708;
+  --warning-soft: #fffaeb;
+
+  /* Status marks (dots, glyphs). Reserved: never a series colour. */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+
+  /* Categorical series, fixed order, never cycled. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+
+  /* Chart chrome */
+  --chart-grid: #eef0f3;
+  --chart-axis: #d0d5dd;
+  --chart-tick: #98a2b3;
+  --chart-cursor: #c4cad4;
+
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --shadow-pop: 0 12px 32px -8px rgba(16, 24, 40, 0.18), 0 4px 8px -4px rgba(16, 24, 40, 0.08);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0b0e14;
+  --surface: #141820;
+  --surface-2: #191e28;
+  --surface-3: #212735;
+  --border: #252b37;
+  --border-strong: #343c4c;
+
+  --ink: #f2f4f7;
+  --ink-2: #c1c7d2;
+  --ink-3: #939cad;
+  --ink-4: #6b7485;
+
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --accent-soft: rgba(129, 140, 248, 0.14);
+  --accent-ink: #c7d2fe;
+  --accent-contrast: #0b0e14;
+  --brand: #fbbf24;
+
+  --positive: #47cd89;
+  --positive-soft: rgba(71, 205, 137, 0.12);
+  --negative: #f97066;
+  --negative-soft: rgba(249, 112, 102, 0.12);
+  --warning: #fdb022;
+  --warning-soft: rgba(253, 176, 34, 0.12);
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+
+  --chart-grid: #1f2530;
+  --chart-axis: #343c4c;
+  --chart-tick: #6b7485;
+  --chart-cursor: #4a5366;
+
+  --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.015), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 16px 40px -8px rgba(0, 0, 0, 0.6), 0 4px 10px -4px rgba(0, 0, 0, 0.4);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-4: var(--ink-4);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-contrast: var(--accent-contrast);
+  --color-brand: var(--brand);
+  --color-positive: var(--positive);
+  --color-positive-soft: var(--positive-soft);
+  --color-negative: var(--negative);
+  --color-negative-soft: var(--negative-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+
+  --shadow-card: var(--shadow-card);
+  --shadow-pop: var(--shadow-pop);
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 @layer base {
-  :root {
-    color-scheme: dark;
+  html {
+    background-color: var(--bg);
   }
 
   body {
-    background-color: var(--color-graphite);
-    /* Two layers: a faint engineering grid, and a slow radial wash that keeps the top of the
-       page from reading as a flat black rectangle. */
-    background-image:
-      radial-gradient(120rem 60rem at 50% -20rem, rgba(255, 176, 0, 0.055), transparent 60%),
-      linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
-    background-size: 100% 100%, 24px 24px, 24px 24px;
-    background-attachment: fixed, scroll, scroll;
-    font-feature-settings: "tnum" 1, "cv02" 1, "cv03" 1, "cv04" 1;
+    background-color: var(--bg);
+    color: var(--ink);
+    /* Inter's alternate digits and a disambiguated capital I; proportional figures by default,
+       tabular only where numbers align in columns. */
+    font-feature-settings: "cv05" 1, "cv08" 1, "cv11" 1;
+    text-rendering: optimizeLegibility;
   }
 
   ::selection {
-    background-color: var(--color-amber-accent);
-    color: #000;
+    background-color: var(--accent-soft);
+    color: var(--ink);
   }
 
-  /* Keyboard focus must stay obvious against a dark, low-contrast surface. */
   :focus-visible {
-    outline: 2px solid var(--color-amber-accent);
+    outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
 
@@ -49,118 +182,38 @@
     height: 10px;
   }
   ::-webkit-scrollbar-track {
-    background: var(--color-graphite);
+    background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #2c2c2f;
-    border: 2px solid var(--color-graphite);
-    border-radius: 6px;
+    background: var(--border-strong);
+    border: 3px solid var(--bg);
+    border-radius: 999px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #3a3a3e;
+    background: var(--ink-4);
+  }
+
+  /* Theme switches repaint colours only; nothing slides around. */
+  @media (prefers-reduced-motion: no-preference) {
+    body,
+    .theme-fade {
+      transition:
+        background-color 160ms ease,
+        border-color 160ms ease,
+        color 160ms ease;
+    }
   }
 }
 
 @layer utilities {
-  .noise-bg {
-    position: relative;
-  }
-  .noise-bg::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    opacity: 0.03;
-    z-index: 0;
-    pointer-events: none;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  .tabular {
+    font-variant-numeric: tabular-nums;
   }
 
-  /* A panel is a surface with a top highlight — the cheap trick that reads as a raised edge
-     under a light source, without adding a second border. */
-  .panel-surface {
-    background-color: var(--color-panel);
-    box-shadow:
-      inset 0 1px 0 0 rgba(255, 255, 255, 0.035),
-      0 1px 2px 0 rgba(0, 0, 0, 0.4);
-  }
-
-  .panel-raised {
-    background-color: var(--color-panel-raised);
-    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.045);
-  }
-
-  /* Hairline rule that fades at both ends — separates sections without a hard box. */
-  .rule-fade {
-    background-image: linear-gradient(
-      to right,
-      transparent,
-      var(--color-border) 12%,
-      var(--color-border) 88%,
-      transparent
-    );
-  }
-
-  /* A single sweeping highlight, used only on the hero figure. Motion-safe by construction:
-     the animation is declared inside the reduced-motion guard below, not disabled by it. */
-  .sheen {
-    position: relative;
-    overflow: hidden;
-  }
-  .sheen::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background: linear-gradient(
-      105deg,
-      transparent 40%,
-      rgba(255, 176, 0, 0.07) 50%,
-      transparent 60%
-    );
-    transform: translateX(-100%);
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    .sheen::after {
-      animation: sheen-sweep 9s ease-in-out infinite;
-    }
-  }
-
-  @keyframes sheen-sweep {
-    0%,
-    70% {
-      transform: translateX(-100%);
-    }
-    100% {
-      transform: translateX(100%);
-    }
-  }
-
-  /* Nav underline that grows from the centre on hover. */
-  .nav-underline::after {
-    content: "";
-    position: absolute;
-    bottom: 0;
-    left: 50%;
-    height: 2px;
-    width: 0;
-    background-color: var(--color-amber-accent);
-    transform: translateX(-50%);
-    transition: width 180ms ease-out;
-  }
-  .nav-underline:hover::after {
-    width: 60%;
-  }
-  .nav-underline[aria-current="page"]::after {
-    width: 100%;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .nav-underline::after {
-      transition: none;
-    }
+  /* The one hero surface on the overview: a quiet wash of the accent, not a gradient block. */
+  .hero-wash {
+    background-image:
+      radial-gradient(40rem 18rem at 100% 0%, var(--accent-soft), transparent 70%),
+      radial-gradient(30rem 14rem at 0% 100%, color-mix(in srgb, var(--brand) 10%, transparent), transparent 70%);
   }
 }

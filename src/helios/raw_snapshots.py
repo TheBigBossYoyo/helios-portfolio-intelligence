@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Protocol
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .models import RawSnapshot
@@ -50,6 +51,17 @@ class RawSnapshotRepository:
                 )
             )
             await session.commit()
+
+    async def list_snapshots(self) -> list[RawSnapshot]:
+        """Every stored Trading 212 response, oldest first -- the replay input for `t212-reparse`.
+
+        Mirrors `PortfolioRepository.list_raw_news`: no filtering happens in SQL because a raw
+        row's endpoint string varies with pagination (a cursor query string, occasionally a full
+        URL), so `t212_reparse` classifies rows in Python instead.
+        """
+        async with self._session_factory() as session:
+            statement = select(RawSnapshot).order_by(RawSnapshot.id)
+            return list(await session.scalars(statement))
 
 
 def encode_payload(content: bytes, content_type: str | None) -> JsonValue:

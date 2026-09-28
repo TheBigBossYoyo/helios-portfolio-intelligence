@@ -6,9 +6,12 @@ import json
 import sys
 from collections.abc import Awaitable, Callable, Iterable
 from decimal import Decimal
+from pathlib import Path
 
+from .backup import BackupError, backup_database, format_size
 from .config import load_settings
 from .dependencies import Container, build_container
+from .news import NewsReparseSummary
 from .schemas import (
     AiAnalysisModel,
     NewsItemModel,
@@ -20,6 +23,7 @@ from .schemas import (
     QualityReport,
     ThesisModel,
 )
+from .t212_reparse import T212ReparseSummary
 
 
 def main() -> int:
@@ -37,6 +41,12 @@ def main() -> int:
         return asyncio.run(_run_performance_report())
     if args.command == "news-sync":
         return asyncio.run(_run_news_sync())
+    if args.command == "news-reparse":
+        return asyncio.run(_run_news_reparse())
+    if args.command == "t212-reparse":
+        return asyncio.run(_run_t212_reparse())
+    if args.command == "backup":
+        return _run_backup(dest=args.dest, keep=args.keep)
     if args.command == "news":
         return asyncio.run(_run_news(ticker=args.ticker, isin=args.isin, limit=args.limit))
     if args.command == "ai-analyse":
@@ -61,12 +71,26 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("performance-replay")
     subparsers.add_parser("performance-report")
     subparsers.add_parser("news-sync")
+    subparsers.add_parser("news-reparse")
+    subparsers.add_parser("t212-reparse")
     news_parser = subparsers.add_parser("news")
     news_parser.add_argument("--ticker")
     news_parser.add_argument("--isin")
     news_parser.add_argument("--limit", type=int, default=20)
     subparsers.add_parser("ai-analyse")
     subparsers.add_parser("ai-latest")
+
+    backup_parser = subparsers.add_parser("backup")
+    backup_parser.add_argument(
+        "--dest",
+        help="Directory to write the backup into (default: <data_dir>/backups).",
+    )
+    backup_parser.add_argument(
+        "--keep",
+        type=int,
+        default=14,
+        help="Number of this database's backups to retain after pruning (default: 14).",
+    )
 
     thesis_parser = subparsers.add_parser("thesis")
     thesis_sub = thesis_parser.add_subparsers(dest="thesis_command", required=True)
@@ -159,6 +183,43 @@ async def _run_news_sync() -> int:
         _print_error("helios.news_sync.error", exc.__class__.__name__)
         return 2
     print(_render_json(NewsSyncSummaryModel.model_validate(summary, from_attributes=True)))
+    return 0
+
+
+async def _run_news_reparse() -> int:
+    try:
+        summary = await _run_with_container(
+            lambda container: container.news_reparse_service.reparse()
+        )
+    except Exception as exc:
+        _print_error("helios.news_reparse.error", exc.__class__.__name__)
+        return 2
+    print(_render_reparse_summary(summary))
+    return 0
+
+
+async def _run_t212_reparse() -> int:
+    try:
+        summary = await _run_with_container(
+            lambda container: container.t212_reparse_service.reparse()
+        )
+    except Exception as exc:
+        _print_error("helios.t212_reparse.error", exc.__class__.__name__)
+        return 2
+    print(_render_t212_reparse_summary(summary))
+    return 0
+
+
+def _run_backup(*, dest: str | None, keep: int) -> int:
+    settings = load_settings()
+    dest_dir = Path(dest) if dest else settings.data_dir / "backups"
+    try:
+        result = backup_database(settings.sqlite_path, dest_dir=dest_dir, keep=keep)
+    except BackupError as exc:
+        _print_error("helios.backup.error", exc.__class__.__name__)
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"{result.path} ({format_size(result.size_bytes)})")
     return 0
 
 
@@ -331,6 +392,47 @@ def _fmt_decimal(value: Decimal | None) -> str:
     if value is None:
         return "-"
     return format(value, "f")
+
+
+def _render_reparse_summary(summary: NewsReparseSummary) -> str:
+    # No pydantic DTO here: this mirrors the shape of NewsSyncSummaryModel's JSON by hand rather
+    # than adding a schema, since `schemas.py` is owned by concurrent work on the sync summary.
+    payload = {
+        "asOf": summary.as_of.isoformat(),
+        "rawRead": summary.raw_read,
+        "itemsParsed": summary.items_parsed,
+        "itemsWritten": summary.items_written,
+        "duplicatesSkipped": summary.duplicates_skipped,
+        "crossSourceMerges": summary.cross_source_merges,
+        "rawSkipped": summary.raw_skipped,
+        "failures": summary.failures,
+        "notes": summary.notes,
+    }
+    return json.dumps(payload, indent=2)
+
+
+def _render_t212_reparse_summary(summary: T212ReparseSummary) -> str:
+    # No pydantic DTO here either, for the same reason as `_render_reparse_summary`.
+    payload = {
+        "asOf": summary.as_of.isoformat(),
+        "snapshotsRead": summary.snapshots_read,
+        "endpoints": [
+            {
+                "endpoint": endpoint.endpoint,
+                "replayed": endpoint.replayed,
+                "failed": endpoint.failed,
+                "skipped": endpoint.skipped,
+            }
+            for endpoint in summary.endpoints
+        ],
+        "itemsParsed": summary.items_parsed,
+        "rowsWritten": summary.rows_written,
+        "duplicatesUnchanged": summary.duplicates_unchanged,
+        "reconciliationRowsWritten": summary.reconciliation_rows_written,
+        "failures": summary.failures,
+        "notes": summary.notes,
+    }
+    return json.dumps(payload, indent=2)
 
 
 def _render_json(

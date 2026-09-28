@@ -50,8 +50,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .config import Settings
 from .models import NewsItem, RawNews
+from .news_relevance import CompanyTerms, RelevanceResult, classify, company_terms
 from .portfolio_repository import InstrumentNewsTarget, PortfolioRepository
 from .rate_limit import Clock, SystemClock
+from .resolver import load_instrument_overrides
 
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
@@ -147,13 +149,13 @@ class NewsFeedFile(BaseModel):
     feeds: list[NewsFeedEntry] = Field(default_factory=list)
 
 
-def load_news_feeds(path: Path, *, contact_user_agent: str | None = None) -> list[NewsFeedEntry]:
-    """Load the operator's source list. A missing file simply means 'no sources configured'.
+def _load_all_news_feeds(path: Path) -> list[NewsFeedEntry]:
+    """Every feed entry declared in config, including disabled ones and without the contact gate.
 
-    ``contact_user_agent`` supplies the identifying User-Agent for feeds that declare
-    ``contact_required``. Such a feed is dropped when it is absent: sending the SEC a generic
-    agent would breach its access policy, and the alternative -- fetching anyway -- risks the
-    whole deployment being blocked.
+    Split out of `load_news_feeds` for replay: `NewsReparseService` re-derives a raw row's
+    provider, label and trust from config by key, and it must find a feed even when the operator
+    has since disabled it or a `contact_required` credential is unset -- neither of those things
+    makes the *parser* wrong, only the live fetch inapplicable.
     """
     if not path.exists():
         return []
@@ -170,8 +172,19 @@ def load_news_feeds(path: Path, *, contact_user_agent: str | None = None) -> lis
     duplicates = {key for key in keys if keys.count(key) > 1}
     if duplicates:
         raise NewsFeedConfigError(f"duplicate feed keys: {sorted(duplicates)}")
+    return list(parsed.feeds)
+
+
+def load_news_feeds(path: Path, *, contact_user_agent: str | None = None) -> list[NewsFeedEntry]:
+    """Load the operator's source list. A missing file simply means 'no sources configured'.
+
+    ``contact_user_agent`` supplies the identifying User-Agent for feeds that declare
+    ``contact_required``. Such a feed is dropped when it is absent: sending the SEC a generic
+    agent would breach its access policy, and the alternative -- fetching anyway -- risks the
+    whole deployment being blocked.
+    """
     resolved: list[NewsFeedEntry] = []
-    for entry in parsed.feeds:
+    for entry in _load_all_news_feeds(path):
         if not entry.enabled:
             continue
         if entry.contact_required:
@@ -354,16 +367,12 @@ class RssSourceAdapter:
     ) -> tuple[list[FeedRequest], list[str]]:
         notes: list[str] = []
         if feed.url is not None:
-            ticker = feed.tickers[0] if len(feed.tickers) == 1 else None
-            isin = feed.isins[0] if len(feed.isins) == 1 else None
             if len(feed.tickers) > 1 or len(feed.isins) > 1:
                 notes.append(
                     f"Source '{feed.key}' lists several instruments with a fixed url; its items "
                     "are stored as market-wide news rather than attributed to one of them."
                 )
-            if ticker is not None:
-                match = next((t for t in targets if t.t212_ticker == ticker), None)
-                isin = match.isin if match is not None else isin
+            ticker, isin = _fixed_url_attribution(feed, targets)
             return (
                 [
                     FeedRequest(
@@ -533,6 +542,23 @@ class MarketauxSourceAdapter:
                 )
             )
         return items
+
+
+def _fixed_url_attribution(
+    feed: NewsFeedEntry, targets: Sequence[InstrumentNewsTarget]
+) -> tuple[str | None, str | None]:
+    """Ticker/ISIN for a feed with a single fixed `url`, shared between a live plan and replay.
+
+    A single declared ticker is attributed directly; its ISIN is filled in from the matching
+    current target when one exists, so a `tickers:` entry without its own `isins:` still gets an
+    ISIN when Helios already knows it.
+    """
+    ticker = feed.tickers[0] if len(feed.tickers) == 1 else None
+    isin = feed.isins[0] if len(feed.isins) == 1 else None
+    if ticker is not None:
+        match = next((t for t in targets if t.t212_ticker == ticker), None)
+        isin = match.isin if match is not None else isin
+    return ticker, isin
 
 
 def _fill_template(template: str, target: InstrumentNewsTarget) -> str | None:
@@ -828,6 +854,313 @@ class NewsSyncService:
         return await self._repository.list_news_items(
             t212_ticker=t212_ticker, isin=isin, limit=limit
         )
+
+    async def list_ranked_news(
+        self,
+        *,
+        t212_ticker: str | None = None,
+        isin: str | None = None,
+        limit: int = 50,
+        held_only: bool = False,
+        mentions_only: bool = False,
+    ) -> list[RankedNewsItem]:
+        """News with, for each item, whether it names the holding its feed is bound to.
+
+        ``held_only`` drops stories bound to holdings you no longer own (market-wide stories
+        stay); ``mentions_only`` keeps only stories whose headline or summary names the holding.
+        Filtering happens after the query, so it reads further back to still fill ``limit``.
+        """
+
+        filtering = held_only or mentions_only
+        fetched = await self._repository.list_news_items(
+            t212_ticker=t212_ticker,
+            isin=isin,
+            limit=min(limit * 10, 2000) if filtering else limit,
+        )
+        tickers = {item.t212_ticker for item in fetched if item.t212_ticker}
+        instruments = await self._repository.get_cached_instruments_by_tickers(tickers)
+        held = {position.t212_ticker for position in await self._repository.get_latest_positions()}
+        keywords = _override_keywords(self._settings.instrument_overrides_path)
+        terms: dict[str, CompanyTerms] = {}
+        for ticker, instrument in instruments.items():
+            terms[ticker] = company_terms(
+                symbol=instrument.yahoo_ticker or instrument.short_name,
+                name=instrument.name,
+                keywords=keywords.get(instrument.isin or "", ()),
+            )
+
+        ranked: list[RankedNewsItem] = []
+        seen_titles: set[tuple[str | None, str]] = set()
+        for item in fetched:
+            # The same story from Yahoo and from Google News ("Headline - Publisher") is stored
+            # twice by design (raw-first); show it once, the first (newest) copy.
+            display_key = (item.t212_ticker, title_key(_without_publisher_suffix(item)))
+            if display_key in seen_titles:
+                continue
+            seen_titles.add(display_key)
+            is_held = item.t212_ticker is not None and item.t212_ticker in held
+            if held_only and item.t212_ticker is not None and not is_held:
+                continue
+            item_terms = terms.get(item.t212_ticker) if item.t212_ticker else None
+            if item.t212_ticker and item_terms is None:
+                # Bound to an instrument Helios has no name or symbol for: say so honestly.
+                result = RelevanceResult("unconfirmed", None)
+            else:
+                result = classify(item.headline, item.summary, item_terms)
+            if mentions_only and result.relevance not in {"headline", "summary"}:
+                continue
+            ranked.append(
+                RankedNewsItem(
+                    item=item,
+                    relevance=result.relevance,
+                    matched_term=result.matched,
+                    held=is_held,
+                )
+            )
+            if len(ranked) >= limit:
+                break
+        return ranked
+
+
+@dataclass(frozen=True)
+class RankedNewsItem:
+    """A stored item plus whether, and where, it names the holding its feed is bound to."""
+
+    item: NewsItem
+    relevance: str
+    matched_term: str | None
+    held: bool
+
+
+def _without_publisher_suffix(item: NewsItem) -> str:
+    """Google News appends " - Publisher" to every headline; other feeds do not."""
+
+    if item.feed_key == "google-news" and " - " in item.headline:
+        return item.headline.rsplit(" - ", 1)[0]
+    return item.headline
+
+
+def _override_keywords(path: Path) -> dict[str, list[str]]:
+    try:
+        overrides = load_instrument_overrides(path)
+    except (OSError, ValueError):
+        return {}
+    return {isin: entry.news_keywords for isin, entry in overrides.items() if entry.news_keywords}
+
+
+# ---------------------------------------------------------------------------
+# Replay: reparsing stored raw bodies, no network access
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NewsReparseSummary:
+    as_of: datetime
+    raw_read: int
+    items_parsed: int
+    items_written: int
+    duplicates_skipped: int
+    cross_source_merges: int
+    raw_skipped: int
+    failures: list[str]
+    notes: list[str]
+
+
+class _TemplateUrlIndex:
+    """Matches a stored `url_template` feed's resolved URL back to the instrument it came from.
+
+    A raw row keeps only the filled-in URL, not which instrument produced it, so replay has to
+    invert `_fill_template`. Doing that by re-filling the template for every instrument on every
+    raw row would be O(rows x instruments); this builds the URL -> instrument map once per
+    template and reuses it.
+    """
+
+    def __init__(self, targets: Sequence[InstrumentNewsTarget]) -> None:
+        self._targets = targets
+        self._by_template: dict[str, dict[str, InstrumentNewsTarget]] = {}
+
+    def match(self, template: str, url: str) -> InstrumentNewsTarget | None:
+        index = self._by_template.get(template)
+        if index is None:
+            index = {}
+            for target in self._targets:
+                filled = _fill_template(template, target)
+                if filled is not None:
+                    index[filled] = target
+            self._by_template[template] = index
+        return index.get(url)
+
+
+def _resolve_attribution(
+    feed: NewsFeedEntry,
+    url: str,
+    targets: Sequence[InstrumentNewsTarget],
+    template_index: _TemplateUrlIndex,
+) -> tuple[str | None, str | None] | None:
+    """The (ticker, isin) a raw row should be attributed to, or None when that cannot be known.
+
+    Mirrors the two shapes `RssSourceAdapter.plan` builds requests for, plus marketaux's
+    market-wide (untargeted) shape -- but working backwards from a stored URL instead of forwards
+    from a live target list.
+    """
+    if feed.url is not None:
+        return _fixed_url_attribution(feed, targets)
+    if feed.url_template is not None:
+        match = template_index.match(feed.url_template, url)
+        if match is None:
+            return None
+        return match.t212_ticker, match.isin
+    return None, None
+
+
+class NewsReparseService:
+    """Replays stored `raw_news` bodies through the *current* parser -- no network access.
+
+    `raw_news` exists so a parser fix, or a new dedupe rule, can be re-run against everything
+    already fetched instead of losing it. This is that replay: it reads every stored body, reruns
+    `NewsSourceAdapter.parse` (never `fetch` -- nothing here makes an outbound request), and
+    upserts through `PortfolioRepository.upsert_news_items`, the same dedupe path a live sync
+    uses. Running it twice therefore changes nothing the second time: every parsed item either
+    already exists under its `dedupe_key`, its canonical URL, or a matching title within the
+    dedupe window, and is skipped rather than rewritten.
+
+    A raw row remembers only `feed_key`, the already-resolved `url`, and the response `body` --
+    not which instrument a `url_template` feed was expanded for, nor the source's label, provider
+    or trust at fetch time. Those are re-derived from the *current* `config/news_feeds.yaml` and
+    the *current* instrument table -- replay reflects what the parser and config say today, same
+    as a live sync would. A row is skipped, with a counted reason, when that re-derivation is not
+    possible: its feed key is no longer in config, no adapter is registered for its provider, or a
+    `url_template` feed's stored URL matches no instrument Helios currently has metadata for.
+    Nothing is guessed to force a match.
+    """
+
+    def __init__(
+        self,
+        repository: PortfolioRepository,
+        settings: Settings,
+        adapters: Mapping[str, NewsSourceAdapter] | None = None,
+        clock: Clock | None = None,
+    ) -> None:
+        self._repository = repository
+        self._settings = settings
+        self._adapters = dict(adapters or {})
+        self._clock = clock or SystemClock()
+
+    async def reparse(self) -> NewsReparseSummary:
+        now = self._clock.utcnow()
+        raw_rows = await self._repository.list_raw_news()
+        if not raw_rows:
+            return NewsReparseSummary(
+                as_of=now,
+                raw_read=0,
+                items_parsed=0,
+                items_written=0,
+                duplicates_skipped=0,
+                cross_source_merges=0,
+                raw_skipped=0,
+                failures=[],
+                notes=["No raw_news rows stored yet; run news-sync first."],
+            )
+
+        try:
+            feeds_by_key = {entry.key: entry for entry in _load_all_news_feeds(
+                self._settings.news_feeds_path
+            )}
+        except NewsFeedConfigError as error:
+            return NewsReparseSummary(
+                as_of=now,
+                raw_read=len(raw_rows),
+                items_parsed=0,
+                items_written=0,
+                duplicates_skipped=0,
+                cross_source_merges=0,
+                raw_skipped=len(raw_rows),
+                failures=[f"news feed config invalid: {error}"],
+                notes=[],
+            )
+
+        targets = await self._repository.list_all_instrument_news_targets()
+        template_index = _TemplateUrlIndex(targets)
+
+        collected: list[CollectedItem] = []
+        failures: list[str] = []
+        skip_reasons: dict[str, int] = {}
+        parsed_total = 0
+
+        for raw in raw_rows:
+            feed = feeds_by_key.get(raw.feed_key)
+            if feed is None:
+                _bump(skip_reasons, "feed no longer present in news_feeds.yaml")
+                continue
+            adapter = self._adapters.get(feed.provider)
+            if adapter is None:
+                _bump(skip_reasons, f"no adapter for provider '{feed.provider}'")
+                continue
+            attribution = _resolve_attribution(feed, raw.url, targets, template_index)
+            if attribution is None:
+                _bump(skip_reasons, "url_template feed's URL matches no known instrument")
+                continue
+            ticker, isin = attribution
+            request = FeedRequest(
+                feed_key=raw.feed_key,
+                label=feed.label,
+                provider=feed.provider,
+                url=raw.url,
+                t212_ticker=ticker,
+                isin=isin,
+                trust=feed.effective_trust,
+            )
+            try:
+                items = adapter.parse(raw.body, request)
+            except ValueError as error:
+                failures.append(f"{raw.feed_key}#{raw.id}: {error}")
+                continue
+            parsed_total += len(items)
+            collected.extend(
+                CollectedItem(request=request, item=item, raw_news_id=raw.id) for item in items
+            )
+
+        merge = merge_collected(collected, window_hours=self._settings.news_dedupe_window_hours)
+        rows = [
+            NewsItem(
+                dedupe_key=dedupe_key(entry.item.url, entry.item.published_at),
+                feed_key=entry.request.feed_key,
+                provider=entry.request.provider,
+                source_label=entry.request.label,
+                t212_ticker=entry.request.t212_ticker,
+                isin=entry.request.isin,
+                headline=entry.item.headline,
+                summary=entry.item.summary,
+                url=entry.item.url,
+                canonical_url=canonical_url(entry.item.url),
+                title_key=title_key(entry.item.headline),
+                published_at=entry.item.published_at,
+                fetched_at=now,
+                raw_news_id=entry.raw_news_id,
+            )
+            for entry in merge.kept
+        ]
+        written = await self._repository.upsert_news_items(
+            rows, dedupe_window_hours=self._settings.news_dedupe_window_hours
+        )
+        notes = sorted(
+            f"{count} raw row(s) skipped: {reason}" for reason, count in skip_reasons.items()
+        )
+        return NewsReparseSummary(
+            as_of=now,
+            raw_read=len(raw_rows),
+            items_parsed=parsed_total,
+            items_written=written,
+            duplicates_skipped=len(rows) - written,
+            cross_source_merges=merge.merged,
+            raw_skipped=sum(skip_reasons.values()),
+            failures=failures,
+            notes=notes,
+        )
+
+
+def _bump(counts: dict[str, int], reason: str) -> None:
+    counts[reason] = counts.get(reason, 0) + 1
 
 
 def build_news_adapters(

@@ -11,6 +11,8 @@ export interface Health {
   status: string;
   trading212Configured: boolean;
   databaseReady: boolean;
+  /** Which Trading 212 account the credentials belong to; null from an older API. */
+  trading212Environment: "demo" | "live" | null;
 }
 
 export interface PositionInstrument {
@@ -26,6 +28,28 @@ export interface WalletImpact {
   fxImpact: string | null;
   totalCost: string | null;
   unrealizedProfitLoss: string | null;
+}
+
+/**
+ * Trading 212's own current totals (`/equity/account/summary`), as decimal strings.
+ *
+ * The single source for every "now" figure on every page, so the Overview, Holdings and the
+ * allocation ring can never show three different totals — and each matches the Trading 212 app.
+ */
+export interface AccountSummary {
+  currency: string | null;
+  totalValue: string | null;
+  cash: {
+    availableToTrade: string | null;
+    reservedForOrders: string | null;
+    inPies: string | null;
+  } | null;
+  investments: {
+    currentValue: string | null;
+    totalCost: string | null;
+    realizedProfitLoss: string | null;
+    unrealizedProfitLoss: string | null;
+  } | null;
 }
 
 export interface Position {
@@ -53,8 +77,72 @@ export interface NavPoint {
   navEur: string | null;
   cashBalanceEur: string;
   securitiesValueEur: string | null;
+  /** Deposits (positive) and withdrawals (negative) that day: money moved, not performance. */
   externalFlowEur: string;
   valuationStatus: string;
+  dividendEur?: string;
+  interestEur?: string;
+  feeEur?: string;
+  /** Everything put in minus everything taken out, up to this day: the "money in" line. */
+  netDepositsToDateEur?: string;
+}
+
+/**
+ * A period's change in value, split into money moved and investment result.
+ *
+ * Identities the backend guarantees: `valueChange = netDeposits + investmentResult` and
+ * `investmentResult = market + dividends + interest + fees`. Amounts are decimal strings.
+ */
+/** What one holding did over a period: its share of the investment result. */
+export interface HoldingMovement {
+  ticker: string;
+  name?: string | null;
+  status: string;
+  /** Zero when the holding was not owned at that end of the period. */
+  startValueEur: string | null;
+  endValueEur: string | null;
+  startQuantity: string;
+  endQuantity: string;
+  boughtEur: string;
+  soldEur: string;
+  dividendsEur: string;
+  /** end - start - bought + sold + dividends. Buying and selling are not gains or losses. */
+  resultEur: string | null;
+  /** Result relative to the money at work (start value + bought). */
+  returnPct: number | null;
+  /** The EUR price move between the two ends, when held at both. */
+  priceChangePct: number | null;
+  detail: string | null;
+}
+
+export interface PeriodSummary {
+  key: string;
+  label: string;
+  status: string;
+  startDate: string | null;
+  endDate: string | null;
+  startValueEur: string | null;
+  endValueEur: string | null;
+  valueChangeEur: string | null;
+  depositsEur: string;
+  withdrawalsEur: string;
+  netDepositsEur: string;
+  investmentResultEur: string | null;
+  marketEur: string | null;
+  dividendsEur: string;
+  interestEur: string;
+  feesEur: string;
+  /** The card-payment part of withdrawalsEur (negative). Absent before a card export. */
+  cardSpendingEur?: string;
+  /** Card cashback: income, part of the investment result. */
+  cashbackEur?: string;
+  twr: number | null;
+  unvaluedDays: number;
+  detail: string | null;
+  /** The investment result split by holding, largest move first. */
+  holdings?: HoldingMovement[];
+  /** Investment result no holding explains: interest, fees, dividends without a ticker. */
+  unattributedEur?: string | null;
 }
 
 export interface DailyValuePoint {
@@ -184,6 +272,8 @@ export interface PerformanceReport {
   correlationClusters: CorrelationClusterReport;
   passiveCounterfactual: PassiveCounterfactualReport;
   notes: string[];
+  periodSummaries?: PeriodSummary[];
+  monthlySummaries?: PeriodSummary[];
 }
 
 export interface NewsItem {
@@ -197,7 +287,71 @@ export interface NewsItem {
   url: string;
   publishedAt: string | null;
   fetchedAt: string;
+  /**
+   * headline / summary: the text names the holding the feed is bound to; unconfirmed: bound to
+   * it but the text does not name it; market: not bound to any holding.
+   */
+  relevance?: NewsRelevance | null;
+  matchedTerm?: string | null;
+  /** Whether the bound holding is still in the portfolio. */
+  held?: boolean | null;
 }
+
+export interface CardTransaction {
+  rowId: string;
+  ts: string;
+  action: string;
+  /** Negative for a payment, positive for a refund. */
+  amount: string;
+  currency: string | null;
+  merchantName: string | null;
+  merchantCategory: string | null;
+}
+
+export interface SpendingGroup {
+  key: string;
+  spent: string;
+  count: number;
+}
+
+export interface SpendingMonth {
+  key: string;
+  label: string;
+  spent: string;
+  cashback: string;
+  count: number;
+}
+
+export interface CardSummary {
+  currency: string | null;
+  firstDate: string | null;
+  lastDate: string | null;
+  spent: string;
+  refunded: string;
+  cashback: string;
+  cashbackRate: number | null;
+  months: SpendingMonth[];
+  categories: SpendingGroup[];
+  merchants: SpendingGroup[];
+  transactions: CardTransaction[];
+}
+
+export interface CardHistoryStatus {
+  enabled: boolean;
+  lastRequestedAt: string | null;
+  lastDownloadedAt: string | null;
+  pending: boolean;
+  lastStatus: string | null;
+  cardRows: number;
+  cashRows: number;
+}
+
+export interface CardHistory {
+  status: CardHistoryStatus;
+  summary: CardSummary;
+}
+
+export type NewsRelevance = "headline" | "summary" | "unconfirmed" | "market";
 
 export interface AiObservation {
   rank: number;
@@ -310,6 +464,59 @@ export interface QualityReport {
   overrideRequiredInstruments: InstrumentMappingIssueReport[];
   reconciliationMismatches: ReconciliationIssueReport[];
   unsupportedActions: ReconciliationIssueReport[];
+}
+
+/**
+ * A credential's presence, never its value.
+ *
+ * `hint` is the last four characters and nothing more — enough to recognise a key you pasted,
+ * useless to anyone who did not already have it. The backend constructs this; there is no shape
+ * of this type that can carry a secret.
+ */
+export interface CredentialStatus {
+  field: string;
+  label: string;
+  requirement: string;
+  present: boolean;
+  hint: string | null;
+  source: string;
+  unlocks: string;
+  without: string;
+  signup: string;
+}
+
+export interface SettingsSnapshot {
+  credentials: CredentialStatus[];
+  editable: Record<string, string>;
+  keyringBackend: string;
+  keyringAvailable: boolean;
+  keyringDetail: string;
+  envPath: string;
+  allowedT212BaseUrls: string[];
+  activeDatabase: string;
+  restartRequired: boolean;
+  /** False under Docker Compose, where a saved change could never be read. */
+  writable: boolean;
+  /** Why, and where to change configuration instead. Null whenever `writable` is true. */
+  readOnlyReason: string | null;
+  /** The Trading 212 environment the running API syncs from. */
+  t212Environment: "demo" | "live";
+  /** The environment it will sync from after the next restart (differs while one is pending). */
+  t212PendingEnvironment: "demo" | "live";
+}
+
+export interface DatabaseInfo {
+  filename: string;
+  sizeBytes: number;
+  modifiedAt: string | null;
+  active: boolean;
+  schemaVersion: string | null;
+}
+
+export interface DatabaseList {
+  dataDir: string;
+  active: string;
+  databases: DatabaseInfo[];
 }
 
 /** Every fetch resolves to this: data, or a reason it is unavailable. Never a thrown page. */

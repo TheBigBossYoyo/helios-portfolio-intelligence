@@ -1,14 +1,65 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 import keyring
 from keyring.errors import KeyringError
 from pydantic import SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+from .secrets import CREDENTIAL_KEYS, get_credential
+
+#: Environment values that switch the OS keyring off entirely.
+#:
+#: A test run must never inherit the developer's real brokerage credentials: a suite that passes
+#: because a key happened to be in Credential Manager is exactly the "works on my machine"
+#: failure this whole surface exists to prevent. `tests/conftest.py` sets this, and CI inherits
+#: it from there rather than relying on the runner having no keyring.
+KEYRING_DISABLED_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def keyring_disabled() -> bool:
+    """Whether ``HELIOS_DISABLE_KEYRING`` asks Helios to ignore the OS credential store."""
+
+    return os.environ.get("HELIOS_DISABLE_KEYRING", "").strip().lower() in KEYRING_DISABLED_VALUES
+
+
+#: The dotenv file Helios reads, relative to the directory the process starts in, unless
+#: ``HELIOS_ENV_FILE`` names one explicitly. The settings page writes to this same path, which is
+#: the whole point: a value saved there is a value read back on the next start.
+ENV_FILE: Final = ".env"
+
+
+def env_file_path() -> Path:
+    """The one `.env` both `Settings` reads and the settings page writes.
+
+    ``HELIOS_ENV_FILE`` pins it regardless of working directory -- the desktop launcher sets it,
+    because a shortcut does not guarantee where a process starts. Resolved per call so a test
+    can point it at a temporary file.
+    """
+
+    override = os.environ.get("HELIOS_ENV_FILE", "").strip()
+    return Path(override) if override else Path.cwd() / ENV_FILE
+
+
+def dotenv_disabled() -> bool:
+    """Whether ``HELIOS_DISABLE_DOTENV`` asks Helios to ignore `.env`.
+
+    Same reasoning as the keyring switch: the test suite sets it so a developer's own `.env`
+    cannot change what a test sees.
+    """
+
+    return os.environ.get("HELIOS_DISABLE_DOTENV", "").strip().lower() in KEYRING_DISABLED_VALUES
+
 
 SUPPORTED_BASE_CURRENCY = "EUR"
 MARKET_DATA_PROVIDERS = frozenset({"disabled", "alphavantage", "twelvedata"})
@@ -19,7 +70,28 @@ BENCHMARK_KEYS = frozenset({"cspx", "swda", "vwrp"})
 
 
 class Settings(BaseSettings):
+    # `.env` is read so a bare install picks up what the settings page saved. Real environment
+    # variables still outrank it, so an exported override behaves as expected, and under Compose
+    # (which injects the host `.env` as environment) the container has no `.env` of its own.
     model_config = SettingsConfigDict(env_prefix="HELIOS_", extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Decided per instantiation rather than at import, so the test suite's session-wide
+        # switch applies even though test modules import this one during collection.
+        if dotenv_disabled():
+            return (init_settings, env_settings, file_secret_settings)
+        dotenv = DotEnvSettingsSource(
+            settings_cls, env_file=env_file_path(), env_file_encoding="utf-8"
+        )
+        return (init_settings, env_settings, dotenv, file_secret_settings)
 
     app_name: str = "helios"
     bind_host: str = "127.0.0.1"
@@ -42,6 +114,20 @@ class Settings(BaseSettings):
     openfigi_api_key: SecretStr | None = None
     resolver_timeout_seconds: float = 10.0
     sync_cadence_minutes: int = 60
+    # After any successful portfolio sync (scheduled or from the dashboard), recompute the
+    # replayed history and refresh news straight away, so no page is left half-updated.
+    refresh_after_sync: bool = True
+    # Apply dashboard settings changes by restarting automatically, a few seconds after
+    # the last save (so several saves in a row cost one restart). The restart runs the
+    # worker's startup sync, replay and news refresh, so a new key takes effect at once.
+    auto_apply_settings: bool = True
+    # Card history: ask Trading 212 for a CSV export (the only source that labels card payments
+    # and cashback) at most this often. Each export sends a notification to the Trading 212
+    # app, so the cadence is deliberately slow; the worker checks for a finished report on
+    # `card_history_poll_minutes`.
+    card_history_enabled: bool = True
+    card_export_cadence_hours: int = 24
+    card_history_poll_minutes: int = 15
     sync_lease_minutes: int = 15
     ecb_base_url: str = "https://data-api.ecb.europa.eu/service/data"
     market_data_provider: str = "disabled"
@@ -49,6 +135,25 @@ class Settings(BaseSettings):
     market_data_api_key: SecretStr | None = None
     market_data_timeout_seconds: float = 15.0
     twelvedata_base_url: str = "https://api.twelvedata.com/time_series"
+    # Exchanges the configured Twelve Data plan can serve, comma-separated, as the exchange keys
+    # in performance.YAHOO_EXCHANGE_SUFFIXES ("US" for listings without a suffix). The free Basic
+    # plan is US-only, so a London symbol is not even requested there -- it goes straight to the
+    # fallback provider instead of spending one of the free plan's 8 requests a minute on a
+    # guaranteed refusal. A paid plan that reaches London: "US,LSE".
+    twelvedata_exchanges: str = "US"
+    # Minimum seconds between one provider's requests. Twelve Data's free plan allows 8 per
+    # minute (60 / 8 = 7.5, plus margin); Alpha Vantage's free key allows 25 a day and throttles
+    # bursts. Requests sent faster are answered with HTTP 429 and the replay fails.
+    twelvedata_min_interval_seconds: float = 7.6
+    alphavantage_min_interval_seconds: float = 12.5
+    # Optional second market-data account, asked only for symbols the primary could not price
+    # (see CompositeMarketDataProvider in performance.py). The intended pairing is Twelve Data as
+    # the primary (US exchanges, free) with Alpha Vantage as the fallback (non-US listings such
+    # as London, free but a much smaller 25-requests/day quota) -- but any provider may fill
+    # either role. 'disabled' by default: two providers only make sense once an operator actually
+    # holds a second account.
+    market_data_fallback_provider: str = "disabled"
+    market_data_fallback_api_key: SecretStr | None = None
     # On by default: the Kenneth French library is the official source, free, and needs no
     # account, so there is nothing for an operator to opt into.
     factor_data_provider: str = "kenfrench"
@@ -78,6 +183,10 @@ class Settings(BaseSettings):
     benchmark_cspx_currency: str | None = "USD"
     benchmark_swda_currency: str | None = "USD"
     benchmark_vwrp_currency: str | None = "USD"
+    # Brinson-Fachler sector attribution: benchmark sector weights/return proxies, declared by the
+    # operator (see the file's own header). Empty by default, so attribution reports "unavailable"
+    # rather than a number nobody supplied.
+    benchmark_sectors_path: Path = Path("config/benchmark_sectors.yaml")
     analytics_flow_timing: FlowTiming = "flow_at_close"
     analytics_max_price_stale_days: int = 10
     analytics_max_fx_stale_days: int = 10
@@ -108,6 +217,43 @@ class Settings(BaseSettings):
     #: it on this model server-side rather than returning the refusal.
     anthropic_fallback_model: str = "claude-opus-4-8"
     ai_max_news_items: int = 40
+    # --- Dashboard settings surface ------------------------------------------------------
+    #: Whether the dashboard may change configuration at all. Off under Docker Compose, where a
+    #: write could never take effect: compose injects the host `.env` as environment variables,
+    #: which outrank any file the container writes, and the slim image has no OS keyring. The
+    #: page then shows configuration read-only and says where to change it instead.
+    settings_writable: bool = True
+    #: Hostnames, comma-separated, allowed to reach the settings routes besides loopback.
+    #: Compose names its own `web` service here, because the dashboard's server-side fetches
+    #: arrive from that container's bridge address rather than from 127.0.0.1. Resolved per
+    #: request, so a restarted container with a new address is still recognised.
+    settings_trusted_peers: str = ""
+
+    @property
+    def effective_market_data_fallback_provider(self) -> str:
+        """The fallback provider actually used.
+
+        A saved fallback key with no provider chosen means Alpha Vantage: that key is labelled
+        "Alpha Vantage API key (London listings)" on the settings page, so saving one is the
+        intent, and leaving it inert because a second dropdown was not also changed left a real
+        portfolio's London holdings unpriced. An explicit choice always wins.
+        """
+
+        if self.market_data_fallback_provider != "disabled":
+            return self.market_data_fallback_provider
+        return "alphavantage" if self.market_data_fallback_api_key is not None else "disabled"
+
+    @property
+    def twelvedata_exchange_keys(self) -> frozenset[str]:
+        return frozenset(
+            item.strip().upper() for item in self.twelvedata_exchanges.split(",") if item.strip()
+        )
+
+    @property
+    def settings_trusted_peer_hosts(self) -> tuple[str, ...]:
+        return tuple(
+            host.strip() for host in self.settings_trusted_peers.split(",") if host.strip()
+        )
 
     @field_validator(
         "t212_api_key",
@@ -115,6 +261,7 @@ class Settings(BaseSettings):
         "t212_keyring_username",
         "openfigi_api_key",
         "market_data_api_key",
+        "market_data_fallback_api_key",
         "news_marketaux_api_key",
         "anthropic_api_key",
         mode="before",
@@ -139,6 +286,8 @@ class Settings(BaseSettings):
         "news_max_items_per_feed",
         "news_max_body_bytes",
         "news_sync_cadence_minutes",
+        "card_export_cadence_hours",
+        "card_history_poll_minutes",
         "anthropic_max_tokens",
         "anthropic_timeout_seconds",
         "ai_max_news_items",
@@ -164,6 +313,15 @@ class Settings(BaseSettings):
     def known_market_data_provider(cls, value: str) -> str:
         if value not in MARKET_DATA_PROVIDERS:
             raise ValueError(f"market_data_provider must be one of {sorted(MARKET_DATA_PROVIDERS)}")
+        return value
+
+    @field_validator("market_data_fallback_provider")
+    @classmethod
+    def known_market_data_fallback_provider(cls, value: str) -> str:
+        if value not in MARKET_DATA_PROVIDERS:
+            raise ValueError(
+                f"market_data_fallback_provider must be one of {sorted(MARKET_DATA_PROVIDERS)}"
+            )
         return value
 
     @field_validator("factor_data_provider")
@@ -205,7 +363,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def resolve_keyring_secret(self) -> Settings:
+        """Fill the T212 secret from the legacy per-account keyring entry.
+
+        This predates the dashboard's credential store and is kept because existing installs
+        have secrets filed under ``helios.t212`` keyed by API key. It runs before
+        :meth:`resolve_stored_credentials` so the newer store wins only where this leaves a gap.
+        """
+
         if self.t212_api_secret is not None:
+            return self
+        if keyring_disabled():
             return self
         username = self.t212_keyring_username or self.t212_api_key
         if username is None:
@@ -216,6 +383,35 @@ class Settings(BaseSettings):
             return self
         if secret:
             self.t212_api_secret = SecretStr(secret)
+        return self
+
+    @model_validator(mode="after")
+    def resolve_stored_credentials(self) -> Settings:
+        """Fill any still-absent credential from the dashboard's keyring store.
+
+        Environment wins over the keyring, deliberately: an operator who exports a variable to
+        override a stored key expects that to take effect. A field is only consulted when it is
+        ``None``, so this never overwrites a real value.
+
+        Setting ``HELIOS_DISABLE_KEYRING=1`` skips the store entirely. The test suite sets this,
+        because otherwise constructing ``Settings()`` in a test would silently adopt whatever
+        real credentials the developer has in their OS keyring -- so a test could pass locally
+        for a reason that does not exist in CI. That is the exact class of environment drift
+        this project just spent a milestone eliminating.
+        """
+
+        if keyring_disabled():
+            return self
+
+        for field in CREDENTIAL_KEYS:
+            if getattr(self, field) is not None:
+                continue
+            stored = get_credential(field)
+            if not stored:
+                continue
+            # `t212_api_key` is a plain string; every other credential is a SecretStr.
+            current_is_secret = field != "t212_api_key"
+            object.__setattr__(self, field, SecretStr(stored) if current_is_secret else stored)
         return self
 
     @property

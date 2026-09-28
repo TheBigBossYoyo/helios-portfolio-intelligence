@@ -1069,3 +1069,110 @@ def _transaction_payload() -> TransactionItem:
             "type": "DEPOSIT",
         }
     )
+
+
+def _cancelled_order_payload(order_id: str) -> HistoricalOrderItem:
+    """The shape Trading 212 returns for an order that never executed: no `fill` object."""
+    return HistoricalOrderItem.model_validate(
+        {
+            "order": {
+                "id": order_id,
+                "status": "CANCELLED",
+                "type": "MARKET",
+                "side": "BUY",
+                "value": "100.00",
+                "filledValue": "0",
+                "currency": "EUR",
+                "createdAt": "2024-01-05T10:00:00Z",
+                "ticker": "TSLA_US_EQ",
+                "instrument": {"ticker": "TSLA_US_EQ", "isin": "US88160R1014", "currency": "USD"},
+            }
+        }
+    )
+
+
+def test_a_cancelled_order_parses_without_a_fill() -> None:
+    """Found on the first live account: 15 cancelled orders had no `fill` and broke parsing."""
+    item = _cancelled_order_payload("order-x")
+
+    assert item.fill is None
+    assert str(item.order.id) == "order-x"
+
+
+@pytest.mark.asyncio
+async def test_sync_skips_cancelled_orders_instead_of_failing(tmp_path: Path) -> None:
+    """One cancelled order used to abort the whole sync: nothing ingested, nothing mapped.
+
+    It changed no position and moved no cash, so it belongs in no ledger -- skipped, and the
+    filled orders beside it are recorded exactly as before.
+    """
+    repository, session_factory = await _repository_and_session_factory(
+        tmp_path, "cancelled_orders.sqlite3"
+    )
+    client = FakeTrading212Client(
+        instruments=[_instrument_metadata(ticker="TSLA_US_EQ")],
+        positions=[_position_payload()],
+        orders=[
+            _order_payload(fill_id="fill-1", order_id="order-1", side="BUY"),
+            _cancelled_order_payload("order-2"),
+        ],
+        dividends=[],
+        transactions=[],
+    )
+    service = PortfolioSyncService(
+        settings=Settings(data_dir=tmp_path),
+        session_factory=session_factory,
+        client=client,
+        repository=repository,
+        resolver=StubResolver(),
+        clock=FixedClock(datetime(2024, 4, 2, tzinfo=UTC)),
+    )
+
+    await service.sync(force_metadata=True)
+
+    async with session_factory() as session:
+        fills = (await session.scalars(select(OrderHistory.fill_id))).all()
+        instrument = await session.get(Instrument, "TSLA_US_EQ")
+
+    assert fills == ["fill-1"]
+    # The sync completed, so the held instrument was resolved rather than left unmapped.
+    assert instrument is not None
+    assert instrument.mapping_status == "resolved"
+
+
+def test_reconciliation_reads_trading212_negative_sell_quantities() -> None:
+    """Trading 212 reports a SELL fill's quantity as negative.
+
+    Applying the SELL sign on top turned every sale into a purchase: on a real account a fully
+    sold ETF reconciled as 13.9 units held. These are the account's actual VUAG fills in
+    miniature -- two buys, two sells, reported the way the API sends them.
+    """
+    synced_at = datetime(2026, 9, 27, tzinfo=UTC)
+    fills = [
+        ("1", "BUY", "0.35490701"),
+        ("2", "SELL", "-0.37633811"),
+        ("3", "BUY", "0.92250455"),
+        ("4", "SELL", "-0.00771566"),
+    ]
+    orders = [
+        OrderHistory(
+            fill_id=fill_id,
+            t212_ticker="VUAGl_EQ",
+            fill_type="TRADE",
+            side=side,
+            filled_quantity=Decimal(quantity),
+        )
+        for fill_id, side, quantity in fills
+    ]
+    held = Decimal("0.35490701") + Decimal("0.92250455") - Decimal("0.37633811") - Decimal(
+        "0.00771566"
+    )
+
+    rows = build_reconciliations(
+        synced_at=synced_at,
+        positions=[PositionLive(ts=synced_at, t212_ticker="VUAGl_EQ", quantity=held)],
+        orders=orders,
+        tolerance=Decimal("0.00000001"),
+    )
+
+    assert [(row.status, row.replayed_quantity) for row in rows] == [("MATCH", held)]

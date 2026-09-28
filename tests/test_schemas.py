@@ -90,10 +90,12 @@ def test_history_order_page_schema_is_permissive_and_nullable_next_path() -> Non
     page = HistoryPage[HistoricalOrderItem].model_validate(payload)
 
     assert page.next_page_path is None
-    assert page.items[0].fill.quantity == Decimal("2.5000")
-    assert page.items[0].fill.wallet_impact is not None
-    assert page.items[0].fill.wallet_impact.net_value == Decimal("253.1250")
-    assert page.items[0].fill.wallet_impact.taxes is not None
-    assert page.items[0].fill.wallet_impact.taxes[0].quantity == Decimal("0.50")
+    fill = page.items[0].fill
+    assert fill is not None
+    assert fill.quantity == Decimal("2.5000")
+    assert fill.wallet_impact is not None
+    assert fill.wallet_impact.net_value == Decimal("253.1250")
+    assert fill.wallet_impact.taxes is not None
+    assert fill.wallet_impact.taxes[0].quantity == Decimal("0.50")
     assert page.items[0].order.model_extra == {"unknownOrderField": "kept"}
     assert page.model_extra == {"topLevelExtra": 7}

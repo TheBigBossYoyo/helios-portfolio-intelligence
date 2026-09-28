@@ -22,6 +22,7 @@ from helios.news import (
     MarketauxSourceAdapter,
     NewsFeedConfigError,
     NewsFeedEntry,
+    NewsReparseService,
     NewsSyncService,
     ParsedNewsItem,
     RssSourceAdapter,
@@ -868,3 +869,239 @@ async def test_news_targets_are_empty_before_any_position_snapshot(tmp_path: Pat
         await session.commit()
 
     assert await repository.list_instrument_news_targets() == []
+
+
+# ---------------------------------------------------------------------------
+# Replay: reparsing raw_news, no network access
+# ---------------------------------------------------------------------------
+
+
+class _DropsSecondItemAdapter(FakeAdapter):
+    """Stands in for a parser bug that once dropped every item after the first."""
+
+    def parse(self, body: str, request: FeedRequest) -> list[ParsedNewsItem]:
+        return super().parse(body, request)[:1]
+
+
+async def _seed_raw_news(
+    repository: PortfolioRepository, *, feed_key: str, url: str, body: str, ts: datetime = NOW
+) -> int:
+    return await repository.insert_raw_news(
+        RawNews(feed_key=feed_key, url=url, ts=ts, http_status=200, content_type=None, body=body)
+    )
+
+
+async def test_reparse_reports_when_there_is_no_raw_news(tmp_path: Path) -> None:
+    repository, _ = await _repository(tmp_path, "reparse_empty.sqlite3")
+    service = NewsReparseService(
+        repository, Settings(data_dir=tmp_path), {}, clock=FixedClock()
+    )
+
+    summary = await service.reparse()
+
+    assert summary.raw_read == 0
+    assert summary.items_written == 0
+    assert any("run news-sync" in note for note in summary.notes)
+
+
+async def test_reparse_writes_items_the_original_sync_never_saw(tmp_path: Path) -> None:
+    """A parser fix, replayed against the raw body a buggy parser already dropped an item from."""
+    repository, _ = await _repository(tmp_path, "reparse_fix.sqlite3")
+    feeds = _write(tmp_path, "  - key: mkt\n    label: Example Markets\n    url: https://x/f\n")
+    settings = Settings(data_dir=tmp_path, news_feeds_path=feeds)
+
+    # The original sync ran with a buggy adapter that silently dropped the second item.
+    buggy_sync = NewsSyncService(
+        repository,
+        settings,
+        {"rss": _DropsSecondItemAdapter({"https://x/f": RSS})},
+        clock=FixedClock(),
+    )
+    first_summary = await buggy_sync.sync()
+    assert first_summary.items_written == 1
+
+    # Reparse with the fixed parser picks up the item the bug dropped, from the raw body already
+    # on disk -- no re-fetch involved.
+    reparse_service = NewsReparseService(
+        repository, settings, {"rss": FakeAdapter({"https://x/f": RSS})}, clock=FixedClock()
+    )
+
+    summary = await reparse_service.reparse()
+    stored = await repository.list_news_items(limit=10)
+
+    assert summary.raw_read == 1
+    assert summary.items_parsed == 2
+    assert summary.items_written == 1
+    assert summary.duplicates_skipped == 1
+    assert {item.headline for item in stored} == {
+        "Apple beats expectations",
+        "Shell announces buyback",
+    }
+
+
+async def test_reparse_is_idempotent(tmp_path: Path) -> None:
+    repository, _ = await _repository(tmp_path, "reparse_idempotent.sqlite3")
+    feeds = _write(tmp_path, "  - key: mkt\n    label: M\n    url: https://x/f\n")
+    settings = Settings(data_dir=tmp_path, news_feeds_path=feeds)
+    await _seed_raw_news(repository, feed_key="mkt", url="https://x/f", body=RSS)
+    service = NewsReparseService(
+        repository, settings, {"rss": FakeAdapter({"https://x/f": RSS})}, clock=FixedClock()
+    )
+
+    first = await service.reparse()
+    second = await service.reparse()
+
+    assert first.items_written == 2
+    assert second.items_written == 0
+    assert second.duplicates_skipped == 2
+    assert len(await repository.list_news_items(limit=50)) == 2
+
+
+async def test_reparse_skips_rows_whose_feed_left_the_config(tmp_path: Path) -> None:
+    repository, _ = await _repository(tmp_path, "reparse_gone.sqlite3")
+    # The current config no longer mentions the "retired" feed key the raw row was fetched under.
+    feeds = _write(tmp_path, "  - key: current\n    label: Current\n    url: https://x/g\n")
+    settings = Settings(data_dir=tmp_path, news_feeds_path=feeds)
+    await _seed_raw_news(repository, feed_key="retired", url="https://x/f", body=RSS)
+    service = NewsReparseService(repository, settings, {"rss": FakeAdapter({})}, clock=FixedClock())
+
+    summary = await service.reparse()
+
+    assert summary.raw_read == 1
+    assert summary.raw_skipped == 1
+    assert summary.items_written == 0
+    assert any("no longer present" in note for note in summary.notes)
+
+
+async def test_reparse_skips_template_rows_that_match_no_current_instrument(tmp_path: Path) -> None:
+    """A url_template feed's raw row cannot be attributed if no instrument's fields reproduce it."""
+    repository, _ = await _repository(tmp_path, "reparse_unmatched.sqlite3")
+    feeds = _write(
+        tmp_path,
+        "  - key: yahoo\n    label: Yahoo\n"
+        "    url_template: https://feeds.example/rss?s={yahoo_ticker}\n",
+    )
+    settings = Settings(data_dir=tmp_path, news_feeds_path=feeds)
+    # No instrument in this database has yahoo_ticker=ZZZZ, so nothing can reproduce this URL.
+    await _seed_raw_news(
+        repository, feed_key="yahoo", url="https://feeds.example/rss?s=ZZZZ", body=RSS
+    )
+    service = NewsReparseService(
+        repository,
+        settings,
+        {"rss": FakeAdapter({"https://feeds.example/rss?s=ZZZZ": RSS})},
+        clock=FixedClock(),
+    )
+
+    summary = await service.reparse()
+
+    assert summary.raw_skipped == 1
+    assert summary.items_written == 0
+    assert any("matches no known instrument" in note for note in summary.notes)
+
+
+async def test_reparse_attributes_a_template_row_using_the_full_instrument_table(
+    tmp_path: Path,
+) -> None:
+    """Unlike a live sync, replay attributes even against instruments no longer held."""
+    repository, session_factory = await _repository(tmp_path, "reparse_attr.sqlite3")
+    async with session_factory() as session, session.begin():
+        # AAPL is known to Helios (it has metadata) but is not a live position -- a live sync
+        # would never target it, yet its raw news should still be attributable on replay.
+        session.add(
+            Instrument(t212_ticker="AAPL_US_EQ", yahoo_ticker="AAPL", mapping_status="resolved")
+        )
+    feeds = _write(
+        tmp_path,
+        "  - key: yahoo\n    label: Yahoo\n"
+        "    url_template: https://feeds.example/rss?s={yahoo_ticker}\n",
+    )
+    settings = Settings(data_dir=tmp_path, news_feeds_path=feeds)
+    await _seed_raw_news(
+        repository, feed_key="yahoo", url="https://feeds.example/rss?s=AAPL", body=RSS
+    )
+    service = NewsReparseService(
+        repository,
+        settings,
+        {"rss": FakeAdapter({"https://feeds.example/rss?s=AAPL": RSS})},
+        clock=FixedClock(),
+    )
+
+    summary = await service.reparse()
+    stored = await repository.list_news_items(t212_ticker="AAPL_US_EQ", limit=10)
+
+    assert summary.items_written == 2
+    assert len(stored) == 2
+
+
+async def test_reparse_skips_rows_when_the_feed_config_is_invalid(tmp_path: Path) -> None:
+    repository, _ = await _repository(tmp_path, "reparse_badconfig.sqlite3")
+    bad_feeds = tmp_path / "bad.yaml"
+    bad_feeds.write_text(
+        "feeds:\n  - key: a\n    label: A\n    url: https://x/1\n"
+        "  - key: a\n    label: B\n    url: https://x/2\n",
+        encoding="utf-8",
+    )
+    settings = Settings(data_dir=tmp_path, news_feeds_path=bad_feeds)
+    await _seed_raw_news(repository, feed_key="a", url="https://x/1", body=RSS)
+    service = NewsReparseService(repository, settings, {"rss": FakeAdapter({})}, clock=FixedClock())
+
+    summary = await service.reparse()
+
+    assert summary.raw_skipped == 1
+    assert any("invalid" in failure for failure in summary.failures)
+
+
+@pytest.mark.asyncio
+async def test_ranked_news_leads_with_stories_that_name_a_held_holding(tmp_path: Path) -> None:
+    repository, session_factory = await _repository(tmp_path, "news_ranked.sqlite3")
+    async with session_factory() as session, session.begin():
+        session.add_all(
+            [
+                Instrument(
+                    t212_ticker="MU_US_EQ",
+                    yahoo_ticker="MU",
+                    name="Micron Technology",
+                    mapping_status="resolved",
+                ),
+                Instrument(
+                    t212_ticker="OLD_US_EQ",
+                    yahoo_ticker="OLD",
+                    name="Oldco Industries",
+                    mapping_status="resolved",
+                ),
+                _held("MU_US_EQ"),
+            ]
+        )
+
+    def bound(headline: str, url: str, ticker: str | None, hour: int, feed: str = "f") -> NewsItem:
+        item = _item(headline, url, datetime(2024, 5, 1, hour, tzinfo=UTC))
+        item.t212_ticker = ticker
+        item.feed_key = feed
+        return item
+
+    await repository.upsert_news_items(
+        [
+            bound("Micron (MU) beats estimates", "https://x/1", "MU_US_EQ", 9),
+            bound(
+                "Micron (MU) beats estimates - Reuters", "https://x/g", "MU_US_EQ", 8, "google-news"
+            ),
+            bound("2 dividend stocks to buy forever", "https://x/2", "MU_US_EQ", 7),
+            bound("Oldco Industries cuts guidance", "https://x/3", "OLD_US_EQ", 6),
+            bound("Stocks rally into the close", "https://x/4", None, 5),
+        ]
+    )
+    service = NewsSyncService(repository, Settings(data_dir=tmp_path))
+
+    everything = await service.list_ranked_news(limit=10)
+    relevant = await service.list_ranked_news(limit=10, held_only=True, mentions_only=True)
+
+    # The Google News copy of the same story is shown once.
+    assert [(entry.item.headline, entry.relevance, entry.held) for entry in everything] == [
+        ("Micron (MU) beats estimates", "headline", True),
+        ("2 dividend stocks to buy forever", "unconfirmed", True),
+        ("Oldco Industries cuts guidance", "headline", False),
+        ("Stocks rally into the close", "market", False),
+    ]
+    assert everything[0].matched_term == "MU"
+    assert [entry.item.headline for entry in relevant] == ["Micron (MU) beats estimates"]

@@ -24,9 +24,12 @@ RUN addgroup --system helios \
     && adduser --system --ingroup helios --home /home/helios helios
 
 COPY --from=builder /dist/*.whl /tmp/dist/
+COPY constraints.txt /tmp/constraints.txt
 
-RUN python -m pip install /tmp/dist/*.whl \
-    && rm -rf /tmp/dist
+# Installed against the same pins CI verifies, so the image cannot resolve to a different
+# dependency set than the one that went green.
+RUN python -m pip install /tmp/dist/*.whl -c /tmp/constraints.txt \
+    && rm -rf /tmp/dist /tmp/constraints.txt
 
 COPY alembic.ini ./
 COPY alembic ./alembic

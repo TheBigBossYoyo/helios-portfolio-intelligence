@@ -1,30 +1,18 @@
 import { humanizeStatus } from "@/lib/format";
-import { statusColor } from "@/lib/viz";
+import { statusColor, statusTone } from "@/lib/viz";
 
 /**
  * Status is never carried by color alone: every badge ships a glyph plus a text label, so it
  * survives CVD, grayscale print, and forced-colors.
  */
 function glyph(status: string): string {
-  switch (status.toLowerCase()) {
-    case "ok":
-    case "success":
-    case "resolved":
-    case "healthy":
+  switch (statusTone(status)) {
+    case "good":
       return "✓";
-    case "degraded":
-    case "stale":
-    case "ambiguous":
     case "warning":
       return "!";
-    case "override_required":
-    case "unsupported_action":
     case "serious":
       return "▲";
-    case "failed":
-    case "error":
-    case "mismatch":
-    case "unresolved":
     case "critical":
       return "✕";
     default:
@@ -32,11 +20,25 @@ function glyph(status: string): string {
   }
 }
 
+const TONE_CLASSES = {
+  good: "bg-positive-soft text-positive",
+  warning: "bg-warning-soft text-warning",
+  serious: "bg-warning-soft text-warning",
+  critical: "bg-negative-soft text-negative",
+  neutral: "bg-surface-3 text-ink-2",
+} as const;
+
 export function StatusBadge({ status, label }: { status: string; label?: string }) {
-  const color = statusColor(status);
+  const tone = statusTone(status);
   return (
-    <span className="inline-flex items-center gap-1.5 whitespace-nowrap border border-neutral-800 bg-neutral-950 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-neutral-300">
-      <span aria-hidden="true" style={{ color }}>
+    <span
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${TONE_CLASSES[tone]}`}
+    >
+      <span
+        aria-hidden="true"
+        className="text-[11px] leading-none"
+        style={{ color: tone === "neutral" ? undefined : statusColor(status) }}
+      >
         {glyph(status)}
       </span>
       {label ?? humanizeStatus(status)}

@@ -13,13 +13,15 @@ Design rules that the rest of this module obeys:
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import math
 import re
+import time
 import zipfile
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO, StringIO
@@ -28,18 +30,36 @@ from typing import Protocol, cast
 
 import httpx
 import numpy as np
+from pydantic import SecretStr
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.optimize import brentq
 from scipy.spatial.distance import squareform
 
+from .attribution import (
+    AttributionConfigError,
+    build_sector_groups,
+    load_benchmark_sector_config,
+    load_sector_overrides,
+    sector_proxy_cache_key,
+)
+from .card_history import card_label
 from .config import FlowTiming, Settings
 from .models import (
     DailyHolding,
+    DailyHoldingFlow,
     DailyNav,
     FactorReturnDaily,
     FxRateDaily,
     Instrument,
     MarketPriceDaily,
+    Transaction,
+)
+from .periods import (
+    PeriodSummary,
+    compute_monthly_summaries,
+    compute_period_summaries,
+    cumulative_net_deposits,
+    with_holding_movements,
 )
 from .portfolio_repository import PortfolioRepository, ReplayInputData
 from .rate_limit import Clock, SystemClock
@@ -57,6 +77,12 @@ MIN_VAR_OBSERVATIONS = 20
 MIN_FACTOR_OBSERVATIONS = 12
 VAR_QUANTILE_METHOD = "linear"
 FACTOR_NAMES = ("mkt_rf", "smb", "hml", "rmw", "cma", "mom")
+
+#: Cash movements that are part of the portfolio's own return, not money moved in or out:
+#: fees reduce cash, interest on free cash adds to it. They change the balance but are never
+#: external flows, so TWR sees them as the gain or cost they are. Ignoring them left the
+#: replayed cash a few euros away from what Trading 212 reports.
+INTERNAL_CASH_TYPES = frozenset({"FEE", "INTEREST_ON_FREE_CASH", "INTEREST"})
 
 EXTERNAL_FLOW_TYPES = frozenset(
     {
@@ -139,6 +165,11 @@ class NavPoint:
     securities_value_eur: Decimal | None
     external_flow_eur: Decimal
     valuation_status: str
+    dividend_eur: Decimal = ZERO
+    interest_eur: Decimal = ZERO
+    fee_eur: Decimal = ZERO
+    #: Everything put in minus everything taken out, up to and including this day.
+    net_deposits_to_date_eur: Decimal = ZERO
 
 
 @dataclass(frozen=True)
@@ -353,6 +384,9 @@ class PerformanceReport:
     correlation_clusters: CorrelationClusterReport
     passive_counterfactual: PassiveCounterfactualReport
     notes: list[str]
+    #: Money moved vs investment result, per standard period and per calendar month.
+    period_summaries: list[PeriodSummary] = field(default_factory=list)
+    monthly_summaries: list[PeriodSummary] = field(default_factory=list)
 
 
 class MarketDataProvider(Protocol):
@@ -362,7 +396,25 @@ class MarketDataProvider(Protocol):
         requests: Sequence[PriceRequest],
         start_date: date,
         end_date: date,
-    ) -> dict[str, list[DailyPricePoint]]: ...
+        skip_notes: dict[str, str] | None = None,
+    ) -> dict[str, list[DailyPricePoint]]:
+        """Fetch daily closes for ``requests``, keyed by :attr:`PriceRequest.key`.
+
+        A request this provider could not price at all -- an unknown symbol, one its plan does
+        not cover, no trusted currency to value it in -- is simply absent from the returned dict.
+        That is not an error: it is reported through the replay's usual missing-price accounting
+        like any other gap. When the *caller* also wants to know *why* a particular symbol was
+        skipped (surfaced in the replay's notes, and consulted by
+        :class:`CompositeMarketDataProvider` to decide what to hand its fallback), it passes a
+        dict via ``skip_notes`` and implementations fill in ``skip_notes[request.key] = reason``
+        for whichever symbols they skipped. A provider that never explains itself may leave the
+        dict untouched; the caller still sees "no data" from the returned mapping.
+
+        A failure that is not specific to one symbol -- a rejected API key, an exhausted daily
+        quota, a rate limit -- raises :class:`MarketDataProviderError` instead, since every other
+        request in the batch would fail identically and there is nothing useful left to try.
+        """
+        ...
 
 
 class FxRateProvider(Protocol):
@@ -393,8 +445,9 @@ class NullMarketDataProvider:
         requests: Sequence[PriceRequest],
         start_date: date,
         end_date: date,
+        skip_notes: dict[str, str] | None = None,
     ) -> dict[str, list[DailyPricePoint]]:
-        del requests, start_date, end_date
+        del requests, start_date, end_date, skip_notes
         return {}
 
 
@@ -411,21 +464,122 @@ class NullFactorDataProvider:
         return []
 
 
+#: Instrument.yahoo_ticker (see resolver.py) carries Yahoo Finance's own suffix convention: a US
+#: listing has none, and resolver.py replaces any "." a US ticker legitimately contains (BRK.B)
+#: with "-" before it ever reaches this module -- so any "." still present in a yahoo_ticker here
+#: is a genuine Yahoo exchange suffix, never a US ticker artefact. Only ".L" (London Stock
+#: Exchange) is mapped today because it is the only non-US listing type this account holds
+#: (VUAGl_EQ, SSLNl_EQ); extending to another exchange means adding one entry here plus one in
+#: each provider's own suffix table below -- never guessing a provider's format from Yahoo's.
+YAHOO_EXCHANGE_SUFFIXES: dict[str, str] = {"L": "LSE"}
+
+
+def _split_yahoo_symbol(yahoo_ticker: str) -> tuple[str, str | None]:
+    """Split a Yahoo-style ticker into (base symbol, canonical exchange key or None for US)."""
+    if "." in yahoo_ticker:
+        base, _, suffix = yahoo_ticker.rpartition(".")
+        exchange = YAHOO_EXCHANGE_SUFFIXES.get(suffix.upper())
+        if exchange is not None and base:
+            return base, exchange
+    return yahoo_ticker, None
+
+
+#: Twelve Data's `exchange` query parameter takes the plain exchange name (not a MIC code).
+#: Verified 2026-09-27 against https://twelvedata.com/docs#time-series ("exchange: Exchange
+#: where instrument is traded", example `exchange=NASDAQ`) and
+#: https://twelvedata.com/exchanges/xlon, which lists London Stock Exchange tickers such as
+#: "BT.A" resolved via `exchange=LSE`. Note the free Basic plan does not reach this exchange at
+#: all -- see the class docstring below -- so this table only matters once a paid Twelve Data
+#: plan, or Twelve Data used as the fallback provider, is in play.
+TWELVEDATA_EXCHANGE_NAMES: dict[str, str] = {"LSE": "LSE"}
+
+#: Alpha Vantage documents non-US tickers with a market suffix. Verified 2026-09-27 against
+#: https://www.alphavantage.co/documentation/: "Sample ticker traded in UK - London Stock
+#: Exchange: symbol=TSCO.LON".
+ALPHAVANTAGE_EXCHANGE_SUFFIXES: dict[str, str] = {"LSE": "LON"}
+
+
+def _twelvedata_symbol_params(yahoo_ticker: str) -> dict[str, str]:
+    """Translate a Yahoo-style symbol into Twelve Data's `symbol` (+ `exchange`) parameters."""
+    base, exchange = _split_yahoo_symbol(yahoo_ticker)
+    params = {"symbol": base}
+    exchange_name = TWELVEDATA_EXCHANGE_NAMES.get(exchange) if exchange else None
+    if exchange_name is not None:
+        params["exchange"] = exchange_name
+    return params
+
+
+def _alphavantage_symbol(yahoo_ticker: str) -> str:
+    """Translate a Yahoo-style symbol into Alpha Vantage's suffixed form.
+
+    E.g. ``VUAG.L`` -> ``VUAG.LON``.
+    """
+    base, exchange = _split_yahoo_symbol(yahoo_ticker)
+    suffix = ALPHAVANTAGE_EXCHANGE_SUFFIXES.get(exchange) if exchange else None
+    return f"{base}.{suffix}" if suffix else yahoo_ticker
+
+
+#: Twelve Data error codes that mean the *account*, not the one symbol, cannot proceed: an
+#: invalid/revoked key (401) or an exhausted daily quota / rate limit (429). Every other request
+#: in the same batch would fail identically, so these raise rather than being skipped.
+_TWELVEDATA_ACCOUNT_ERROR_CODES = frozenset({401, 429})
+
+#: Codes that are specific to the one symbol: not found (404), a malformed request (400), or --
+#: the case that actually matters for the free tier -- a symbol outside the current plan, e.g.
+#: "available starting with Grow plan" for a non-US exchange (403). Skipped, not raised, so one
+#: uncovered holding does not abort pricing for the rest of the portfolio.
+_TWELVEDATA_SYMBOL_ERROR_CODES = frozenset({400, 403, 404})
+
+
+def _classify_twelvedata_error(payload: Mapping[str, object]) -> tuple[str, str]:
+    """Classify a Twelve Data ``{"status": "error"}`` body as ("account"|"symbol", reason).
+
+    Verified 2026-09-27 against https://twelvedata.com/docs#errors: the body always carries
+    ``{"code": <int>, "message": <str>, "status": "error"}``. The code is authoritative when
+    present; a missing or unrecognised code falls back to scanning the message for the same
+    account-level language (a bad key or an exhausted quota), defaulting to "symbol" otherwise so
+    an unfamiliar entitlement message degrades to a skip rather than aborting the whole replay.
+    """
+    code = payload.get("code")
+    message = str(payload.get("message", "no message"))
+    if isinstance(code, int):
+        if code in _TWELVEDATA_ACCOUNT_ERROR_CODES:
+            return "account", message
+        if code in _TWELVEDATA_SYMBOL_ERROR_CODES:
+            return "symbol", message
+    lowered = message.lower()
+    if any(term in lowered for term in ("api key", "apikey", "credit", "rate limit")):
+        return "account", message
+    return "symbol", message
+
+
 class TwelveDataMarketDataProvider:
     """Free-tier daily closes from Twelve Data.
 
-    Chosen over Alpha Vantage for the free path: 800 credits/day against Alpha Vantage's 25, and
-    -- the reason that actually matters here -- the response carries ``meta.currency``. Alpha
-    Vantage reports no quotation currency, so Helios has to skip any symbol whose currency it
-    cannot get from trusted metadata.
+    Chosen over Alpha Vantage as the default primary provider: 800 credits/day against Alpha
+    Vantage's 25, and -- the reason that actually matters here -- the response carries
+    ``meta.currency``. Alpha Vantage reports no quotation currency, so Helios has to skip any
+    symbol whose currency it cannot get from trusted metadata.
 
-    The free plan covers US exchanges only. A non-US listing is not silently mispriced; it simply
-    returns no series, and the affected metric reports ``unavailable`` like any other gap.
+    Verified 2026-09-27 against https://twelvedata.com/pricing and
+    https://twelvedata.com/exchanges/xlon: the free Basic plan's market coverage is "US equities,
+    ETFs, forex and crypto" (3 markets); London Stock Exchange access starts at the paid Grow
+    plan. A non-US listing on the free plan is therefore not silently mispriced -- Twelve Data
+    answers with a 403 ("available starting with Grow plan" or similar), which is classified as a
+    per-symbol error (see :func:`_classify_twelvedata_error`) and skipped like any other gap. This
+    is exactly the case :class:`CompositeMarketDataProvider` exists for: pair this provider (US)
+    with Alpha Vantage as the fallback (LSE) to cover both without paying for either.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, api_key: SecretStr | None = None) -> None:
         self._settings = settings
+        #: Defaults to the primary credential so existing single-provider construction is
+        #: unchanged; the fallback wiring in dependencies.py passes the second credential
+        #: explicitly so two provider instances never race to read the same settings field.
+        self._api_key = api_key if api_key is not None else settings.market_data_api_key
         self._client = httpx.AsyncClient(timeout=settings.market_data_timeout_seconds)
+        self._pacer = RequestPacer(settings.twelvedata_min_interval_seconds)
+        self._covered_exchanges = settings.twelvedata_exchange_keys
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -436,16 +590,27 @@ class TwelveDataMarketDataProvider:
         requests: Sequence[PriceRequest],
         start_date: date,
         end_date: date,
+        skip_notes: dict[str, str] | None = None,
     ) -> dict[str, list[DailyPricePoint]]:
-        api_key = self._settings.market_data_api_key
+        api_key = self._api_key
         if api_key is None:
             return {}
         results: dict[str, list[DailyPricePoint]] = {}
         for request in requests:
-            response = await self._client.get(
+            _, exchange = _split_yahoo_symbol(request.provider_symbol)
+            if (exchange or "US") not in self._covered_exchanges:
+                # Outside the plan: asking would spend a rate-limited request on a certain refusal.
+                if skip_notes is not None:
+                    skip_notes[request.key] = (
+                        f"Twelve Data: {exchange} listings are outside the configured plan "
+                        "(HELIOS_TWELVEDATA_EXCHANGES); left for the fallback provider"
+                    )
+                continue
+            response = await _provider_get(
+                self._client,
                 self._settings.twelvedata_base_url,
                 params={
-                    "symbol": request.provider_symbol,
+                    **_twelvedata_symbol_params(request.provider_symbol),
                     "interval": "1day",
                     "start_date": start_date.isoformat(),
                     "end_date": end_date.isoformat(),
@@ -453,8 +618,9 @@ class TwelveDataMarketDataProvider:
                     "format": "JSON",
                     "apikey": api_key.get_secret_value(),
                 },
+                provider="Twelve Data",
+                pacer=self._pacer,
             )
-            response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, dict):
                 continue
@@ -462,12 +628,21 @@ class TwelveDataMarketDataProvider:
             # alone would let a quota or entitlement failure through as "no data" -- indistinguish-
             # able from a genuinely empty series.
             if payload.get("status") == "error":
-                raise MarketDataProviderError(
-                    f"Twelve Data rejected {request.provider_symbol!r}: "
-                    f"{payload.get('message', 'no message')} (code {payload.get('code')})"
-                )
+                kind, reason = _classify_twelvedata_error(payload)
+                if kind == "account":
+                    raise MarketDataProviderError(
+                        f"Twelve Data rejected the request: {reason} (code {payload.get('code')})"
+                    )
+                if skip_notes is not None:
+                    skip_notes[request.key] = f"Twelve Data: {reason} (code {payload.get('code')})"
+                continue
             currency = self._resolve_currency(request, payload)
             if currency is None:
+                if skip_notes is not None and request.currency_code is not None:
+                    skip_notes[request.key] = (
+                        "Twelve Data: reported currency did not match the trusted "
+                        f"{request.currency_code!r}; refusing to mis-value"
+                    )
                 continue
             values = payload.get("values")
             if not isinstance(values, list):
@@ -632,10 +807,64 @@ def parse_ken_french_csv(payload: bytes) -> dict[date, dict[str, Decimal]]:
     return table
 
 
+#: Alpha Vantage signals a request-specific failure and an account-wide one with different body
+#: keys, both under HTTP 200. Verified 2026-09-27 against
+#: https://www.alphavantage.co/documentation/ and https://www.alphavantage.co/support/#api-key:
+#:
+#: * ``"Error Message"`` -- the request itself could not be fulfilled (unknown symbol, malformed
+#:   parameter). Specific to the one symbol: skipped.
+#: * ``"Note"`` / ``"Information"`` -- the free key's request-rate or daily-quota ceiling (5
+#:   requests/minute, 25 requests/day at the time of writing) was hit, or the endpoint needs a
+#:   paid plan. Every other request in this batch would fail the same way: raised.
+def _classify_alphavantage_payload(payload: Mapping[str, object]) -> tuple[str, str] | None:
+    """Return ("account"|"symbol", reason), or None when ``payload`` is not an error at all."""
+    error_message = payload.get("Error Message")
+    if isinstance(error_message, str) and error_message:
+        return "symbol", error_message
+    note = payload.get("Note")
+    if isinstance(note, str) and note:
+        return "account", note
+    information = payload.get("Information")
+    if isinstance(information, str) and information:
+        return "account", information
+    return None
+
+
 class AlphaVantageMarketDataProvider:
-    def __init__(self, settings: Settings) -> None:
+    """Free-tier daily closes from Alpha Vantage.
+
+    Used as the fallback provider for symbols the primary (normally Twelve Data's free plan)
+    cannot price -- chiefly non-US listings such as this account's two LSE holdings.
+
+    Verified 2026-09-27 against https://www.alphavantage.co/documentation/:
+
+    * ``TIME_SERIES_DAILY_ADJUSTED`` is premium-only ("this is a premium API function. Subscribe
+      to a premium membership plan to instantly unlock all premium APIs"). Only the unadjusted
+      ``TIME_SERIES_DAILY`` is free, so that is what this provider calls; there is no split-
+      adjusted close in its response, only ``"4. close"``.
+    * ``outputsize=full`` (the entire history) is also premium. ``outputsize=compact`` -- "the
+      latest 100 data points" -- is the free default and what this provider requests. In
+      practice that is roughly the last 100 *trading* days per call. Anything older has to
+      already be in Helios's own cache (``market_prices_daily``): the replay only ever asks a
+      provider for the slice ``_missing_price_requests`` says is actually missing, so a backfill
+      beyond ~100 trading days will show as ``insufficient_data`` until enough daily runs have
+      accumulated cache coverage, or until a paid key is used once to seed it.
+    * Non-US tickers carry a market suffix, e.g. "Sample ticker traded in UK - London Stock
+      Exchange: symbol=TSCO.LON" -- see :func:`_alphavantage_symbol`.
+
+    Quota math for daily use: the free key allows 25 requests/day. With the price cache covering
+    everything already fetched (see ``_missing_price_requests``), a steady-state day only
+    re-requests symbols whose cache fell stale -- for this account's two LSE holdings, at most 2
+    of the 25 -- comfortably inside the ceiling even counting the 5-requests/minute burst limit,
+    since the replay issues these sequentially with real network latency between them rather than
+    back-to-back.
+    """
+
+    def __init__(self, settings: Settings, *, api_key: SecretStr | None = None) -> None:
         self._settings = settings
+        self._api_key = api_key if api_key is not None else settings.market_data_api_key
         self._client = httpx.AsyncClient(timeout=settings.market_data_timeout_seconds)
+        self._pacer = RequestPacer(settings.alphavantage_min_interval_seconds)
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -646,8 +875,9 @@ class AlphaVantageMarketDataProvider:
         requests: Sequence[PriceRequest],
         start_date: date,
         end_date: date,
+        skip_notes: dict[str, str] | None = None,
     ) -> dict[str, list[DailyPricePoint]]:
-        api_key = self._settings.market_data_api_key
+        api_key = self._api_key
         if api_key is None:
             return {}
         results: dict[str, list[DailyPricePoint]] = {}
@@ -656,28 +886,49 @@ class AlphaVantageMarketDataProvider:
                 # Alpha Vantage's daily series does not report a quotation currency. Without
                 # trusted metadata the close would have to be assumed (historically: USD), which
                 # would silently mis-value non-USD listings. Skip instead.
+                if skip_notes is not None:
+                    skip_notes[request.key] = (
+                        "Alpha Vantage: no trusted instrument currency configured for "
+                        f"{request.provider_symbol!r}; refusing to guess"
+                    )
                 continue
-            response = await self._client.get(
+            response = await _provider_get(
+                self._client,
                 self._settings.market_data_base_url,
                 params={
-                    "function": "TIME_SERIES_DAILY_ADJUSTED",
-                    "outputsize": "full",
+                    "function": "TIME_SERIES_DAILY",
+                    "outputsize": "compact",
                     "datatype": "json",
-                    "symbol": request.provider_symbol,
+                    "symbol": _alphavantage_symbol(request.provider_symbol),
                     "apikey": api_key.get_secret_value(),
                 },
+                provider="Alpha Vantage",
+                pacer=self._pacer,
             )
-            response.raise_for_status()
             payload = response.json()
+            if not isinstance(payload, dict):
+                continue
+            classification = _classify_alphavantage_payload(payload)
+            if classification is not None:
+                kind, reason = classification
+                if kind == "account":
+                    raise MarketDataProviderError(f"Alpha Vantage rejected the request: {reason}")
+                if skip_notes is not None:
+                    skip_notes[request.key] = f"Alpha Vantage: {reason}"
+                continue
             series = payload.get("Time Series (Daily)")
             if not isinstance(series, dict):
+                if skip_notes is not None:
+                    skip_notes[request.key] = "Alpha Vantage: response had no daily series"
                 continue
             points: list[DailyPricePoint] = []
             for key, raw in series.items():
                 point_date = date.fromisoformat(key)
                 if point_date < start_date or point_date > end_date:
                     continue
-                close_value = raw.get("5. adjusted close") or raw.get("4. close")
+                if not isinstance(raw, Mapping):
+                    continue
+                close_value = raw.get("4. close")
                 if not isinstance(close_value, str):
                     continue
                 points.append(
@@ -694,12 +945,167 @@ class AlphaVantageMarketDataProvider:
         return results
 
 
+class CompositeMarketDataProvider:
+    """Ask a primary provider for every symbol, then ask a fallback only for what it missed.
+
+    This is the "Twelve Data for US + Alpha Vantage for London" setup: the primary (typically
+    Twelve Data, 800 free credits/day, US-only on the free plan) covers the bulk of a portfolio
+    cheaply, and the fallback (typically Alpha Vantage, 25 free credits/day) is spent only on the
+    handful of symbols the primary's plan does not reach. Never the reverse -- the fallback is
+    never asked for a symbol the primary already priced -- so a tiny daily quota lasts.
+
+    "What the primary missed" is judged strictly from its return value: any request whose key is
+    absent, or maps to an empty list, in the primary's result. That covers every way a provider
+    can fail to price a symbol -- an explicit per-symbol skip (recorded in ``skip_notes`` if the
+    primary chose to explain itself), a currency mismatch, or simply no rows in the response --
+    without this class needing to know *why*.
+
+    An account-level failure (bad key, exhausted quota) is not caught here: it propagates from
+    whichever provider raised it. Silently swallowing that and handing everything to the other
+    provider would burn through the fallback's much smaller quota for symbols the primary should
+    have been able to serve, and would hide a configuration problem the operator needs to see.
+    """
+
+    def __init__(self, primary: MarketDataProvider, fallback: MarketDataProvider) -> None:
+        self._primary = primary
+        self._fallback = fallback
+
+    async def aclose(self) -> None:
+        for provider in (self._primary, self._fallback):
+            close = getattr(provider, "aclose", None)
+            if close is not None:
+                await close()
+
+    async def fetch_daily_closes(
+        self,
+        *,
+        requests: Sequence[PriceRequest],
+        start_date: date,
+        end_date: date,
+        skip_notes: dict[str, str] | None = None,
+    ) -> dict[str, list[DailyPricePoint]]:
+        primary_notes: dict[str, str] = {}
+        primary_results = await self._primary.fetch_daily_closes(
+            requests=requests,
+            start_date=start_date,
+            end_date=end_date,
+            skip_notes=primary_notes,
+        )
+        if skip_notes is not None:
+            skip_notes.update(primary_notes)
+
+        unresolved = [request for request in requests if not primary_results.get(request.key)]
+        if not unresolved:
+            return primary_results
+
+        fallback_notes: dict[str, str] = {}
+        fallback_results = await self._fallback.fetch_daily_closes(
+            requests=unresolved,
+            start_date=start_date,
+            end_date=end_date,
+            skip_notes=fallback_notes,
+        )
+
+        merged = dict(primary_results)
+        for request in unresolved:
+            points = fallback_results.get(request.key)
+            if points:
+                merged[request.key] = points
+                if skip_notes is not None:
+                    skip_notes.pop(request.key, None)
+            elif skip_notes is not None:
+                reason = fallback_notes.get(request.key, "no data returned")
+                primary_reason = primary_notes.get(request.key)
+                skip_notes[request.key] = (
+                    f"{primary_reason}; fallback also failed: {reason}"
+                    if primary_reason
+                    else reason
+                )
+        return merged
+
+
 class UnknownCurrencyError(ValueError):
     """A holding is quoted in a currency Helios cannot convert to EUR."""
 
 
 class MarketDataProviderError(RuntimeError):
-    """A market-data provider refused a request (quota, entitlement, bad symbol)."""
+    """A market-data provider refused a request (quota, entitlement, bad symbol).
+
+    The message is shown to the operator and written to logs, so it must never contain a
+    request URL: both providers take the API key as a query parameter.
+    """
+
+
+class RequestPacer:
+    """Keeps at least ``interval`` seconds between one provider's requests.
+
+    Free market-data plans are metered per minute as well as per day. Sending a portfolio's
+    fifteen symbols back to back got Twelve Data's HTTP 429 on the ninth, and the whole replay
+    failed; spacing them out costs a minute or two on a first replay and nothing afterwards,
+    because later replays only request the days the price cache is missing.
+    """
+
+    def __init__(
+        self,
+        interval: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self._interval = max(0.0, interval)
+        self._clock = clock
+        self._sleep = sleep
+        self._last: float | None = None
+
+    async def wait(self) -> None:
+        if self._last is not None:
+            remaining = self._interval - (self._clock() - self._last)
+            if remaining > 0:
+                await self._sleep(remaining)
+        self._last = self._clock()
+
+
+#: After an HTTP 429, wait this long before the single retry: the per-minute window resets.
+RATE_LIMIT_RETRY_SECONDS = 61.0
+
+
+async def _provider_get(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    params: Mapping[str, str],
+    provider: str,
+    pacer: RequestPacer,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> httpx.Response:
+    """One paced GET, with a single wait-and-retry on HTTP 429 and URL-free errors.
+
+    ``raise_for_status`` puts the full request URL -- API key included -- into its message,
+    and that message reached the dashboard and the API log verbatim. Every failure here is
+    rewritten to name the provider and status only, with the original chain suppressed.
+    """
+
+    for attempt in range(2):
+        await pacer.wait()
+        try:
+            response = await client.get(url, params=dict(params))
+        except httpx.HTTPError as exc:
+            raise MarketDataProviderError(
+                f"{provider} could not be reached ({type(exc).__name__}). Check your connection "
+                "and try again."
+            ) from None
+        if response.status_code == httpx.codes.TOO_MANY_REQUESTS:
+            if attempt == 0:
+                await sleep(RATE_LIMIT_RETRY_SECONDS)
+                continue
+            raise MarketDataProviderError(
+                f"{provider} is rate-limiting requests (HTTP 429): the free plan's per-minute or "
+                "daily allowance is used up. Wait a minute and run the replay again."
+            )
+        if response.status_code >= 400:
+            raise MarketDataProviderError(f"{provider} returned HTTP {response.status_code}.")
+        return response
+    raise AssertionError("unreachable")
 
 
 class FactorDataFormatError(ValueError):
@@ -808,6 +1214,39 @@ class PerformanceReplayService:
         self._clock = clock or SystemClock()
 
     async def replay(self, *, as_of: date | None = None) -> PerformanceReplaySummary:
+        """Rebuild the daily replay under an exclusive lease.
+
+        Replay rewrites the whole ``daily_holdings``/``daily_nav`` pair, so two concurrent
+        runs would duplicate every provider fetch -- burning a metered market-data quota --
+        and race to be the last writer. The lease makes the second caller fail fast with
+        :class:`SyncAlreadyRunningError` instead.
+        """
+        started_at = self._clock.utcnow()
+        lease = await self._repository.acquire_performance_replay_lease(
+            acquired_at=started_at,
+            lease_minutes=self._settings.sync_lease_minutes,
+        )
+        try:
+            summary = await self._replay_without_lease(as_of=as_of)
+        except BaseException as exc:
+            await self._repository.release_performance_replay_lease(
+                lease=lease,
+                completed_at=self._clock.utcnow(),
+                succeeded=False,
+                error_message=exc.__class__.__name__,
+            )
+            raise
+        await self._repository.release_performance_replay_lease(
+            lease=lease,
+            completed_at=self._clock.utcnow(),
+            succeeded=True,
+            error_message=None,
+        )
+        return summary
+
+    async def _replay_without_lease(
+        self, *, as_of: date | None = None
+    ) -> PerformanceReplaySummary:
         replay_input = await self._repository.load_replay_inputs()
         start_date = _min_event_date(replay_input)
         end_date = as_of or self._clock.utcnow().date()
@@ -830,7 +1269,11 @@ class PerformanceReplayService:
         end_date = max(end_date, start_date)
         instruments_by_ticker = {item.t212_ticker: item for item in replay_input.instruments}
         benchmarks = default_benchmarks(self._settings)
-        price_requests = _price_symbol_requests(instruments_by_ticker, benchmarks)
+        sector_proxy_requests = _sector_proxy_price_requests(self._settings)
+        price_requests = [
+            *_price_symbol_requests(instruments_by_ticker, benchmarks),
+            *sector_proxy_requests,
+        ]
 
         cached_prices = await self._repository.list_market_prices(
             start_date=start_date, end_date=end_date
@@ -842,31 +1285,44 @@ class PerformanceReplayService:
             end_date=end_date,
             max_stale_days=self._settings.analytics_max_price_stale_days,
         )
+        price_skip_notes: dict[str, str] = {}
         fetched_prices = await self._market_data_provider.fetch_daily_closes(
             requests=missing_requests,
             start_date=start_date,
             end_date=end_date,
+            skip_notes=price_skip_notes,
         )
         await self._repository.upsert_market_prices(
             _flatten_price_points(price_requests, fetched_prices)
         )
         price_map = _merge_market_price_maps(cached_prices, fetched_prices, price_requests)
 
-        currencies = _required_currencies(instruments_by_ticker, benchmarks, replay_input)
-        cached_fx = await self._repository.list_fx_rates(start_date=start_date, end_date=end_date)
+        currencies = _required_currencies(
+            instruments_by_ticker, benchmarks, replay_input
+        ) | {
+            request.currency_code.upper()
+            for request in sector_proxy_requests
+            if request.currency_code and request.currency_code.upper() != BASE_CURRENCY
+        }
+        # FX is looked up by carrying the last fix forward, so the window must open *before* the
+        # first event: a history that starts on a Saturday (or a bank holiday) otherwise has no
+        # earlier fix to carry, and that day's foreign-currency deposit was silently excluded.
+        # Opening by the stale cutoff is exactly as far back as a carried fix may come from.
+        fx_start = start_date - timedelta(days=self._settings.analytics_max_fx_stale_days)
+        cached_fx = await self._repository.list_fx_rates(start_date=fx_start, end_date=end_date)
         missing_fx_currencies = {
             currency
             for currency in currencies
             if not _fx_cache_covers(
                 cached_fx.get(currency, []),
-                start_date=start_date,
+                start_date=fx_start,
                 end_date=end_date,
                 max_stale_days=self._settings.analytics_max_fx_stale_days,
             )
         }
         fetched_fx = await self._fx_rate_provider.fetch_eur_base_rates(
             currencies=missing_fx_currencies,
-            start_date=start_date,
+            start_date=fx_start,
             end_date=end_date,
         )
         await self._repository.upsert_fx_rates(_flatten_fx_points(fetched_fx))
@@ -888,7 +1344,9 @@ class PerformanceReplayService:
             max_fx_stale_days=self._settings.analytics_max_fx_stale_days,
         )
         await self._repository.replace_daily_replay(
-            holdings=replay_result.holdings, nav_rows=replay_result.nav_rows
+            holdings=replay_result.holdings,
+            nav_rows=replay_result.nav_rows,
+            flows=replay_result.flows,
         )
         return PerformanceReplaySummary(
             as_of=end_date,
@@ -911,7 +1369,13 @@ class PerformanceReplayService:
                 _currencies_with_status(replay_result.holdings, VALUATION_STALE_FX)
             ),
             excluded_flow_currencies=sorted(replay_result.excluded_flow_currencies),
-            notes=replay_result.notes,
+            notes=sorted(
+                set(replay_result.notes)
+                | {
+                    f"Price fetch skipped {key}: {reason}"
+                    for key, reason in price_skip_notes.items()
+                }
+            ),
         )
 
     async def get_report(self) -> PerformanceReport:
@@ -921,6 +1385,14 @@ class PerformanceReplayService:
         start_date = nav_rows[0].as_of_date
         end_date = nav_rows[-1].as_of_date
         holding_rows = await self._repository.list_daily_holdings()
+        holding_flows = await self._repository.list_daily_holding_flows()
+        instruments_by_ticker = await self._repository.get_cached_instruments_by_tickers(
+            {row.t212_ticker for row in holding_rows} | {row.t212_ticker for row in holding_flows}
+        )
+        holding_names = {
+            ticker: instrument.name or instrument.short_name
+            for ticker, instrument in instruments_by_ticker.items()
+        }
         benchmarks = default_benchmarks(self._settings)
         price_map = await self._repository.list_market_prices(
             start_date=start_date, end_date=end_date
@@ -936,7 +1408,9 @@ class PerformanceReplayService:
         risk_free_rate = float(self._settings.analytics_risk_free_rate)
 
         annualized_metric = annualized_return_from_twr(twr_points)
-        drawdown = compute_drawdown(nav_rows)
+        twr_by_date = {point.as_of_date: point.value for point in twr_points}
+        running_deposits = cumulative_net_deposits(nav_rows)
+        drawdown = compute_drawdown(nav_rows, flow_timing=flow_timing)
 
         benchmark_returns = {
             benchmark.key: _benchmark_returns_eur(
@@ -995,14 +1469,37 @@ class PerformanceReplayService:
                 _factor_observations(factor_rows),
                 factor_provider=self._settings.factor_data_provider,
             ),
-            nav_series=[_nav_point(row) for row in nav_rows],
+            nav_series=[
+                _nav_point(row, running_deposits.get(row.as_of_date, ZERO)) for row in nav_rows
+            ],
+            period_summaries=with_holding_movements(
+                compute_period_summaries(nav_rows, twr_by_date),
+                holding_rows,
+                holding_flows,
+                holding_names,
+            ),
+            monthly_summaries=with_holding_movements(
+                compute_monthly_summaries(nav_rows, twr_by_date),
+                holding_rows,
+                holding_flows,
+                holding_names,
+            ),
             daily_twr=twr_points,
             rolling_volatility_30d=rolling_volatility(twr_points, ROLLING_SHORT_WINDOW),
             rolling_volatility_90d=rolling_volatility(twr_points, ROLLING_LONG_WINDOW),
             rolling_beta_30d=rolling_beta(joined_passive, ROLLING_SHORT_WINDOW),
             rolling_beta_90d=rolling_beta(joined_passive, ROLLING_LONG_WINDOW),
             contributions=compute_contributions(weights, holding_returns),
-            attribution=_attribution_report(),
+            attribution=_attribution_report(
+                settings=self._settings,
+                holding_rows=holding_rows,
+                instruments_by_ticker=instruments_by_ticker,
+                twr_points=twr_points,
+                price_map=price_map,
+                fx_map=fx_map,
+                start_date=start_date,
+                end_date=end_date,
+            ),
             correlation_clusters=correlation_clusters(
                 holding_series,
                 weights,
@@ -1102,9 +1599,13 @@ def compute_daily_twr(
     approximation, which assumes the flow was at risk for half the day, so a same-day flow moves
     the reported return. Pick it only when flows genuinely arrive through the session.
     """
-    valued_rows = [row for row in nav_rows if row.nav_eur is not None]
     points: list[DailyReturnPoint] = []
-    for previous, current in pairwise(valued_rows):
+    # Pair each row with the row before it -- never with the last *valued* row. Bridging an
+    # unvalued stretch took only the flow on the day after it, so every deposit made during the
+    # gap was counted as investment gain: on a real account a month without London prices
+    # produced a single +133% "day". A return across a gap is unknown, so it is left out, and
+    # the cumulative figure links the valued segments either side of it.
+    for previous, current in pairwise(sorted(nav_rows, key=lambda row: row.as_of_date)):
         previous_nav = previous.nav_eur
         current_nav = current.nav_eur
         if previous_nav is None or current_nav is None:
@@ -1222,39 +1723,74 @@ def compute_sortino_ratio(returns: Sequence[float], risk_free_rate: float) -> Me
     return MetricValue("ok", excess_mean / downside_value, len(returns))
 
 
-def compute_drawdown(nav_rows: Sequence[DailyNav]) -> DrawdownPoint | None:
-    """Worst peak-to-trough drawdown, with recovery measured against *that* peak."""
-    valued_rows = [row for row in nav_rows if row.nav_eur is not None and row.nav_eur > ZERO]
-    if len(valued_rows) < 2:
+def time_weighted_index(
+    nav_rows: Sequence[DailyNav], *, flow_timing: FlowTiming = "flow_at_close"
+) -> list[tuple[date, float]]:
+    """Growth of 1.0 invested at the first valued day, compounding daily TWR.
+
+    Deposits and withdrawals do not move it -- only investment performance does -- which is
+    what makes it the right series for drawdown. Across an unvalued gap there is no return, so
+    the index carries its last level rather than inventing a move.
+    """
+
+    ordered = sorted(nav_rows, key=lambda row: row.as_of_date)
+    first = next((row for row in ordered if row.nav_eur is not None and row.nav_eur > ZERO), None)
+    if first is None:
+        return []
+    returns = {
+        point.as_of_date: point.value
+        for point in compute_daily_twr(ordered, flow_timing=flow_timing)
+    }
+    level = 1.0
+    series: list[tuple[date, float]] = []
+    for row in ordered:
+        if row.as_of_date < first.as_of_date or row.nav_eur is None:
+            continue
+        level *= 1.0 + returns.get(row.as_of_date, 0.0)
+        series.append((row.as_of_date, level))
+    return series
+
+
+def compute_drawdown(
+    nav_rows: Sequence[DailyNav], *, flow_timing: FlowTiming = "flow_at_close"
+) -> DrawdownPoint | None:
+    """Worst peak-to-trough drawdown of the time-weighted index, recovery measured to that peak.
+
+    Measured on the index, not on NAV. On raw NAV every withdrawal reads as a loss: a real
+    account that took money out 44 times reported a -37.6% "drawdown" that was mostly its own
+    withdrawals. Without flows the two coincide exactly.
+    """
+
+    series = time_weighted_index(nav_rows, flow_timing=flow_timing)
+    if len(series) < 2:
         return None
-    running_peak_nav = cast(Decimal, valued_rows[0].nav_eur)
-    running_peak_date = valued_rows[0].as_of_date
+    running_peak_level = series[0][1]
+    running_peak_date = series[0][0]
     worst_drawdown = 0.0
-    worst_peak_nav = running_peak_nav
+    worst_peak_level = running_peak_level
     worst_peak_date = running_peak_date
     worst_trough_date = running_peak_date
-    for row in valued_rows[1:]:
-        nav = cast(Decimal, row.nav_eur)
-        if nav >= running_peak_nav:
-            running_peak_nav = nav
-            running_peak_date = row.as_of_date
+    for as_of, level in series[1:]:
+        if level >= running_peak_level:
+            running_peak_level = level
+            running_peak_date = as_of
             continue
-        drawdown = float((nav / running_peak_nav) - ONE)
+        drawdown = level / running_peak_level - 1.0
         if drawdown < worst_drawdown:
             worst_drawdown = drawdown
-            worst_peak_nav = running_peak_nav
+            worst_peak_level = running_peak_level
             worst_peak_date = running_peak_date
-            worst_trough_date = row.as_of_date
+            worst_trough_date = as_of
     if worst_drawdown == 0.0:
         return DrawdownPoint(worst_peak_date, worst_peak_date, worst_peak_date, 0.0, 0, 0)
     recovery_date: date | None = None
-    for row in valued_rows:
-        if row.as_of_date <= worst_trough_date or row.nav_eur is None:
+    for as_of, level in series:
+        if as_of <= worst_trough_date:
             continue
-        if row.nav_eur >= worst_peak_nav:
-            recovery_date = row.as_of_date
+        if level >= worst_peak_level:
+            recovery_date = as_of
             break
-    end_date = recovery_date or valued_rows[-1].as_of_date
+    end_date = recovery_date or series[-1][0]
     return DrawdownPoint(
         peak_date=worst_peak_date,
         trough_date=worst_trough_date,
@@ -1748,6 +2284,7 @@ class _ReplayResult:
     unsupported_events: set[str]
     excluded_flow_currencies: set[str]
     notes: list[str]
+    flows: list[DailyHoldingFlow] = field(default_factory=list)
 
 
 def _build_daily_replay(
@@ -1765,6 +2302,8 @@ def _build_daily_replay(
     trade_cash: dict[date, Decimal] = defaultdict(lambda: ZERO)
     dividend_cash: dict[date, Decimal] = defaultdict(lambda: ZERO)
     external_flows: dict[date, Decimal] = defaultdict(lambda: ZERO)
+    # Per holding and day: EUR spent buying, received selling, and paid in dividends.
+    holding_flows: dict[tuple[date, str], list[Decimal]] = defaultdict(lambda: [ZERO, ZERO, ZERO])
     unsupported_events: set[str] = set()
     excluded_flow_currencies: set[str] = set()
     notes: set[str] = set()
@@ -1794,7 +2333,11 @@ def _build_daily_replay(
             unsupported_events.add(order.t212_ticker)
             continue
         sign = ONE if order.side == "BUY" else Decimal("-1")
-        quantity_deltas[trade_date][order.t212_ticker] += order.filled_quantity * sign
+        # Trading 212 reports a SELL fill's quantity as negative. The side alone decides the
+        # direction, so take the magnitude: applying the side's sign to an already-negative
+        # quantity counted every sale as a purchase (found on a real account, where a fully
+        # sold holding replayed as 13.9 units held).
+        quantity_deltas[trade_date][order.t212_ticker] += abs(order.filled_quantity) * sign
         if order.wallet_net_value is None:
             continue
         # walletImpact.netValue is already expressed in the wallet (account) currency; the
@@ -1807,6 +2350,7 @@ def _build_daily_replay(
             )
             continue
         trade_cash[trade_date] += converted * (Decimal("-1") if order.side == "BUY" else ONE)
+        holding_flows[(trade_date, order.t212_ticker)][0 if order.side == "BUY" else 1] += converted
 
     for dividend in replay_input.dividends:
         if dividend.paid_on is None:
@@ -1814,6 +2358,8 @@ def _build_daily_replay(
         paid_date = dividend.paid_on.date()
         if dividend.amount_in_euro is not None:
             dividend_cash[paid_date] += dividend.amount_in_euro
+            if dividend.t212_ticker:
+                holding_flows[(paid_date, dividend.t212_ticker)][2] += dividend.amount_in_euro
             continue
         if dividend.amount is None:
             notes.add("Skipped a dividend row without any amount.")
@@ -1826,8 +2372,23 @@ def _build_daily_replay(
             )
             continue
         dividend_cash[paid_date] += converted
+        if dividend.t212_ticker:
+            holding_flows[(paid_date, dividend.t212_ticker)][2] += converted
 
     dividend_transactions = 0
+    internal_cash: dict[date, Decimal] = defaultdict(lambda: ZERO)
+    interest_cash: dict[date, Decimal] = defaultdict(lambda: ZERO)
+    fee_cash: dict[date, Decimal] = defaultdict(lambda: ZERO)
+    card_cash: dict[date, Decimal] = defaultdict(lambda: ZERO)
+    money_in: dict[date, Decimal] = defaultdict(lambda: ZERO)
+    money_out: dict[date, Decimal] = defaultdict(lambda: ZERO)
+    cashback_cash: dict[date, Decimal] = defaultdict(lambda: ZERO)
+    conversion_legs = _currency_conversion_legs(replay_input.transactions)
+    if conversion_legs:
+        notes.add(
+            f"Treated {len(conversion_legs)} currency-conversion leg(s) as moves between your own "
+            "cash balances, not deposits or withdrawals."
+        )
     for transaction in replay_input.transactions:
         if transaction.ts is None or transaction.amount is None:
             continue
@@ -1842,7 +2403,38 @@ def _build_daily_replay(
                     "no FX fix within the stale cutoff."
                 )
                 continue
+            label = card_label(replay_input.export_actions.get(transaction.reference, ""))
+            if transaction.reference in conversion_legs:
+                # Converting GBP cash to EUR moves money between two of the owner's balances.
+                # Both legs stay in cash; the small difference (spread) is a cost, not a flow.
+                internal_cash[flow_date] += converted
+                continue
+            if label == "cashback":
+                # Reported by the API as a DEPOSIT, but it is a reward, not money put in.
+                internal_cash[flow_date] += converted
+                cashback_cash[flow_date] += converted
+                continue
+            if label == "card":
+                card_cash[flow_date] += converted
             external_flows[flow_date] += converted
+            if converted >= 0:
+                money_in[flow_date] += converted
+            else:
+                money_out[flow_date] += converted
+        elif transaction_type in INTERNAL_CASH_TYPES:
+            converted = to_eur(transaction.amount, transaction.currency_code, flow_date)
+            if converted is None:
+                notes.add(
+                    f"Excluded {transaction_type.lower()} in "
+                    f"{(transaction.currency_code or '?').upper()}: no FX fix within the stale "
+                    "cutoff."
+                )
+                continue
+            internal_cash[flow_date] += converted
+            if transaction_type == "FEE":
+                fee_cash[flow_date] += converted
+            else:
+                interest_cash[flow_date] += converted
         elif "DIVIDEND" in transaction_type:
             dividend_transactions += 1
         else:
@@ -1864,7 +2456,10 @@ def _build_daily_replay(
         for ticker, delta in quantity_deltas[current_date].items():
             running_quantities[ticker] += delta
         running_cash += (
-            external_flows[current_date] + dividend_cash[current_date] + trade_cash[current_date]
+            external_flows[current_date]
+            + dividend_cash[current_date]
+            + trade_cash[current_date]
+            + internal_cash[current_date]
         )
         securities_value = ZERO
         missing_price_count = 0
@@ -1875,7 +2470,14 @@ def _build_daily_replay(
                 continue
             currency = instrument_currencies.get(ticker, BASE_CURRENCY)
             price = _lookup_price(market_prices.get(ticker, []), current_date, max_price_stale_days)
-            fx = _lookup_fx(fx_rates.get(currency, []), current_date, max_fx_stale_days)
+            # A base-currency holding converts at exactly 1. There is no EUR->EUR series to look
+            # up -- the FX provider never fetches one -- so without this every Euronext or Xetra
+            # position read as MISSING_FX and NAV went PARTIAL for good the day it was bought.
+            fx = (
+                _FxLookup(ONE, PROVENANCE_EXACT, VALUATION_VALUED)
+                if currency == BASE_CURRENCY
+                else _lookup_fx(fx_rates.get(currency, []), current_date, max_fx_stale_days)
+            )
             status = price.status
             close_price: Decimal | None = None
             market_value_local: Decimal | None = None
@@ -1921,7 +2523,18 @@ def _build_daily_replay(
                 securities_value_eur=securities_value if fully_valued else None,
                 nav_eur=running_cash + securities_value if fully_valued else None,
                 external_flow_eur=external_flows[current_date],
-                internal_cash_flow_eur=dividend_cash[current_date] + trade_cash[current_date],
+                internal_cash_flow_eur=(
+                    dividend_cash[current_date]
+                    + trade_cash[current_date]
+                    + internal_cash[current_date]
+                ),
+                dividend_eur=dividend_cash[current_date],
+                interest_eur=interest_cash[current_date],
+                fee_eur=fee_cash[current_date],
+                deposit_eur=money_in[current_date],
+                withdrawal_eur=money_out[current_date],
+                card_spending_eur=card_cash[current_date],
+                cashback_eur=cashback_cash[current_date],
                 valuation_status=_nav_status(fully_valued, forward_filled),
                 missing_price_count=missing_price_count,
                 missing_fx_count=missing_fx_count,
@@ -1930,10 +2543,49 @@ def _build_daily_replay(
     return _ReplayResult(
         holdings=holdings,
         nav_rows=nav_rows,
+        flows=[
+            DailyHoldingFlow(
+                as_of_date=flow_date,
+                t212_ticker=ticker,
+                bought_eur=bought,
+                sold_eur=sold,
+                dividend_eur=dividend,
+            )
+            for (flow_date, ticker), (bought, sold, dividend) in sorted(holding_flows.items())
+            if start_date <= flow_date <= end_date
+        ],
         unsupported_events=unsupported_events,
         excluded_flow_currencies=excluded_flow_currencies,
         notes=sorted(notes),
     )
+
+
+def _currency_conversion_legs(transactions: Sequence[Transaction]) -> set[str]:
+    """References of transactions that are the two legs of a currency conversion.
+
+    Trading 212 reports converting cash between currencies as a WITHDRAW in one currency and a
+    DEPOSIT in another, stamped with the same instant (plus a FEE). Counted as they come, that
+    is money "withdrawn" and money "deposited" -- both untrue. A leg is recognised only when a
+    withdrawal and a deposit in *different* currencies share the exact timestamp.
+    """
+
+    by_instant: dict[datetime, list[Transaction]] = defaultdict(list)
+    for transaction in transactions:
+        if transaction.ts is not None and transaction.amount is not None:
+            by_instant[transaction.ts].append(transaction)
+    legs: set[str] = set()
+    for group in by_instant.values():
+        outs = [item for item in group if (item.transaction_type or "").upper() in _OUT_TYPES]
+        ins = [item for item in group if (item.transaction_type or "").upper() in _IN_TYPES]
+        out_currencies = {(item.currency_code or "").upper() for item in outs}
+        in_currencies = {(item.currency_code or "").upper() for item in ins}
+        if outs and ins and out_currencies.isdisjoint(in_currencies):
+            legs.update(item.reference for item in (*outs, *ins))
+    return legs
+
+
+_OUT_TYPES = frozenset({"WITHDRAW", "WITHDRAWAL"})
+_IN_TYPES = frozenset({"DEPOSIT"})
 
 
 def _nav_status(fully_valued: bool, forward_filled: bool) -> str:
@@ -2008,6 +2660,28 @@ def _price_symbol_requests(
         for benchmark in benchmarks
     )
     return requests
+
+
+def _sector_proxy_price_requests(settings: Settings) -> list[PriceRequest]:
+    """Extra price requests for the active benchmark's declared sector-return proxies.
+
+    A malformed ``config/benchmark_sectors.yaml`` does not abort the replay -- it just means no
+    extra symbols get fetched here; :func:`_attribution_report` is what surfaces the config
+    problem as an explicit status when the report is actually built.
+    """
+    try:
+        config = load_benchmark_sector_config(settings.benchmark_sectors_path)
+    except AttributionConfigError:
+        return []
+    entry = config.benchmarks.get(settings.analytics_passive_benchmark_key)
+    if entry is None:
+        return []
+    return [
+        PriceRequest(
+            sector_proxy_cache_key(sector.proxy_symbol), sector.proxy_symbol, sector.proxy_currency
+        )
+        for sector in entry.sectors
+    ]
 
 
 def _missing_price_requests(
@@ -2249,25 +2923,189 @@ def _var_fields(returns: Sequence[float]) -> dict[str, MetricValue]:
     }
 
 
-def _attribution_report() -> AttributionReport:
-    """Brinson-Fachler needs benchmark sector weights and sector returns.
+def _average_weights(holdings: Sequence[DailyHolding]) -> dict[str, float]:
+    """Time-averaged EUR market-value weight per ticker across every replayed day.
 
-    Helios has no licensed index-constituent feed, so the report is explicitly unavailable rather
-    than an empty list dressed up as a result. :func:`brinson_fachler_attribution` stays a tested
-    pure function ready for a constituent source.
+    Unlike :func:`_latest_weights` (a single day's snapshot), Brinson-Fachler over a multi-day
+    report window needs a portfolio weight that represents the whole window, so this averages each
+    day's weight share instead of taking only the most recent one.
     """
-    return AttributionReport(
-        status="unavailable",
-        active_return=None,
-        items=[],
-        detail=(
-            "Sector attribution requires benchmark constituent weights and sector returns. "
-            "No licensed index-constituent source is configured, so Helios reports no numbers."
-        ),
+    by_date: defaultdict[date, list[DailyHolding]] = defaultdict(list)
+    for item in holdings:
+        if item.market_value_eur is not None:
+            by_date[item.as_of_date].append(item)
+    weight_sums: defaultdict[str, float] = defaultdict(float)
+    valid_days = 0
+    for day_items in by_date.values():
+        total = sum(float(item.market_value_eur or ZERO) for item in day_items)
+        if total == 0.0:
+            continue
+        valid_days += 1
+        for item in day_items:
+            weight_sums[item.t212_ticker] += float(item.market_value_eur or ZERO) / total
+    if valid_days == 0:
+        return {}
+    return {ticker: total / valid_days for ticker, total in weight_sums.items()}
+
+
+def _window_holding_returns(holdings: Sequence[DailyHolding]) -> dict[str, float]:
+    """Per-holding compounded return across the whole report window.
+
+    Reuses the same per-unit EUR price series as :func:`_holding_return_series`/
+    :func:`_latest_holding_returns` (immune to quantity changes from trades), but compounds across
+    every valued day rather than only the latest one -- Brinson-Fachler needs one return per
+    holding for the whole window, not just its most recent day's. A holding valued for only part
+    of the window returns its return since first valued rather than nothing, matching "you cannot
+    have a return before you held it".
+    """
+    returns: dict[str, float] = {}
+    for ticker, series in _eur_unit_prices(holdings).items():
+        if len(series) < 2:
+            continue
+        first_price = series[0][1]
+        last_price = series[-1][1]
+        if first_price == 0.0:
+            continue
+        returns[ticker] = (last_price / first_price) - 1.0
+    return returns
+
+
+def _sector_proxy_return(
+    price_rows: Sequence[MarketPriceDaily],
+    fx_rates: Mapping[str, Sequence[FxRateDaily]],
+    currency_code: str,
+    start_date: date,
+    end_date: date,
+    max_price_stale_days: int,
+    max_fx_stale_days: int,
+) -> float | None:
+    """A sector-return proxy's EUR buy-and-hold return across the report window, or ``None``.
+
+    ``None`` covers every way Helios refuses to guess here: no price/FX at all, or the nearest
+    observation to either edge of the window is further away than the configured staleness
+    cutoff -- the same rule :func:`compute_passive_counterfactual` uses for the benchmark proxy
+    itself.
+    """
+    series = _eur_price_series(price_rows, fx_rates, currency_code, max_fx_stale_days)
+    if not series:
+        return None
+    start_price = _price_at_or_next(series, start_date, max_price_stale_days)
+    end_price = _price_at_or_next(series, end_date, max_price_stale_days)
+    if start_price is None or end_price is None or start_price == ZERO:
+        return None
+    return float(end_price / start_price - ONE)
+
+
+def _attribution_report(
+    *,
+    settings: Settings,
+    holding_rows: Sequence[DailyHolding],
+    instruments_by_ticker: Mapping[str, Instrument],
+    twr_points: Sequence[DailyReturnPoint],
+    price_map: Mapping[str, Sequence[MarketPriceDaily]],
+    fx_map: Mapping[str, Sequence[FxRateDaily]],
+    start_date: date,
+    end_date: date,
+) -> AttributionReport:
+    """Brinson-Fachler sector attribution from two operator-declared config files.
+
+    Helios has no licensed index-constituent feed, so neither side of the decomposition is ever
+    inferred: holding sectors come from ``sector`` fields in ``instrument_overrides_path``, and
+    benchmark sector weights/return proxies come from ``benchmark_sectors_path`` (see
+    :mod:`helios.attribution` for the full rules, including the "Unclassified" bucket and the
+    residual this single-period approximation reports alongside the numbers).
+    """
+    benchmark_key = settings.analytics_passive_benchmark_key
+    try:
+        sector_config = load_benchmark_sector_config(settings.benchmark_sectors_path)
+    except AttributionConfigError as error:
+        return AttributionReport(
+            status="insufficient_data", active_return=None, items=[], detail=str(error)
+        )
+
+    entry = sector_config.benchmarks.get(benchmark_key)
+    if entry is None:
+        return AttributionReport(
+            status="unavailable",
+            active_return=None,
+            items=[],
+            detail=(
+                "Sector attribution needs two operator-filled files: a `sector` per ISIN in "
+                f"{settings.instrument_overrides_path}, and a '{benchmark_key}' entry (benchmark "
+                f"sector weights and priceable proxies) in {settings.benchmark_sectors_path}. "
+                "Neither ships with real numbers, so Helios reports no numbers."
+            ),
+        )
+
+    try:
+        sector_overrides = load_sector_overrides(settings.instrument_overrides_path)
+    except AttributionConfigError as error:
+        return AttributionReport(
+            status="insufficient_data", active_return=None, items=[], detail=str(error)
+        )
+
+    ticker_sector = {
+        ticker: (sector_overrides.get(instrument.isin) if instrument.isin else None)
+        for ticker, instrument in instruments_by_ticker.items()
+    }
+    portfolio_weights = _average_weights(holding_rows)
+    portfolio_returns = _window_holding_returns(holding_rows)
+
+    benchmark_sector_returns: dict[str, float | None] = {
+        sector.sector: _sector_proxy_return(
+            price_map.get(sector_proxy_cache_key(sector.proxy_symbol), []),
+            fx_map,
+            sector.proxy_currency,
+            start_date,
+            end_date,
+            settings.analytics_max_price_stale_days,
+            settings.analytics_max_fx_stale_days,
+        )
+        for sector in entry.sectors
+    }
+
+    grouping = build_sector_groups(
+        entry=entry,
+        ticker_sector=ticker_sector,
+        portfolio_weights=portfolio_weights,
+        portfolio_returns=portfolio_returns,
+        benchmark_sector_returns=benchmark_sector_returns,
     )
+    if grouping.status != "ok":
+        return AttributionReport(
+            status=grouping.status, active_return=None, items=[], detail=grouping.detail
+        )
+
+    portfolio_return_metric = cumulative_return_metric(twr_points)
+    if portfolio_return_metric.status != "ok" or portfolio_return_metric.value is None:
+        return AttributionReport(
+            status="insufficient_data",
+            active_return=None,
+            items=[],
+            detail="Need at least one time-weighted return observation for the report window.",
+        )
+
+    items = brinson_fachler_attribution(grouping.portfolio_groups, grouping.benchmark_groups)
+    active_return = portfolio_return_metric.value - (grouping.benchmark_weighted_return or 0.0)
+    residual = active_return - sum(item.total_effect for item in items)
+
+    unclassified_note = (
+        f" {grouping.unclassified_weight:.1%} of portfolio weight is Unclassified "
+        f"({', '.join(grouping.unclassified_tickers)})."
+        if grouping.unclassified_weight > 0.0
+        else ""
+    )
+    detail = (
+        f"Single-period Brinson-Fachler over {start_date.isoformat()}..{end_date.isoformat()}: "
+        "portfolio sectors use time-averaged EUR market-value weights against a static benchmark "
+        f"declared as of {entry.as_of.isoformat()} (source: {entry.source}). Residual (active "
+        f"return minus summed effects, from applying single-period weights to a multi-period "
+        f"window) is {residual:+.4%}." + unclassified_note
+    )
+    return AttributionReport(status="ok", active_return=active_return, items=items, detail=detail)
 
 
-def _nav_point(row: DailyNav) -> NavPoint:
+def _nav_point(row: DailyNav, net_deposits_to_date: Decimal = ZERO) -> NavPoint:
     return NavPoint(
         as_of_date=row.as_of_date,
         nav_eur=row.nav_eur,
@@ -2275,6 +3113,10 @@ def _nav_point(row: DailyNav) -> NavPoint:
         securities_value_eur=row.securities_value_eur,
         external_flow_eur=row.external_flow_eur,
         valuation_status=row.valuation_status,
+        dividend_eur=row.dividend_eur or ZERO,
+        interest_eur=row.interest_eur or ZERO,
+        fee_eur=row.fee_eur or ZERO,
+        net_deposits_to_date_eur=net_deposits_to_date,
     )
 
 

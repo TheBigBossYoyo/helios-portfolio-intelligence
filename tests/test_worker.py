@@ -44,10 +44,27 @@ class FakeNewsService:
 
 
 @dataclass
+class FakeCardOutcome:
+    action: str
+
+
+@dataclass
+class FakeCardService:
+    action: str = "up_to_date"
+    calls: int = 0
+
+    async def refresh(self, *, force: bool = False) -> FakeCardOutcome:
+        del force
+        self.calls += 1
+        return FakeCardOutcome(self.action)
+
+
+@dataclass
 class FakeContainer:
     sync_service: FakeSyncService
     replay_service: FakeReplayService = field(default_factory=FakeReplayService)
     news_service: FakeNewsService = field(default_factory=FakeNewsService)
+    card_service: FakeCardService = field(default_factory=FakeCardService)
     startup_calls: int = 0
     shutdown_calls: int = 0
 
@@ -62,6 +79,10 @@ class FakeContainer:
     @property
     def news_sync_service(self) -> FakeNewsService:
         return self.news_service
+
+    @property
+    def card_history_service(self) -> FakeCardService:
+        return self.card_service
 
     async def startup(self) -> None:
         self.startup_calls += 1
@@ -224,5 +245,80 @@ async def test_worker_news_failure_does_not_stop_portfolio_sync(tmp_path: Path) 
         assert container.replay_service.calls == 1
         # Logged under its own event name, and only the class name — never the message.
         assert fake_logger.warning_calls == [("worker_news_sync_failed", {"error": "RuntimeError"})]
+    finally:
+        await worker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_each_sync_cycle_also_refreshes_news_when_enabled(tmp_path: Path) -> None:
+    """Sync, replay, then news: new holdings get their headlines now, not three hours later."""
+    container = FakeContainer(sync_service=FakeSyncService())
+    worker = HeliosWorker(
+        Settings(
+            data_dir=tmp_path,
+            t212_api_key="key",
+            t212_api_secret=SecretStr("secret"),
+            refresh_after_sync=True,
+        ),
+        container_factory=lambda _settings: container,
+        scheduler=FakeScheduler(),
+    )
+    worker._logger = FakeLogger()
+    worker._container = container
+
+    await worker._run_scheduled_sync()
+
+    assert container.sync_service.calls == 1
+    assert container.replay_service.calls == 1
+    assert container.news_service.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_sync_does_not_refresh_anything(tmp_path: Path) -> None:
+    container = FakeContainer(sync_service=FakeSyncService(error=RuntimeError("down")))
+    worker = HeliosWorker(
+        Settings(data_dir=tmp_path, refresh_after_sync=True),
+        container_factory=lambda _settings: container,
+        scheduler=FakeScheduler(),
+    )
+    worker._logger = FakeLogger()
+    worker._container = container
+
+    await worker._run_scheduled_sync()
+
+    assert container.replay_service.calls == 0
+    assert container.news_service.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_card_history_is_scheduled_and_a_new_export_triggers_a_replay(
+    tmp_path: Path,
+) -> None:
+    scheduler = FakeScheduler()
+    container = FakeContainer(
+        sync_service=FakeSyncService(), card_service=FakeCardService(action="downloaded")
+    )
+    worker = HeliosWorker(
+        Settings(
+            data_dir=tmp_path,
+            t212_api_key="key",
+            t212_api_secret=SecretStr("secret"),
+            card_history_enabled=True,
+        ),
+        container_factory=lambda _settings: container,
+        scheduler=scheduler,
+    )
+    worker._logger = FakeLogger()
+
+    await worker.start()
+    await asyncio.sleep(0)
+    try:
+        card_job = next(job for job in scheduler.jobs if job["id"] == "card-history")
+        assert card_job["minutes"] == 15
+        replays_before = container.replay_service.calls
+        await worker._run_scheduled_card_history()
+        assert container.card_service.calls == 1
+        # The export relabelled card payments and cashback, so history is recomputed.
+        assert container.replay_service.calls == replays_before + 1
     finally:
         await worker.shutdown()

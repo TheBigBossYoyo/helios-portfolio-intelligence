@@ -1,11 +1,18 @@
+import { ArrowDownRight, ArrowUpRight } from "lucide-react";
 import type { MetricValue } from "@/lib/types";
 import { EMPTY, humanizeStatus, metricText } from "@/lib/format";
+import { CARD } from "@/lib/ui";
+import { Sparkline } from "./charts/sparkline";
 
 interface MetricTileProps {
   label: string;
   metric: MetricValue | null | undefined;
   render: (value: number) => string;
   hint?: string;
+  /** Returns and deltas: colour the value by sign and add an arrow (never colour alone). */
+  signed?: boolean;
+  /** Optional trailing series drawn as a sparkline under the value. */
+  trend?: (number | null)[];
 }
 
 /**
@@ -15,38 +22,58 @@ interface MetricTileProps {
  * The value uses proportional figures on purpose. `tabular-nums` is reserved for columns that
  * align vertically (see the table component); on a standalone display number it reads loose.
  */
-export function MetricTile({ label, metric, render, hint }: MetricTileProps) {
+export function MetricTile({ label, metric, render, hint, signed, trend }: MetricTileProps) {
   const available = Boolean(metric && metric.status === "ok" && metric.value !== null);
   const value = metricText(metric, render);
   const status = metric?.status ?? "unavailable";
+  const numeric = available && metric?.value !== null && metric?.value !== undefined ? metric.value : null;
+  const direction = signed && numeric !== null ? Math.sign(numeric) : 0;
 
   return (
-    <div className="panel-raised group flex flex-col justify-between border border-border p-3 transition-colors duration-200 hover:border-neutral-700">
-      <div className="flex items-start justify-between gap-2">
-        <span className="text-[10px] uppercase tracking-wider text-neutral-500">{label}</span>
+    <div className={`${CARD} theme-fade flex min-w-0 flex-col p-4`}>
+      <span className="text-sm font-medium text-ink-3">{label}</span>
+      <div className="mt-2 flex items-center gap-1.5">
+        {direction !== 0 ? (
+          <span
+            aria-hidden="true"
+            className={`flex h-6 w-6 items-center justify-center rounded-full ${
+              direction > 0 ? "bg-positive-soft text-positive" : "bg-negative-soft text-negative"
+            }`}
+          >
+            {direction > 0 ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />}
+          </span>
+        ) : null}
         <span
-          aria-hidden="true"
-          className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full transition-shadow duration-300 ${
-            available
-              ? "bg-amber-accent shadow-[0_0_6px_rgba(255,176,0,0.55)]"
-              : "bg-neutral-700"
+          className={`text-2xl font-semibold leading-none tracking-tight ${
+            !available
+              ? "text-ink-4"
+              : direction > 0
+                ? "text-positive"
+                : direction < 0
+                  ? "text-negative"
+                  : "text-ink"
           }`}
-        />
+        >
+          {value}
+        </span>
       </div>
-      <div
-        className={`mt-3 font-sans text-2xl leading-none ${
-          available ? "text-neutral-100" : "text-neutral-600"
-        }`}
-      >
-        {value}
-      </div>
-      <div className="mt-2 text-[10px] leading-tight text-neutral-600">
-        {available
-          ? (hint ?? `${metric?.observations ?? 0} obs`)
-          : humanizeStatus(status)}
+      {available && trend && trend.filter((point) => point !== null).length > 1 ? (
+        <div className="mt-3">
+          <Sparkline values={trend} />
+        </div>
+      ) : null}
+      <div className="mt-auto pt-2 text-xs leading-snug text-ink-3">
+        {available ? (
+          (hint ?? `${metric?.observations ?? 0} observations`)
+        ) : (
+          <span className="inline-flex items-center gap-1.5">
+            <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-ink-4" />
+            {humanizeStatus(status)}
+          </span>
+        )}
       </div>
       {!available && metric?.detail ? (
-        <p className="mt-1 text-[10px] leading-tight text-neutral-700">{metric.detail}</p>
+        <p className="mt-1 text-xs leading-snug text-ink-4">{metric.detail}</p>
       ) : null}
     </div>
   );
@@ -63,12 +90,12 @@ export function HeroFigure({
   caption?: string;
 }) {
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-[10px] uppercase tracking-widest text-neutral-500">{label}</span>
-      <span className="bg-gradient-to-b from-white to-neutral-400 bg-clip-text font-sans text-5xl leading-none text-transparent">
+    <div className="flex flex-col gap-1.5">
+      <span className="text-sm font-medium text-ink-3">{label}</span>
+      <span className="text-4xl font-semibold leading-none tracking-tight text-ink sm:text-5xl">
         {value || EMPTY}
       </span>
-      {caption ? <span className="text-[11px] text-neutral-500">{caption}</span> : null}
+      {caption ? <span className="text-sm text-ink-3">{caption}</span> : null}
     </div>
   );
 }

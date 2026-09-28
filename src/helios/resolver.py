@@ -32,6 +32,13 @@ class OverrideEntry(BaseModel):
     )
     quote_currency: str = Field(validation_alias=AliasChoices("quote_currency", "quoteCurrency"))
     reason: str
+    #: Optional GICS-style sector, used only by Brinson-Fachler attribution (helios.attribution).
+    #: Left unset, a holding is grouped as "Unclassified" there rather than guessed at from its
+    #: name or exchange -- this field is the *only* way Helios learns a holding's sector.
+    sector: str | None = None
+    #: Optional extra words that identify this holding in a headline, used only to rank news
+    #: (helios.news_relevance) -- e.g. "S&P 500" for an S&P 500 tracker.
+    news_keywords: list[str] = Field(default_factory=list)
 
     @field_validator("isin", "yahoo_ticker", "preferred_exchange", "quote_currency", "reason")
     @classmethod
@@ -40,6 +47,14 @@ class OverrideEntry(BaseModel):
         if not stripped:
             raise ValueError("override values must be non-blank")
         return stripped
+
+    @field_validator("sector")
+    @classmethod
+    def validate_sector(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
 
 class OverrideFile(BaseModel):

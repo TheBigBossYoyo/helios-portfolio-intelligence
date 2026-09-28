@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+from datetime import datetime
 
 import httpx
 from pydantic import TypeAdapter, ValidationError
@@ -17,7 +18,9 @@ from .rate_limit import (
 )
 from .raw_snapshots import JsonValue, SnapshotWriter, encode_payload
 from .schemas import (
+    AccountSummary,
     DividendItem,
+    ExportReport,
     HistoricalOrderItem,
     HistoryPage,
     InstrumentMetadata,
@@ -61,9 +64,23 @@ class RequestResult:
 
 MAX_HISTORY_PAGES = 1000
 
+#: The one path Helios may POST to. Requesting a CSV report of the account's own history is
+#: read-only in effect -- it creates a file, it moves no money and places no order -- and it is
+#: the only way Trading 212 labels card payments and cashback. Everything else stays GET-only.
+EXPORTS_PATH = "/equity/history/exports"
+#: The report always asks for everything; the body is fixed so no caller can shape the request.
+EXPORT_DATA_INCLUDED = {
+    "includeDividends": True,
+    "includeInterest": True,
+    "includeOrders": True,
+    "includeTransactions": True,
+}
+MAX_EXPORT_BYTES = 20 * 1024 * 1024
+
 
 class Trading212Client:
     _positions_adapter = TypeAdapter(list[Position])
+    _exports_adapter = TypeAdapter(list[ExportReport])
     _instruments_adapter = TypeAdapter(list[InstrumentMetadata])
     _history_orders_page_adapter = TypeAdapter(HistoryPage[HistoricalOrderItem])
     _history_dividends_page_adapter = TypeAdapter(HistoryPage[DividendItem])
@@ -102,6 +119,13 @@ class Trading212Client:
         except ValidationError as exc:
             raise Trading212ParseError("Failed to parse Trading 212 positions payload") from exc
 
+    async def get_account_summary(self) -> AccountSummary:
+        payload = await self.request_json("GET", "/equity/account/summary")
+        try:
+            return AccountSummary.model_validate(payload)
+        except ValidationError as exc:
+            raise Trading212ParseError("Failed to parse Trading 212 account summary") from exc
+
     async def get_instruments(self) -> list[InstrumentMetadata]:
         payload = await self.request_json("GET", "/equity/metadata/instruments")
         try:
@@ -130,6 +154,56 @@ class Trading212Client:
             "Failed to parse Trading 212 history transactions payload",
         )
 
+    async def request_export(self, *, time_from: datetime, time_to: datetime) -> int:
+        """Ask Trading 212 to build a CSV of the account's history; returns its report id."""
+
+        payload = (
+            await self._request(
+                "POST",
+                EXPORTS_PATH,
+                json_body={
+                    "dataIncluded": EXPORT_DATA_INCLUDED,
+                    "timeFrom": _iso_utc(time_from),
+                    "timeTo": _iso_utc(time_to),
+                },
+            )
+        ).payload
+        report_id = payload.get("reportId") if isinstance(payload, dict) else None
+        if not isinstance(report_id, int):
+            raise Trading212ParseError("Trading 212 export response had no report id")
+        return report_id
+
+    async def list_exports(self) -> list[ExportReport]:
+        payload = await self.request_json("GET", EXPORTS_PATH)
+        try:
+            return self._exports_adapter.validate_python(payload)
+        except ValidationError as exc:
+            raise Trading212ParseError("Failed to parse Trading 212 exports payload") from exc
+
+    async def download_export(self, url: str) -> str:
+        """Fetch a finished report's CSV from its signed link.
+
+        The link points at Trading 212's file storage, not the API, so the request carries no
+        credentials: the signature in the URL is the authorisation, and the API key must never
+        be sent to another host.
+        """
+
+        parsed = httpx.URL(url)
+        if parsed.scheme != "https" or not parsed.host:
+            raise Trading212ParseError("Export download link is not an https URL")
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._settings.t212_timeout_seconds, follow_redirects=False
+            ) as client:
+                response = await client.get(url)
+        except httpx.TransportError as exc:
+            raise Trading212TransportError("Export download failed") from exc
+        if response.status_code != 200:
+            raise Trading212HTTPError(response.status_code, "export download")
+        if len(response.content) > MAX_EXPORT_BYTES:
+            raise Trading212ParseError("Export file is larger than Helios accepts")
+        return response.content.decode("utf-8-sig")
+
     async def request_json(
         self,
         method: str,
@@ -137,6 +211,8 @@ class Trading212Client:
         *,
         params: dict[str, str] | None = None,
     ) -> JsonValue:
+        if method.upper() != "GET":
+            raise Trading212MethodNotAllowedError("Helios only permits GET requests to Trading 212")
         result = await self._request(method, path, params=params)
         return result.payload
 
@@ -174,9 +250,16 @@ class Trading212Client:
         path: str,
         *,
         params: dict[str, str] | None = None,
+        json_body: dict[str, object] | None = None,
     ) -> RequestResult:
-        if method.upper() != "GET":
+        method = method.upper()
+        # The single exception to GET-only: requesting an export, with the fixed body built by
+        # `request_export`. Any other method, path or body is refused before a byte is sent.
+        is_export_request = method == "POST" and path == EXPORTS_PATH and json_body is not None
+        if method != "GET" and not is_export_request:
             raise Trading212MethodNotAllowedError("Helios only permits GET requests to Trading 212")
+        if json_body is not None and not is_export_request:
+            raise Trading212MethodNotAllowedError("A request body is only sent with an export")
         credentials = self._settings.t212_credentials()
         if credentials is None:
             raise Trading212CredentialsError("Trading 212 credentials are not configured")
@@ -186,9 +269,10 @@ class Trading212Client:
             await self._limiter.acquire(endpoint_key)
             try:
                 response = await self._http_client.request(
-                    method="GET",
+                    method=method,
                     url=request_url,
                     params=params,
+                    json=json_body,
                     headers={"Authorization": build_basic_auth_header(credentials)},
                 )
             except httpx.TransportError as exc:
@@ -206,7 +290,7 @@ class Trading212Client:
                 recorded_at=self._clock.utcnow(),
                 http_status=response.status_code,
                 content_type=headers.get("content-type"),
-                payload=payload,
+                payload=_without_link_signatures(payload) if path == EXPORTS_PATH else payload,
             )
             self._limiter.observe(endpoint_key, headers, response.status_code)
 
@@ -243,6 +327,25 @@ class Trading212Client:
         if path.startswith("/api/v0/"):
             return f"{self._api_origin}{path}"
         return path
+
+
+def _without_link_signatures(payload: JsonValue) -> JsonValue:
+    """The raw snapshot keeps each report's link without its query string: the signature is a
+    short-lived credential for the file, and a snapshot is a record, not a key store."""
+
+    if not isinstance(payload, list):
+        return payload
+    redacted: list[JsonValue] = []
+    for item in payload:
+        if isinstance(item, dict) and isinstance(item.get("downloadLink"), str):
+            link = str(item["downloadLink"]).split("?", 1)[0]
+            item = {**item, "downloadLink": link}
+        redacted.append(item)
+    return redacted
+
+
+def _iso_utc(value: datetime) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def build_basic_auth_header(credentials: T212Credentials) -> str:

@@ -12,6 +12,8 @@ export interface NavRow {
   date: string;
   nav: number | null;
   passive: number | null;
+  /** Money put in, net of withdrawals, to date. The gap between this and `nav` is profit. */
+  invested: number | null;
 }
 
 export function toNavRows(
@@ -25,7 +27,23 @@ export function toNavRows(
     date: point.asOfDate,
     nav: point.navEur === null ? null : decimalToNumber(point.navEur),
     passive: passiveByDate.get(point.asOfDate) ?? null,
+    invested:
+      point.netDepositsToDateEur === undefined ? null : decimalToNumber(point.netDepositsToDateEur),
   }));
+}
+
+/**
+ * The rows a period covers: from its starting close (inclusive, so the line starts where the
+ * period does) to its end. A period starting at inception keeps everything.
+ */
+export function rowsInPeriod<T extends { date: string }>(
+  rows: T[],
+  startDate: string | null,
+  endDate: string | null,
+): T[] {
+  return rows.filter(
+    (row) => (startDate === null || row.date >= startDate) && (endDate === null || row.date <= endDate),
+  );
 }
 
 export interface DrawdownRow {
@@ -34,20 +52,28 @@ export interface DrawdownRow {
 }
 
 /**
- * Drawdown from the running peak of valued NAV.
+ * Drawdown of the time-weighted growth index, from its running peak.
  *
- * Unvalued days produce a `null` and, importantly, do not advance the peak — a gap must not be
- * read as a new high.
+ * Built by compounding the backend's daily time-weighted returns, not from raw NAV: on NAV every
+ * withdrawal reads as a loss (a real account's 44 withdrawals once showed a -37.6% "drawdown").
+ * This matches the backend's max-drawdown figure by construction. Unvalued days are `null`, and
+ * across a gap the index carries its last level — no return is known there, so none is invented.
  */
-export function toDrawdownRows(navSeries: NavPoint[]): DrawdownRow[] {
-  let peak: number | null = null;
+export function toDrawdownRows(
+  navSeries: NavPoint[],
+  dailyReturns: { asOfDate: string; value: number }[],
+): DrawdownRow[] {
+  const returns = new Map(dailyReturns.map((point) => [point.asOfDate, point.value]));
+  let level: number | null = null;
+  let peak = 1;
   return navSeries.map((point) => {
     const nav = point.navEur === null ? null : decimalToNumber(point.navEur);
     if (nav === null || nav <= 0) {
       return { date: point.asOfDate, drawdown: null };
     }
-    peak = peak === null ? nav : Math.max(peak, nav);
-    return { date: point.asOfDate, drawdown: peak > 0 ? nav / peak - 1 : null };
+    level = level === null ? 1 : level * (1 + (returns.get(point.asOfDate) ?? 0));
+    peak = Math.max(peak, level);
+    return { date: point.asOfDate, drawdown: level / peak - 1 };
   });
 }
 
@@ -78,4 +104,46 @@ export function latestValuedNav(navSeries: NavPoint[]): NavPoint | null {
     if (navSeries[index].navEur !== null) return navSeries[index];
   }
   return null;
+}
+
+/**
+ * Compound daily returns into a cumulative-return path (0 = start), for the TWR sparkline.
+ * Uses the same geometric linking as the backend's cumulative TWR, so the line ends at the
+ * figure the tile prints.
+ */
+export function compoundReturns(points: { value: number }[]): number[] {
+  let growth = 1;
+  return points.map((point) => {
+    growth *= 1 + point.value;
+    return growth - 1;
+  });
+}
+
+/** Keep the last `count` items: sparklines show the recent shape, not the whole history. */
+export function tail<T>(items: T[], count: number): T[] {
+  return items.length > count ? items.slice(items.length - count) : items;
+}
+
+export interface GrowthRow {
+  date: string;
+  portfolio: number | null;
+  benchmark: number | null;
+}
+
+/**
+ * Indexes NAV and a benchmark's path to a common base of 100, each anchored to its own first
+ * observed value. This is "growth of 100": the two lines become comparable in shape even though
+ * their starting levels (EUR NAV vs. an index proxy price) are never the same units.
+ *
+ * A series with no observed value at all stays empty rather than dividing by a fabricated base.
+ */
+export function toGrowthRows(rows: NavRow[]): GrowthRow[] {
+  const portfolioBase = rows.find((row) => row.nav !== null && row.nav > 0)?.nav ?? null;
+  const benchmarkBase = rows.find((row) => row.passive !== null && row.passive > 0)?.passive ?? null;
+  return rows.map((row) => ({
+    date: row.date,
+    portfolio: portfolioBase !== null && row.nav !== null ? (row.nav / portfolioBase) * 100 : null,
+    benchmark:
+      benchmarkBase !== null && row.passive !== null ? (row.passive / benchmarkBase) * 100 : null,
+  }));
 }

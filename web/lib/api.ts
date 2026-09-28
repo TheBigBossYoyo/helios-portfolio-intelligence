@@ -1,15 +1,21 @@
 import "server-only";
 
 import type {
+  AccountSummary,
   AiAnalysis,
   ApiResult,
+  DatabaseList,
   Health,
   JournalEntry,
+  CardHistory,
   NewsItem,
+  NewsRelevance,
   PerformanceReport,
   Position,
   QualityReport,
+  SettingsSnapshot,
   Thesis,
+  ThesisDetail,
 } from "./types";
 
 /**
@@ -119,7 +125,46 @@ export function parseHealth(value: unknown): Health | null {
   const configured = bool(object.trading212Configured);
   const ready = bool(object.databaseReady);
   if (status === null || configured === null || ready === null) return null;
-  return { status, trading212Configured: configured, databaseReady: ready };
+  // Older APIs omit the environment; "demo" was the only one they could run against safely,
+  // but an unknown value must not be *claimed* as demo, so it reads as null.
+  const environment =
+    object.trading212Environment === "live" || object.trading212Environment === "demo"
+      ? object.trading212Environment
+      : null;
+  return {
+    status,
+    trading212Configured: configured,
+    databaseReady: ready,
+    trading212Environment: environment,
+  };
+}
+
+export function parseAccountSummary(value: unknown): AccountSummary | null {
+  const object = record(value);
+  if (!object) return null;
+  const decimal = (raw: unknown): string | null =>
+    typeof raw === "string" ? raw : typeof raw === "number" && Number.isFinite(raw) ? String(raw) : null;
+  const cash = record(object.cash);
+  const investments = record(object.investments);
+  return {
+    currency: str(object.currency),
+    totalValue: decimal(object.totalValue),
+    cash: cash
+      ? {
+          availableToTrade: decimal(cash.availableToTrade),
+          reservedForOrders: decimal(cash.reservedForOrders),
+          inPies: decimal(cash.inPies),
+        }
+      : null,
+    investments: investments
+      ? {
+          currentValue: decimal(investments.currentValue),
+          totalCost: decimal(investments.totalCost),
+          realizedProfitLoss: decimal(investments.realizedProfitLoss),
+          unrealizedProfitLoss: decimal(investments.unrealizedProfitLoss),
+        }
+      : null,
+  };
 }
 
 export function parsePositions(value: unknown): Position[] | null {
@@ -236,9 +281,19 @@ export function parseNewsItems(value: unknown): NewsItem[] | null {
       url,
       publishedAt: str(object.publishedAt),
       fetchedAt: str(object.fetchedAt) ?? "",
+      // Present only when the API ranked the item; absent fields stay absent.
+      ...("relevance" in object ? { relevance: newsRelevance(object.relevance) } : {}),
+      ...("matchedTerm" in object ? { matchedTerm: str(object.matchedTerm) } : {}),
+      ...("held" in object ? { held: typeof object.held === "boolean" ? object.held : null } : {}),
     });
   }
   return items;
+}
+
+function newsRelevance(value: unknown): NewsRelevance | null {
+  return value === "headline" || value === "summary" || value === "unconfirmed" || value === "market"
+    ? value
+    : null;
 }
 
 export function parseAiAnalysis(value: unknown): AiAnalysis | null {
@@ -262,6 +317,27 @@ export function parseTheses(value: unknown): Thesis[] | null {
   return out;
 }
 
+/**
+ * The detail payload nests a `Thesis` and a `ThesisContext` under fields Pydantic already
+ * validated server-side; as with `parsePerformanceReport`, this checks the shape holds the
+ * fields the page cannot render without and trusts the typed contract for what is nested inside.
+ */
+export function parseThesisDetail(value: unknown): ThesisDetail | null {
+  const detail = parseShape<ThesisDetail>(value, [
+    "thesis",
+    "context",
+    "allowedTransitions",
+    "editable",
+    "journal",
+  ]);
+  if (!detail) return null;
+  if (!Array.isArray(detail.allowedTransitions) || !Array.isArray(detail.journal)) return null;
+  const thesis = record(detail.thesis);
+  const context = record(detail.context);
+  if (!thesis || !context) return null;
+  return detail;
+}
+
 export function parseJournal(value: unknown): JournalEntry[] | null {
   const rows = list(value);
   if (!rows) return null;
@@ -274,6 +350,19 @@ export function parseJournal(value: unknown): JournalEntry[] | null {
   return out;
 }
 
+export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
+  return parseShape<SettingsSnapshot>(value, [
+    "credentials",
+    "keyringAvailable",
+    "activeDatabase",
+    "restartRequired",
+  ]);
+}
+
+export function parseDatabaseList(value: unknown): DatabaseList | null {
+  return parseShape<DatabaseList>(value, ["dataDir", "active", "databases"]);
+}
+
 // --- fetchers --------------------------------------------------------------
 
 export function getHealth(): Promise<ApiResult<Health>> {
@@ -282,6 +371,22 @@ export function getHealth(): Promise<ApiResult<Health>> {
 
 export function getPositions(): Promise<ApiResult<Position[]>> {
   return getJson("/api/v1/t212/positions", parsePositions);
+}
+
+export function parseCardHistory(value: unknown): CardHistory | null {
+  const history = parseShape<CardHistory>(value, ["status", "summary"]);
+  if (!history || !record(history.summary) || !Array.isArray(history.summary.transactions)) {
+    return null;
+  }
+  return history;
+}
+
+export function getCardHistory(): Promise<ApiResult<CardHistory>> {
+  return getJson("/api/v1/card", parseCardHistory);
+}
+
+export function getAccountSummary(): Promise<ApiResult<AccountSummary>> {
+  return getJson("/api/v1/t212/account", parseAccountSummary);
 }
 
 export function getPerformanceReport(): Promise<ApiResult<PerformanceReport>> {
@@ -304,14 +409,47 @@ export function getJournal(limit = 50): Promise<ApiResult<JournalEntry[]>> {
   return getJson(`/api/v1/journal?limit=${limit}`, parseJournal);
 }
 
+/**
+ * A single thesis's detail: the thesis itself, its state-machine context (what it can move to
+ * next, and whether it is still editable), the enrichment Helios could link automatically, and
+ * every journal entry attached to it. The caller is responsible for treating a 404 `ApiResult`
+ * as "call `notFound()`" rather than rendering it as `Unavailable` like every other failure.
+ */
+export function getThesis(id: number): Promise<ApiResult<ThesisDetail>> {
+  return getJson(`/api/v1/theses/${id}`, parseThesisDetail);
+}
+
 export function getNews(
-  options: { ticker?: string; isin?: string; limit?: number } = {},
+  options: {
+    ticker?: string;
+    isin?: string;
+    limit?: number;
+    /** Drop stories about holdings you no longer own. */
+    heldOnly?: boolean;
+    /** Keep only stories whose headline or summary names the holding. */
+    mentionsOnly?: boolean;
+  } = {},
 ): Promise<ApiResult<NewsItem[]>> {
   const query = new URLSearchParams();
   if (options.ticker) query.set("ticker", options.ticker);
   if (options.isin) query.set("isin", options.isin);
+  if (options.heldOnly) query.set("heldOnly", "true");
+  if (options.mentionsOnly) query.set("mentionsOnly", "true");
   query.set("limit", String(options.limit ?? 50));
   return getJson(`/api/v1/news?${query.toString()}`, parseNewsItems);
+}
+
+/**
+ * The settings snapshot carries no secret by construction — presence, a four-character tail,
+ * and what each missing credential costs. Reading it in an RSC is therefore no different from
+ * reading any other panel.
+ */
+export function getSettings(): Promise<ApiResult<SettingsSnapshot>> {
+  return getJson("/api/v1/settings", parseSettingsSnapshot);
+}
+
+export function getDatabases(): Promise<ApiResult<DatabaseList>> {
+  return getJson("/api/v1/settings/databases", parseDatabaseList);
 }
 
 export { num as parseNumber, decimal as parseDecimal };

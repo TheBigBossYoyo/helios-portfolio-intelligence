@@ -1,13 +1,24 @@
+import { ActionButton } from "@/components/action-button";
+import { AttributionChart } from "@/components/charts/attribution-chart";
+import { ClusterChart } from "@/components/charts/cluster-chart";
 import { ContributionChart } from "@/components/charts/contribution-chart";
 import { DrawdownChart } from "@/components/charts/drawdown-chart";
+import { GrowthChart } from "@/components/charts/growth-chart";
+import { MonthlyChart } from "@/components/charts/monthly-chart";
 import { NavChart } from "@/components/charts/nav-chart";
+import { ReturnHistogram } from "@/components/charts/return-histogram";
 import { RollingChart } from "@/components/charts/rolling-chart";
 import { DataTable, type Column } from "@/components/data-table";
+import { HoldingMovers } from "@/components/holding-movers";
 import { MetricTile } from "@/components/metric-tile";
-import { Note, Panel, Unavailable } from "@/components/panel";
+import { PeriodTable, signedEur } from "@/components/period-change";
+import { Note, PageHeader, Panel, Unavailable } from "@/components/panel";
 import { StatusBadge } from "@/components/status-badge";
-import { getPerformanceReport } from "@/lib/api";
+import { replayPerformanceAction } from "@/lib/actions";
+import { getAccountSummary, getNews, getPerformanceReport } from "@/lib/api";
 import {
+  formatDate,
+  decimalToNumber,
   EMPTY,
   formatEur,
   formatPercent,
@@ -16,23 +27,66 @@ import {
   humanizeStatus,
   metricText,
 } from "@/lib/format";
-import { toDrawdownRows, toNavRows, toRollingRows } from "@/lib/series";
+import {
+  latestValuedNav,
+  toDrawdownRows,
+  toGrowthRows,
+  toNavRows,
+  toRollingRows,
+} from "@/lib/series";
 import type {
+  AttributionItem,
   BenchmarkReport,
   ClusterAssignment,
   ContributionItem,
   MetricValue,
   NavPoint,
+  PeriodSummary,
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+
+/** The monthly chart's table twin: every bar's value, readable without hovering. */
+const MONTH_COLUMNS: Column<PeriodSummary>[] = [
+  { key: "month", header: "Month", render: (row) => row.label },
+  {
+    key: "result",
+    header: "Investment result",
+    numeric: true,
+    render: (row) => (row.status === "ok" ? signedEur(decimalToNumber(row.investmentResultEur)) : EMPTY),
+  },
+  {
+    key: "return",
+    header: "Return",
+    numeric: true,
+    render: (row) => (row.twr !== null ? formatSignedPercent(row.twr) : EMPTY),
+  },
+  {
+    key: "dividends",
+    header: "Dividends",
+    numeric: true,
+    render: (row) => signedEur(decimalToNumber(row.dividendsEur)),
+  },
+  {
+    key: "moved",
+    header: "Money added",
+    numeric: true,
+    render: (row) => signedEur(decimalToNumber(row.netDepositsEur)),
+  },
+  {
+    key: "end",
+    header: "Value at month end",
+    numeric: true,
+    render: (row) => (row.status === "ok" ? formatEur(row.endValueEur) : EMPTY),
+  },
+];
 
 const BENCHMARK_COLUMNS: Column<BenchmarkReport>[] = [
   { key: "label", header: "Proxy", render: (row) => row.benchmark.label },
   {
     key: "symbol",
     header: "Symbol",
-    render: (row) => <span className="text-neutral-600">{row.benchmark.providerSymbol}</span>,
+    render: (row) => <span className="text-ink-3">{row.benchmark.providerSymbol}</span>,
   },
   { key: "beta", header: "Beta", numeric: true, render: (row) => cell(row.beta, formatRatio) },
   {
@@ -114,6 +168,46 @@ const NAV_TABLE_COLUMNS: Column<NavPoint>[] = [
   },
 ];
 
+const ATTRIBUTION_COLUMNS: Column<AttributionItem>[] = [
+  { key: "key", header: "Sector", render: (row) => row.key },
+  {
+    key: "portfolioWeight",
+    header: "Portfolio weight",
+    numeric: true,
+    render: (row) => formatPercent(row.portfolioWeight),
+  },
+  {
+    key: "benchmarkWeight",
+    header: "Benchmark weight",
+    numeric: true,
+    render: (row) => formatPercent(row.benchmarkWeight),
+  },
+  {
+    key: "allocation",
+    header: "Allocation",
+    numeric: true,
+    render: (row) => formatSignedPercent(row.allocationEffect),
+  },
+  {
+    key: "selection",
+    header: "Selection",
+    numeric: true,
+    render: (row) => formatSignedPercent(row.selectionEffect),
+  },
+  {
+    key: "interaction",
+    header: "Interaction",
+    numeric: true,
+    render: (row) => formatSignedPercent(row.interactionEffect),
+  },
+  {
+    key: "total",
+    header: "Total",
+    numeric: true,
+    render: (row) => formatSignedPercent(row.totalEffect),
+  },
+];
+
 const CLUSTER_COLUMNS: Column<ClusterAssignment>[] = [
   { key: "key", header: "Holding", render: (row) => row.key },
   { key: "cluster", header: "Cluster", numeric: true, render: (row) => String(row.cluster) },
@@ -125,62 +219,119 @@ const CLUSTER_COLUMNS: Column<ClusterAssignment>[] = [
   },
 ];
 
-export default async function PerformancePage() {
-  const result = await getPerformanceReport();
+interface FactorRow {
+  name: string;
+  value: number | null;
+}
+
+const FACTOR_COLUMNS: Column<FactorRow>[] = [
+  { key: "name", header: "Factor", render: (row) => row.name },
+  {
+    key: "value",
+    header: "Coefficient",
+    numeric: true,
+    render: (row) => formatRatio(row.value, 3),
+  },
+];
+
+export default async function PerformancePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ month?: string }>;
+}) {
+  const { month: requestedMonth } = await searchParams;
+  const [result, account, news] = await Promise.all([
+    getPerformanceReport(),
+    getAccountSummary(),
+    getNews({ limit: 200, heldOnly: true, mentionsOnly: true }),
+  ]);
 
   if (!result.ok) {
     return (
-      <Panel subtitle="Reconstructed from your own ledger." title="Performance">
-        <Unavailable
-          detail={
-            result.status === 404
-              ? "No replayed NAV exists yet. Run `helios performance-replay` (or POST /api/v1/performance/replay) to build it."
-              : result.error
-          }
-          reason="Performance report unavailable"
-        />
-      </Panel>
+      <>
+        <PageHeader description="Reconstructed from your own ledger." title="Performance" />
+        <Panel actions={<ReplayButton />} title="Performance report">
+          <Unavailable
+            detail={
+              result.status === 404
+                ? "No replayed NAV exists yet. Run a replay to build it."
+                : result.error
+            }
+            reason="Performance report unavailable"
+          />
+        </Panel>
+      </>
     );
   }
 
   const report = result.data;
   const navRows = toNavRows(report.navSeries, report.passiveCounterfactual.series);
-  const drawdownRows = toDrawdownRows(report.navSeries);
+  const growthRows = toGrowthRows(navRows);
+  const drawdownRows = toDrawdownRows(report.navSeries, report.dailyTwr);
   const volatilityRows = toRollingRows(report.rollingVolatility30d, report.rollingVolatility90d);
   const betaRows = toRollingRows(report.rollingBeta30d, report.rollingBeta90d);
   const passive = report.passiveCounterfactual;
+  // The replay values each day at that day's closing prices and ECB rates; Trading 212's total
+  // is live. They should sit close together, and saying how close is what makes the chart
+  // trustworthy rather than "a different number from the Overview".
+  const lastValued = latestValuedNav(report.navSeries);
+  const liveTotal = account.ok ? decimalToNumber(account.data.totalValue) : null;
+  const replayedTotal = lastValued ? decimalToNumber(lastValued.navEur) : null;
   const passiveLabel = passive.status === "ok" ? passive.benchmarkLabel : null;
   const contributionBars = report.contributions
     .filter((item) => item.status === "ok" && item.contribution !== null)
     .map((item) => ({ key: item.key, contribution: item.contribution as number }));
+  const dailyReturns = report.dailyTwr.map((point) => point.value);
+  const hasGrowth = growthRows.some((row) => row.portfolio !== null);
+  const periods = report.periodSummaries ?? [];
+  const months = report.monthlySummaries ?? [];
+  const valuedMonths = months.filter((month) => month.status === "ok");
+  const selectedMonth =
+    valuedMonths.find((month) => month.key === requestedMonth) ?? valuedMonths.at(-1) ?? null;
+  const monthlyBars = months.map((month) => ({
+    label: month.label,
+    result: month.status === "ok" ? decimalToNumber(month.investmentResultEur) : null,
+    moved: decimalToNumber(month.netDepositsEur) ?? 0,
+  }));
+  const factorRows: FactorRow[] = Object.entries(report.ff5MomentumRegression.coefficients).map(
+    ([name, value]) => ({ name, value }),
+  );
 
   return (
     <>
-      <section className="panel-raised flex flex-col gap-2 border border-border px-4 py-3 text-[11px] text-neutral-500 sm:flex-row sm:items-center sm:justify-between">
-        <span>
-          Window {report.startDate ?? EMPTY} → {report.endDate ?? EMPTY}
-        </span>
-        <span>
-          Flow timing <span className="text-neutral-300">{report.flowTiming}</span> · annualised on{" "}
-          <span className="text-neutral-300">{report.annualizationDays}</span> calendar days
-        </span>
-      </section>
+      <PageHeader
+        actions={<ReplayButton />}
+        description={
+          <>
+            Window {report.startDate ?? EMPTY} → {report.endDate ?? EMPTY} · flow timing{" "}
+            <span className="text-ink-2">{report.flowTiming}</span> · annualised on{" "}
+            <span className="text-ink-2">{report.annualizationDays}</span> calendar days
+          </>
+        }
+        title="Performance"
+      />
 
-      <section className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <section
+        aria-label="Headline metrics"
+        className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5"
+      >
         <MetricTile
           label="Cumulative TWR"
           metric={report.cumulativeTwr}
           render={(value) => formatSignedPercent(value)}
+          signed
         />
         <MetricTile
           label="Annualized"
           metric={report.annualizedReturn}
           render={(value) => formatSignedPercent(value)}
+          signed
         />
         <MetricTile
-          label="XIRR"
+          label="Money-weighted (XIRR)"
           metric={report.xirr}
           render={(value) => formatSignedPercent(value)}
+          signed
         />
         <MetricTile
           label="Volatility"
@@ -199,7 +350,73 @@ export default async function PerformancePage() {
           render={(value) => formatRatio(value)}
         />
         <MetricTile label="Calmar" metric={report.calmar} render={(value) => formatRatio(value)} />
+        <MetricTile
+          label="Max drawdown"
+          metric={report.maxDrawdown}
+          render={(value) => formatPercent(value)}
+        />
+        <MetricTile
+          label="Time underwater"
+          metric={report.timeUnderwaterDays}
+          render={(value) => `${value.toFixed(0)} days`}
+        />
       </section>
+
+      {periods.length > 0 ? (
+        <Panel
+          subtitle="What your investments made in each period, kept apart from the money you moved in or out. Open a period on the Overview for its full breakdown."
+          title="Returns by period"
+        >
+          <PeriodTable basePath="/" periods={periods} selected="" />
+        </Panel>
+      ) : null}
+
+      {months.length > 0 ? (
+        <Panel
+          subtitle="Each month: what the investments made or lost (blue up, red down) beside the money you added. A big deposit is not a good month."
+          title="Month by month"
+        >
+          <MonthlyChart data={monthlyBars} />
+          {selectedMonth ? (
+            <div className="mt-6 flex flex-col gap-4 border-t border-border pt-5" id="month-detail">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold text-ink">
+                  {selectedMonth.label}, stock by stock
+                </h3>
+                <nav aria-label="Month" className="flex flex-wrap gap-1 rounded-xl bg-surface-3 p-1">
+                  {valuedMonths.map((month) => (
+                    <a
+                      aria-current={month.key === selectedMonth.key ? "true" : undefined}
+                      className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                        month.key === selectedMonth.key
+                          ? "bg-surface text-ink shadow-card"
+                          : "text-ink-3 hover:text-ink"
+                      }`}
+                      href={`/performance?month=${month.key}#month-detail`}
+                      key={month.key}
+                    >
+                      {month.label}
+                    </a>
+                  ))}
+                </nav>
+              </div>
+              <HoldingMovers news={news.ok ? news.data : []} period={selectedMonth} />
+            </div>
+          ) : null}
+          <details className="mt-4">
+            <summary className="cursor-pointer text-sm font-medium text-ink-2">Show as a table</summary>
+            <div className="mt-3">
+              <DataTable
+                caption="Investment result and money added by month"
+                columns={MONTH_COLUMNS}
+                maxHeight={360}
+                rowKey={(row) => row.key}
+                rows={[...months].reverse()}
+              />
+            </div>
+          </details>
+        </Panel>
+      ) : null}
 
       <Panel
         subtitle={
@@ -210,16 +427,38 @@ export default async function PerformancePage() {
         title="Net asset value"
       >
         {navRows.length > 0 ? (
-          <NavChart data={navRows} passiveLabel={passiveLabel} />
+          <NavChart data={navRows} passiveLabel={passiveLabel} showInvested />
         ) : (
           <Unavailable reason="No NAV history" />
         )}
+        {liveTotal !== null && replayedTotal !== null && lastValued ? (
+          <div className="mt-4">
+            <Note>
+              Reconstructed value on {formatDate(lastValued.asOfDate)}:{" "}
+              <span className="font-medium text-ink">{formatEur(replayedTotal)}</span>, at that
+              day&apos;s closing prices and ECB rates. Trading 212 reports{" "}
+              <span className="font-medium text-ink">{formatEur(liveTotal)}</span> right now —{" "}
+              {formatEur(Math.abs(liveTotal - replayedTotal))} apart, from price movement since the
+              close and Trading 212&apos;s own exchange rates.
+            </Note>
+          </div>
+        ) : null}
         {passive.status === "ok" ? (
-          <dl className="mt-4 grid grid-cols-2 gap-3 text-[11px] sm:grid-cols-4">
+          <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Figure label="Contributed" value={formatEur(passive.investedEur)} />
             <Figure label="Passive would be" value={formatEur(passive.finalValueEur)} />
             <Figure label="Actual NAV" value={formatEur(passive.actualNavEur)} />
-            <Figure label="Difference" value={formatEur(passive.differenceEur)} />
+            <Figure
+              label="Difference"
+              tone={
+                passive.differenceEur === null
+                  ? undefined
+                  : passive.differenceEur.trim().startsWith("-")
+                    ? "down"
+                    : "up"
+              }
+              value={formatEur(passive.differenceEur)}
+            />
           </dl>
         ) : (
           <div className="mt-4">
@@ -231,17 +470,29 @@ export default async function PerformancePage() {
         )}
       </Panel>
 
+      <Panel
+        subtitle={
+          passiveLabel
+            ? `Portfolio vs. ${passiveLabel}, each indexed to its own first observed value = 100 — the honest way to compare a EUR NAV against an ETF proxy price on one scale.`
+            : "Portfolio NAV indexed to its first valued day = 100. No configured benchmark proxy to compare against."
+        }
+        title="Growth of €100"
+      >
+        {hasGrowth ? (
+          <GrowthChart benchmarkLabel={passiveLabel} data={growthRows} />
+        ) : (
+          <Unavailable reason="No NAV history yet" />
+        )}
+      </Panel>
+
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-        <Panel
-          subtitle="Decline from the running peak of valued NAV."
-          title="Drawdown"
-        >
+        <Panel subtitle="Decline from the running peak of valued NAV." title="Drawdown">
           {drawdownRows.some((row) => row.drawdown !== null) ? (
             <DrawdownChart data={drawdownRows} />
           ) : (
             <Unavailable reason="No valued NAV history" />
           )}
-          <dl className="mt-4 grid grid-cols-3 gap-3 text-[11px]">
+          <dl className="mt-4 grid grid-cols-3 gap-3">
             <Figure
               label="Max drawdown"
               value={metricText(report.maxDrawdown, (value) => formatPercent(value))}
@@ -257,29 +508,25 @@ export default async function PerformancePage() {
           </dl>
         </Panel>
 
-        <Panel subtitle="Historical simulation; losses are negative returns." title="Value at risk">
-          <div className="grid grid-cols-2 gap-4">
-            <MetricTile
-              label="VaR 95% 1d"
-              metric={report.var95_1d}
-              render={(value) => formatPercent(value)}
+        <Panel
+          subtitle="Historical simulation on daily time-weighted returns; losses are negative."
+          title="Daily return distribution"
+        >
+          {dailyReturns.length >= 8 ? (
+            <ReturnHistogram
+              returns={dailyReturns}
+              var95={report.var95_1d.status === "ok" ? report.var95_1d.value : null}
+              var99={report.var99_1d.status === "ok" ? report.var99_1d.value : null}
             />
-            <MetricTile
-              label="CVaR 95% 1d"
-              metric={report.cvar95_1d}
-              render={(value) => formatPercent(value)}
-            />
-            <MetricTile
-              label="VaR 99% 10d"
-              metric={report.var99_10d}
-              render={(value) => formatPercent(value)}
-            />
-            <MetricTile
-              label="CVaR 99% 10d"
-              metric={report.cvar99_10d}
-              render={(value) => formatPercent(value)}
-            />
-          </div>
+          ) : (
+            <Unavailable detail="Needs at least 8 daily return observations." reason="Not enough history" />
+          )}
+          <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Figure label="VaR 95% 1d" value={metricText(report.var95_1d, (value) => formatPercent(value))} />
+            <Figure label="CVaR 95% 1d" value={metricText(report.cvar95_1d, (value) => formatPercent(value))} />
+            <Figure label="VaR 99% 10d" value={metricText(report.var99_10d, (value) => formatPercent(value))} />
+            <Figure label="CVaR 99% 10d" value={metricText(report.cvar99_10d, (value) => formatPercent(value))} />
+          </dl>
           {report.var95_1d.detail ? (
             <div className="mt-4">
               <Note>{report.var95_1d.detail}</Note>
@@ -345,10 +592,7 @@ export default async function PerformancePage() {
         </div>
       </Panel>
 
-      <Panel
-        subtitle="Labelled ETF proxies, not official index levels."
-        title="Benchmark comparison"
-      >
+      <Panel subtitle="Labelled ETF proxies, not official index levels." title="Benchmark comparison">
         <DataTable
           caption="Benchmark statistics"
           columns={BENCHMARK_COLUMNS}
@@ -361,11 +605,7 @@ export default async function PerformancePage() {
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <Panel subtitle="Concentration of the latest valued weights." title="Concentration">
           <div className="grid grid-cols-3 gap-4">
-            <MetricTile
-              label="HHI"
-              metric={report.hhi}
-              render={(value) => formatRatio(value, 3)}
-            />
+            <MetricTile label="HHI" metric={report.hhi} render={(value) => formatRatio(value, 3)} />
             <MetricTile
               label="Effective positions"
               metric={report.effectiveNumberOfPositions}
@@ -384,12 +624,19 @@ export default async function PerformancePage() {
           title="Correlation clusters"
         >
           {report.correlationClusters.status === "ok" ? (
-            <DataTable
-              caption="Correlation cluster assignments"
-              columns={CLUSTER_COLUMNS}
-              rowKey={(row) => row.key}
-              rows={report.correlationClusters.assignments}
-            />
+            <div className="flex flex-col gap-4">
+              {report.correlationClusters.assignments.length > 0 ? (
+                <ClusterChart assignments={report.correlationClusters.assignments} />
+              ) : null}
+              <DataTable
+                caption="Correlation cluster assignments"
+                columns={CLUSTER_COLUMNS}
+                empty="No clustered holdings"
+                rowKey={(row) => row.key}
+                rows={report.correlationClusters.assignments}
+              />
+              {report.correlationClusters.detail ? <Note>{report.correlationClusters.detail}</Note> : null}
+            </div>
           ) : (
             <Unavailable
               detail={report.correlationClusters.detail}
@@ -401,10 +648,30 @@ export default async function PerformancePage() {
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <Panel subtitle="Brinson-Fachler sector attribution." title="Attribution">
-          <Unavailable
-            detail={report.attribution.detail}
-            reason={humanizeStatus(report.attribution.status)}
-          />
+          {report.attribution.status === "ok" ? (
+            <div className="flex flex-col gap-4">
+              <Figure
+                label="Active return"
+                value={formatSignedPercent(report.attribution.activeReturn)}
+              />
+              {report.attribution.items.length > 0 ? (
+                <AttributionChart data={report.attribution.items} />
+              ) : null}
+              <DataTable
+                caption="Sector attribution effects"
+                columns={ATTRIBUTION_COLUMNS}
+                empty="No sectors"
+                rowKey={(row) => row.key}
+                rows={report.attribution.items}
+              />
+              {report.attribution.detail ? <Note>{report.attribution.detail}</Note> : null}
+            </div>
+          ) : (
+            <Unavailable
+              detail={report.attribution.detail}
+              reason={humanizeStatus(report.attribution.status)}
+            />
+          )}
         </Panel>
 
         <Panel
@@ -412,15 +679,26 @@ export default async function PerformancePage() {
           title="Factor exposure"
         >
           {report.ff5MomentumRegression.status === "ok" ? (
-            <dl className="grid grid-cols-2 gap-3 text-[11px] sm:grid-cols-4">
-              <Figure
-                label="R²"
-                value={formatRatio(report.ff5MomentumRegression.rSquared, 3)}
+            <div className="flex flex-col gap-4">
+              <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                <Figure label="R²" value={formatRatio(report.ff5MomentumRegression.rSquared, 3)} />
+                <Figure
+                  label="Observations"
+                  value={formatRatio(report.ff5MomentumRegression.observations, 0)}
+                />
+                <Figure
+                  label="Intercept"
+                  value={formatRatio(report.ff5MomentumRegression.intercept, 3)}
+                />
+              </dl>
+              <DataTable
+                caption="Factor regression coefficients"
+                columns={FACTOR_COLUMNS}
+                empty="No factors"
+                rowKey={(row) => row.name}
+                rows={factorRows}
               />
-              {Object.entries(report.ff5MomentumRegression.coefficients).map(([name, value]) => (
-                <Figure key={name} label={name} value={formatRatio(value, 3)} />
-              ))}
-            </dl>
+            </div>
           ) : (
             <Unavailable
               detail={report.ff5MomentumRegression.detail}
@@ -457,11 +735,41 @@ export default async function PerformancePage() {
   );
 }
 
-function Figure({ label, value }: { label: string; value: string }) {
+/**
+ * A replay rewrites the whole daily NAV table and refetches every price against a metered
+ * quota, so it asks before spending that. The backend holds a lease and refuses a concurrent
+ * run, but the UI should not invite the second click in the first place.
+ */
+function ReplayButton() {
+  return (
+    <ActionButton
+      action={replayPerformanceAction}
+      confirmLabel="Confirm replay"
+      label="Replay"
+      pendingLabel="Replaying…"
+    />
+  );
+}
+
+function Figure({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "up" | "down";
+}) {
   return (
     <div>
-      <dt className="text-neutral-600">{label}</dt>
-      <dd className="mt-0.5 tabular-nums text-neutral-300">{value}</dd>
+      <dt className="text-xs font-medium text-ink-3">{label}</dt>
+      <dd
+        className={`tabular mt-0.5 text-sm font-semibold ${
+          tone === "up" ? "text-positive" : tone === "down" ? "text-negative" : "text-ink"
+        }`}
+      >
+        {value}
+      </dd>
     </div>
   );
 }
@@ -471,5 +779,5 @@ function cell(metric: MetricValue, render: (value: number) => string) {
 }
 
 function statusCell(status: string) {
-  return <span className="text-neutral-600">{humanizeStatus(status)}</span>;
+  return <span className="text-ink-3">{humanizeStatus(status)}</span>;
 }

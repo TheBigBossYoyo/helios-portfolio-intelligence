@@ -1,81 +1,74 @@
-import { DataTable, type Column } from "@/components/data-table";
-import { Note, Panel, Unavailable } from "@/components/panel";
+import Link from "next/link";
+
+import { JournalTimeline, ThesisStepper } from "@/components/journal-timeline";
+import { Note, PageHeader, Panel, Unavailable } from "@/components/panel";
+import { Pager } from "@/components/pager";
 import { StatusBadge } from "@/components/status-badge";
-import { getJournal, getTheses } from "@/lib/api";
-import { EMPTY, formatDate, formatDateTime, formatPercent } from "@/lib/format";
-import type { JournalEntry, Thesis } from "@/lib/types";
+import {
+  AddJournalEntryForm,
+  CreateThesisForm,
+  EditThesisForm,
+  TransitionThesisForm,
+} from "@/components/thesis-forms";
+import {
+  addJournalEntryAction,
+  createThesisAction,
+  editThesisAction,
+  transitionThesisAction,
+} from "@/lib/actions";
+import { getJournal, getPositions, getTheses } from "@/lib/api";
+import { formatDate } from "@/lib/format";
+import { paginate, parsePageParam } from "@/lib/pagination";
+import type { Thesis } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-const THESIS_COLUMNS: Column<Thesis>[] = [
-  { key: "id", header: "#", numeric: true, render: (row) => String(row.id) },
-  {
-    key: "status",
-    header: "Status",
-    render: (row) => <StatusBadge status={row.status} />,
-  },
-  {
-    key: "scope",
-    header: "Scope",
-    render: (row) => row.t212Ticker ?? <span className="text-neutral-600">portfolio</span>,
-  },
-  { key: "title", header: "Thesis", render: (row) => row.title },
-  {
-    key: "conviction",
-    header: "Conviction",
-    render: (row) => <span className="text-neutral-500">{row.conviction}</span>,
-  },
-  {
-    key: "opened",
-    header: "Opened",
-    render: (row) => <span className="text-neutral-500">{formatDate(row.openedOn)}</span>,
-  },
-];
+// `/api/v1/journal` only supports capping the result with `limit` (see src/helios/api.py) —
+// there is no offset param. Fetch past what one page shows and slice the fetched list here; the
+// thesis lists above stay unpaginated, since a single-user portfolio realistically holds a
+// handful of theses at once.
+const JOURNAL_FETCH_LIMIT = 100;
+const JOURNAL_PAGE_SIZE = 10;
 
-const JOURNAL_COLUMNS: Column<JournalEntry>[] = [
-  {
-    key: "created",
-    header: "When",
-    render: (row) => <span className="text-neutral-500">{formatDateTime(row.createdAt)}</span>,
-  },
-  {
-    key: "scope",
-    header: "Thesis",
-    render: (row) =>
-      row.thesisId ? `#${row.thesisId}` : <span className="text-neutral-600">general</span>,
-  },
-  { key: "note", header: "Note", render: (row) => row.note },
-  {
-    key: "tags",
-    header: "Tags",
-    render: (row) => <span className="text-neutral-600">{row.tags ?? EMPTY}</span>,
-  },
-];
+export default async function JournalPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
+  const { page } = await searchParams;
+  const [theses, journal, positions] = await Promise.all([
+    getTheses(),
+    getJournal(JOURNAL_FETCH_LIMIT),
+    getPositions(),
+  ]);
 
-export default async function JournalPage() {
-  const [theses, journal] = await Promise.all([getTheses(), getJournal(100)]);
-
-  const open = theses.ok
-    ? theses.data.filter((row) => row.status === "draft" || row.status === "active")
+  const all = theses.ok ? theses.data : [];
+  const open = all.filter((row) => row.status === "draft" || row.status === "active");
+  const settled = all.filter((row) => row.status !== "draft" && row.status !== "active");
+  const drafts = all.filter((row) => row.status === "draft");
+  const heldTickers = positions.ok
+    ? positions.data.map((position) => position.instrument.ticker)
     : [];
-  const settled = theses.ok
-    ? theses.data.filter((row) => row.status !== "draft" && row.status !== "active")
-    : [];
+  const journalPage = journal.ok ? paginate(journal.data, parsePageParam(page), JOURNAL_PAGE_SIZE) : null;
 
   return (
     <>
-      <Panel
-        subtitle="Why you hold what you hold, written before the outcome is known."
-        title={`Open theses (${open.length})`}
-      >
+      <PageHeader
+        description="Why you hold what you hold, written before the outcome is known."
+        title="Journal"
+      />
+
+      <Panel subtitle="Editable until activated; frozen from then on." title={`Open theses (${open.length})`}>
         {theses.ok ? (
-          <DataTable
-            caption="Open theses"
-            columns={THESIS_COLUMNS}
-            empty="No open theses. Create one with `helios thesis create`."
-            rowKey={(row) => String(row.id)}
-            rows={open}
-          />
+          open.length > 0 ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {open.map((thesis) => (
+                <ThesisCard key={thesis.id} thesis={thesis} />
+              ))}
+            </div>
+          ) : (
+            <Unavailable detail="Write your first one below." reason="No open theses yet" />
+          )
         ) : (
           <Unavailable detail={theses.error} reason="Theses unavailable" />
         )}
@@ -93,42 +86,85 @@ export default async function JournalPage() {
           subtitle="Closed positions on your own reasoning — the part worth re-reading."
           title={`Settled theses (${settled.length})`}
         >
-          <DataTable
-            caption="Settled theses"
-            columns={[
-              ...THESIS_COLUMNS,
-              {
-                key: "outcome",
-                header: "Outcome",
-                render: (row: Thesis) => (
-                  <span className="text-neutral-500">{row.outcomeNote ?? EMPTY}</span>
-                ),
-              },
-            ]}
-            rowKey={(row) => String(row.id)}
-            rows={settled}
-          />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {settled.map((thesis) => (
+              <ThesisCard key={thesis.id} thesis={thesis} />
+            ))}
+          </div>
+        </Panel>
+      ) : null}
+
+      <Panel
+        subtitle="Written now, read later. A thesis starts as a draft so you can still change your mind about the wording, not about what happened."
+        title="Write a thesis"
+      >
+        <CreateThesisForm action={createThesisAction} tickers={heldTickers} />
+      </Panel>
+
+      {drafts.length > 0 ? (
+        <Panel
+          subtitle="Only drafts appear here. Once a thesis is active its reasoning is frozen, so there is nothing to edit."
+          title="Edit a draft"
+        >
+          <EditThesisForm action={editThesisAction} drafts={drafts} />
+        </Panel>
+      ) : null}
+
+      {all.length > 0 ? (
+        <Panel
+          subtitle="Move a thesis along its lifecycle. Settling one requires the note explaining how it turned out."
+          title="Change a thesis status"
+        >
+          <TransitionThesisForm action={transitionThesisAction} theses={all} />
         </Panel>
       ) : null}
 
       <Panel subtitle="Dated notes, attached to a thesis or standalone." title="Journal">
-        {journal.ok ? (
-          <DataTable
-            caption="Journal entries"
-            columns={JOURNAL_COLUMNS}
-            empty="No journal entries yet. Add one with `helios journal add --note '...'`."
-            maxHeight={480}
-            rowKey={(row) => String(row.id)}
-            rows={journal.data}
-          />
+        {journalPage ? (
+          <>
+            <JournalTimeline entries={journalPage.items} />
+            <Pager basePath="/journal" page={journalPage.page} pageCount={journalPage.pageCount} />
+          </>
         ) : (
-          <Unavailable detail={journal.error} reason="Journal unavailable" />
+          <Unavailable detail={!journal.ok ? journal.error : undefined} reason="Journal unavailable" />
         )}
+        <div className="mt-6 border-t border-border pt-4">
+          <AddJournalEntryForm action={addJournalEntryAction} theses={all} />
+        </div>
       </Panel>
     </>
   );
 }
 
-export function convictionWeight(value: number | null): string {
-  return value === null ? EMPTY : formatPercent(value);
+/** One thesis: status, scope, conviction, opened date and its place in the lifecycle. */
+function ThesisCard({ thesis }: { thesis: Thesis }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface-2 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <StatusBadge status={thesis.status} />
+        <span className="truncate text-xs font-medium text-ink-3">
+          {thesis.t212Ticker ?? "Portfolio-wide"}
+        </span>
+      </div>
+
+      <Link
+        className="text-sm font-semibold text-ink hover:text-accent hover:underline underline-offset-4"
+        href={`/journal/${thesis.id}`}
+      >
+        {thesis.title}
+      </Link>
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-3">
+        <span className="capitalize">{thesis.conviction} conviction</span>
+        <span aria-hidden="true">·</span>
+        <span>Opened {formatDate(thesis.openedOn)}</span>
+      </div>
+
+      {thesis.outcomeNote ? (
+        <p className="line-clamp-2 text-xs leading-relaxed text-ink-3">{thesis.outcomeNote}</p>
+      ) : null}
+
+      <ThesisStepper status={thesis.status} />
+    </div>
+  );
 }

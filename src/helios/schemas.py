@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -40,6 +41,34 @@ class WalletImpact(DTOModel):
     fx_impact: Decimal | None = Field(default=None, alias="fxImpact")
     total_cost: Decimal | None = Field(default=None, alias="totalCost")
     unrealized_profit_loss: Decimal | None = Field(default=None, alias="unrealizedProfitLoss")
+
+
+class AccountCash(DTOModel):
+    available_to_trade: Decimal | None = Field(default=None, alias="availableToTrade")
+    reserved_for_orders: Decimal | None = Field(default=None, alias="reservedForOrders")
+    in_pies: Decimal | None = Field(default=None, alias="inPies")
+
+
+class AccountInvestments(DTOModel):
+    current_value: Decimal | None = Field(default=None, alias="currentValue")
+    total_cost: Decimal | None = Field(default=None, alias="totalCost")
+    realized_profit_loss: Decimal | None = Field(default=None, alias="realizedProfitLoss")
+    unrealized_profit_loss: Decimal | None = Field(default=None, alias="unrealizedProfitLoss")
+
+
+class AccountSummary(DTOModel):
+    """`GET /equity/account/summary`: the totals the Trading 212 app itself shows.
+
+    The one source for every *current* figure the dashboard displays. Reconstructing "now" from
+    positions plus a replayed cash balance put three different totals on three pages; this is
+    the number the operator can check against their own app.
+    """
+
+    id: int | None = None
+    currency: str | None = None
+    total_value: Decimal | None = Field(default=None, alias="totalValue")
+    cash: AccountCash | None = None
+    investments: AccountInvestments | None = None
 
 
 class Position(DTOModel):
@@ -111,7 +140,10 @@ class HistoricalOrder(DTOModel):
 
 
 class HistoricalOrderItem(DTOModel):
-    fill: HistoricalOrderFill
+    # Absent for an order that never executed (CANCELLED, REJECTED...). Trading 212 lists those
+    # in the same history with no `fill` object; requiring one made a single cancelled order
+    # abort the entire sync of a real account.
+    fill: HistoricalOrderFill | None = None
     order: HistoricalOrder
 
 
@@ -146,6 +178,7 @@ class HealthResponse(DTOModel):
     status: str
     trading212_configured: bool = Field(alias="trading212Configured")
     database_ready: bool = Field(alias="databaseReady")
+    trading212_environment: Literal["demo", "live"] = Field(alias="trading212Environment")
 
 
 class SyncEndpointSummary(DTOModel):
@@ -218,6 +251,77 @@ class QualityReport(DTOModel):
 PositionsResponse = list[Position]
 
 
+class ExportReport(BaseModel):
+    """One entry of Trading 212's export list. The download link only exists once Finished."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    report_id: int = Field(alias="reportId")
+    status: str
+    download_link: str | None = Field(default=None, alias="downloadLink")
+
+
+class CardHistoryStatusModel(DTOModel):
+    enabled: bool
+    last_requested_at: datetime | None = Field(default=None, alias="lastRequestedAt")
+    last_downloaded_at: datetime | None = Field(default=None, alias="lastDownloadedAt")
+    pending: bool
+    last_status: str | None = Field(default=None, alias="lastStatus")
+    card_rows: int = Field(alias="cardRows")
+    cash_rows: int = Field(alias="cashRows")
+
+
+class CardRefreshModel(DTOModel):
+    action: str
+    detail: str
+    rows_stored: int = Field(default=0, alias="rowsStored")
+
+
+class CardTransactionModel(DTOModel):
+    row_id: str = Field(alias="rowId")
+    ts: datetime
+    action: str
+    amount: Decimal
+    currency: str | None = None
+    merchant_name: str | None = Field(default=None, alias="merchantName")
+    merchant_category: str | None = Field(default=None, alias="merchantCategory")
+
+
+class SpendingGroupModel(DTOModel):
+    key: str
+    spent: Decimal
+    count: int
+
+
+class SpendingMonthModel(DTOModel):
+    key: str
+    label: str
+    spent: Decimal
+    cashback: Decimal
+    count: int
+
+
+class CardSummaryModel(DTOModel):
+    currency: str | None = None
+    first_date: date | None = Field(default=None, alias="firstDate")
+    last_date: date | None = Field(default=None, alias="lastDate")
+    spent: Decimal
+    refunded: Decimal
+    cashback: Decimal
+    cashback_rate: float | None = Field(default=None, alias="cashbackRate")
+    months: list[SpendingMonthModel]
+    categories: list[SpendingGroupModel]
+    merchants: list[SpendingGroupModel]
+    transactions: list[CardTransactionModel]
+
+
+class CardHistoryModel(DTOModel):
+    """Card spending from Trading 212 exports, and where the export pipeline stands."""
+
+    status: CardHistoryStatusModel
+    summary: CardSummaryModel
+
+
 class NewsItemModel(DTOModel):
     dedupe_key: str = Field(alias="dedupeKey")
     feed_key: str = Field(alias="feedKey")
@@ -230,6 +334,11 @@ class NewsItemModel(DTOModel):
     url: str
     published_at: datetime | None = Field(default=None, alias="publishedAt")
     fetched_at: datetime = Field(alias="fetchedAt")
+    #: headline / summary: the text names the holding; unconfirmed: the feed is bound to it but
+    #: the text does not name it; market: not bound to any holding.
+    relevance: str | None = None
+    matched_term: str | None = Field(default=None, alias="matchedTerm")
+    held: bool | None = None
 
 
 class JournalEntryModel(DTOModel):
@@ -337,6 +446,126 @@ class NewsSyncSummaryModel(DTOModel):
     notes: list[str]
 
 
+# --- Settings surface -----------------------------------------------------------------
+#
+# The write models below deliberately do NOT inherit DTOModel: it sets `extra="allow"`, which is
+# right for permissive broker payloads and wrong for a request that changes credentials. An
+# unrecognised field here means the caller and the server disagree about what is being written,
+# and on this surface that is worth a 422 rather than a silent drop.
+
+
+class SettingsWriteModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class CredentialStatusModel(DTOModel):
+    """A credential's presence and impact. Carries no part of the value beyond a 4-char tail."""
+
+    field: str
+    label: str
+    requirement: str
+    present: bool
+    hint: str | None = None
+    source: str
+    unlocks: str
+    without: str
+    signup: str
+
+
+class SettingsSnapshotModel(DTOModel):
+    credentials: list[CredentialStatusModel]
+    editable: dict[str, str]
+    keyring_backend: str = Field(alias="keyringBackend")
+    keyring_available: bool = Field(alias="keyringAvailable")
+    keyring_detail: str = Field(alias="keyringDetail")
+    env_path: str = Field(alias="envPath")
+    allowed_t212_base_urls: list[str] = Field(alias="allowedT212BaseUrls")
+    active_database: str = Field(alias="activeDatabase")
+    restart_required: bool = Field(alias="restartRequired")
+    writable: bool
+    read_only_reason: str | None = Field(alias="readOnlyReason")
+    t212_environment: str = Field(alias="t212Environment")
+    t212_pending_environment: str = Field(alias="t212PendingEnvironment")
+
+
+class CredentialWriteRequest(SettingsWriteModel):
+    """One credential. A blank value clears it rather than storing an empty string."""
+
+    field: str
+    value: str
+
+
+class Trading212ConnectRequest(SettingsWriteModel):
+    """Environment, key and secret together: they only mean anything as a set."""
+
+    environment: Literal["demo", "live"]
+    api_key: str = Field(alias="apiKey")
+    api_secret: str = Field(alias="apiSecret")
+
+
+class Trading212ConnectResponse(DTOModel):
+    environment: str
+    verified: str
+    restart_required: bool = Field(alias="restartRequired")
+    detail: str
+
+
+class CredentialWriteResponse(DTOModel):
+    field: str
+    stored_in: str = Field(alias="storedIn")
+    verified: str | None = None
+    restart_required: bool = Field(alias="restartRequired")
+    detail: str
+
+
+class EditableSettingRequest(SettingsWriteModel):
+    field: str
+    value: str
+
+
+class EditableSettingResponse(DTOModel):
+    field: str
+    env_name: str = Field(alias="envName")
+    value: str
+    restart_required: bool = Field(alias="restartRequired")
+    detail: str
+
+
+class DatabaseInfoModel(DTOModel):
+    filename: str
+    size_bytes: int = Field(alias="sizeBytes")
+    modified_at: datetime | None = Field(default=None, alias="modifiedAt")
+    active: bool
+    schema_version: str | None = Field(default=None, alias="schemaVersion")
+
+
+class DatabaseListModel(DTOModel):
+    data_dir: str = Field(alias="dataDir")
+    active: str
+    databases: list[DatabaseInfoModel]
+
+
+class DatabaseCreateRequest(SettingsWriteModel):
+    filename: str
+
+
+class DatabaseSwitchRequest(SettingsWriteModel):
+    filename: str
+
+
+class DatabaseActionResponse(DTOModel):
+    filename: str
+    created: bool
+    active: bool
+    restart_required: bool = Field(alias="restartRequired")
+    detail: str
+
+
+class RestartResponse(DTOModel):
+    scheduled: bool
+    detail: str
+
+
 class MetricValueModel(DTOModel):
     status: str
     value: float | None = None
@@ -361,6 +590,59 @@ class NavPointModel(DTOModel):
     securities_value_eur: Decimal | None = Field(default=None, alias="securitiesValueEur")
     external_flow_eur: Decimal = Field(alias="externalFlowEur")
     valuation_status: str = Field(alias="valuationStatus")
+    dividend_eur: Decimal = Field(default=Decimal("0"), alias="dividendEur")
+    interest_eur: Decimal = Field(default=Decimal("0"), alias="interestEur")
+    fee_eur: Decimal = Field(default=Decimal("0"), alias="feeEur")
+    net_deposits_to_date_eur: Decimal = Field(
+        default=Decimal("0"), alias="netDepositsToDateEur"
+    )
+
+
+class HoldingMovementModel(DTOModel):
+    """What one holding did over a period: its share of the investment result."""
+
+    ticker: str
+    status: str
+    start_value_eur: Decimal | None = Field(default=None, alias="startValueEur")
+    end_value_eur: Decimal | None = Field(default=None, alias="endValueEur")
+    start_quantity: Decimal = Field(alias="startQuantity")
+    end_quantity: Decimal = Field(alias="endQuantity")
+    bought_eur: Decimal = Field(alias="boughtEur")
+    sold_eur: Decimal = Field(alias="soldEur")
+    dividends_eur: Decimal = Field(alias="dividendsEur")
+    result_eur: Decimal | None = Field(default=None, alias="resultEur")
+    return_pct: float | None = Field(default=None, alias="returnPct")
+    price_change_pct: float | None = Field(default=None, alias="priceChangePct")
+    detail: str | None = None
+    name: str | None = None
+
+
+class PeriodSummaryModel(DTOModel):
+    """A period's change in value, split into money moved and investment result."""
+
+    key: str
+    label: str
+    status: str
+    start_date: date | None = Field(default=None, alias="startDate")
+    end_date: date | None = Field(default=None, alias="endDate")
+    start_value_eur: Decimal | None = Field(default=None, alias="startValueEur")
+    end_value_eur: Decimal | None = Field(default=None, alias="endValueEur")
+    value_change_eur: Decimal | None = Field(default=None, alias="valueChangeEur")
+    deposits_eur: Decimal = Field(alias="depositsEur")
+    withdrawals_eur: Decimal = Field(alias="withdrawalsEur")
+    net_deposits_eur: Decimal = Field(alias="netDepositsEur")
+    investment_result_eur: Decimal | None = Field(default=None, alias="investmentResultEur")
+    market_eur: Decimal | None = Field(default=None, alias="marketEur")
+    dividends_eur: Decimal = Field(alias="dividendsEur")
+    interest_eur: Decimal = Field(alias="interestEur")
+    fees_eur: Decimal = Field(alias="feesEur")
+    card_spending_eur: Decimal = Field(default=Decimal("0"), alias="cardSpendingEur")
+    cashback_eur: Decimal = Field(default=Decimal("0"), alias="cashbackEur")
+    twr: float | None = None
+    unvalued_days: int = Field(alias="unvaluedDays")
+    detail: str | None = None
+    holdings: list[HoldingMovementModel] = Field(default_factory=list)
+    unattributed_eur: Decimal | None = Field(default=None, alias="unattributedEur")
 
 
 class ContributionItemModel(DTOModel):
@@ -491,6 +773,12 @@ class PerformanceReportModel(DTOModel):
     cvar_99_10d: MetricValueModel = Field(alias="cvar99_10d")
     ff5_momentum_regression: RegressionResultModel = Field(alias="ff5MomentumRegression")
     nav_series: list[NavPointModel] = Field(alias="navSeries")
+    period_summaries: list[PeriodSummaryModel] = Field(
+        default_factory=list, alias="periodSummaries"
+    )
+    monthly_summaries: list[PeriodSummaryModel] = Field(
+        default_factory=list, alias="monthlySummaries"
+    )
     daily_twr: list[DailyReturnPointModel] = Field(alias="dailyTwr")
     rolling_volatility_30d: list[DailyReturnPointModel] = Field(alias="rollingVolatility30d")
     rolling_volatility_90d: list[DailyReturnPointModel] = Field(alias="rollingVolatility90d")

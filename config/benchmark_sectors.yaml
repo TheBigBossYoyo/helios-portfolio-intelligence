@@ -1,0 +1,79 @@
+# Benchmark sector weights and sector-return proxies, for Brinson-Fachler sector attribution.
+#
+# Helios has no licensed index-constituent feed, so it never infers a benchmark's sector
+# composition. This file is the only place that composition comes from, and it ships empty: the
+# Attribution panel reports "unavailable" until you fill in an entry for the benchmark key you
+# actually compare against (see HELIOS_ANALYTICS_PASSIVE_BENCHMARK_KEY / cspx | swda | vwrp).
+#
+# For each benchmark key you declare:
+#   as_of     the date these weights are as of (a string date, e.g. 2026-06-30)
+#   source    free-text citation for where you read the weights -- a fund factsheet URL, an index
+#             provider's fact card, etc. Not validated against anything; it exists so a reader of
+#             the report knows exactly where the numbers came from.
+#   sectors   a list of sectors. Each needs:
+#     sector          a name, e.g. "Technology" -- must match the `sector` you put on a holding's
+#                     override in config/instrument_overrides.yaml for that holding to count as
+#                     classified into this sector rather than "Unclassified"
+#     weight          the sector's share of the benchmark, as a decimal (0.24, not 24). All of a
+#                     benchmark's sector weights must sum to 1 (+/- 0.5%) -- Helios rejects the
+#                     file otherwise rather than silently normalising a typo.
+#     proxy_symbol    a ticker the configured market-data provider can price as a stand-in for
+#                     that sector's return (e.g. a Select Sector SPDR like XLK for technology).
+#                     Twelve Data's free tier covers US-listed symbols.
+#     proxy_currency  the proxy's quotation currency (e.g. USD) -- never guessed; a proxy with no
+#                     currency here is not priced.
+#
+# Example (commented out -- copy it, fill in real weights you have actually verified against the
+# cited source, and uncomment; do not ship guessed weights):
+#
+# benchmarks:
+#   vwrp:
+#     as_of: 2026-06-30
+#     source: "https://www.ftserussell.com/products/indices/all-world -- FTSE All-World factsheet"
+#     sectors:
+#       - sector: Technology
+#         weight: 0.24
+#         proxy_symbol: XLK
+#         proxy_currency: USD
+#       - sector: Financials
+#         weight: 0.18
+#         proxy_symbol: XLF
+#         proxy_currency: USD
+#       - sector: Health Care
+#         weight: 0.11
+#         proxy_symbol: XLV
+#         proxy_currency: USD
+#       - sector: Consumer Discretionary
+#         weight: 0.11
+#         proxy_symbol: XLY
+#         proxy_currency: USD
+#       - sector: Industrials
+#         weight: 0.11
+#         proxy_symbol: XLI
+#         proxy_currency: USD
+#       - sector: Communication Services
+#         weight: 0.08
+#         proxy_symbol: XLC
+#         proxy_currency: USD
+#       - sector: Consumer Staples
+#         weight: 0.06
+#         proxy_symbol: XLP
+#         proxy_currency: USD
+#       - sector: Energy
+#         weight: 0.04
+#         proxy_symbol: XLE
+#         proxy_currency: USD
+#       - sector: Materials
+#         weight: 0.03
+#         proxy_symbol: XLB
+#         proxy_currency: USD
+#       - sector: Utilities
+#         weight: 0.02
+#         proxy_symbol: XLU
+#         proxy_currency: USD
+#       - sector: Real Estate
+#         weight: 0.02
+#         proxy_symbol: XLRE
+#         proxy_currency: USD
+
+benchmarks: {}

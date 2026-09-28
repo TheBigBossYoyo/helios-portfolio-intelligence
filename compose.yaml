@@ -1,5 +1,13 @@
 name: helios
 
+# Bounded json-file logs for every service. Docker's default keeps container logs forever, which
+# on a machine left running for months is a slow disk leak. 3 x 10 MB is weeks of Helios output.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   api:
     build:
@@ -13,6 +21,14 @@ services:
         required: false
     environment:
       HELIOS_DATA_DIR: /app/data
+      # The dashboard's server-side fetches arrive from the `web` container's bridge address, not
+      # from loopback, so the settings routes have to be told that peer is the dashboard.
+      HELIOS_SETTINGS_TRUSTED_PEERS: web
+      # Compose injects the host .env as environment variables, which outrank any file the
+      # container could write, and the image has no OS keyring. A settings change saved from the
+      # dashboard would never be read, so the page is read-only here: edit .env on the host and
+      # run `docker compose up -d`.
+      HELIOS_SETTINGS_WRITABLE: "false"
     ports:
       # Loopback-only by design: the API is never exposed beyond this machine.
       - "127.0.0.1:${HELIOS_API_PORT:-8001}:8000"
@@ -25,6 +41,9 @@ services:
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro
+    logging: *logging
+    cpus: "1.0"
+    mem_limit: 1g
     restart: unless-stopped
 
   web:
@@ -43,6 +62,9 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    logging: *logging
+    cpus: "1.0"
+    mem_limit: 512m
     restart: unless-stopped
 
   worker:
@@ -68,4 +90,7 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    logging: *logging
+    cpus: "1.0"
+    mem_limit: 1g
     restart: unless-stopped

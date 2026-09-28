@@ -19,6 +19,7 @@ from .portfolio_transforms import (
     InstrumentSeed,
     dividend_from_dto,
     instrument_seed_from_metadata,
+    is_executed,
     order_history_from_dto,
     position_live_from_dto,
     transaction_from_dto,
@@ -169,7 +170,11 @@ class PortfolioSyncService:
             )
         )
 
-        observed = _collect_observed_instruments(positions, orders, dividends)
+        # Only orders that executed make an instrument part of the portfolio's history. A cancelled
+        # order for something never held would otherwise demand a price mapping it can never use.
+        observed = _collect_observed_instruments(
+            positions, [order for order in orders if is_executed(order)], dividends
+        )
         instrument_seeds = await self._build_instrument_seeds(
             observed=observed,
             metadata_items=instruments,
@@ -182,7 +187,8 @@ class PortfolioSyncService:
         )
         order_rows = await self._transform_items(
             endpoint=ORDERS_ENDPOINT,
-            items=orders,
+            # Cancelled/rejected orders carry no fill and belong in no ledger.
+            items=[order for order in orders if is_executed(order)],
             transform=order_history_from_dto,
         )
         dividend_rows = await self._transform_items(
@@ -397,7 +403,9 @@ def build_reconciliations(
         if ticker not in replayed_quantities:
             replayed_quantities[ticker] = Decimal("0")
         sign = Decimal("1") if order.side == "BUY" else Decimal("-1")
-        replayed_quantities[ticker] += order.filled_quantity * sign
+        # Magnitude, not raw value: Trading 212 already reports sells as negative quantities,
+        # and the side decides direction (see _build_daily_replay in performance.py).
+        replayed_quantities[ticker] += abs(order.filled_quantity) * sign
 
     rows: list[PositionReconciliation] = []
     for ticker in sorted(set(live_quantities) | set(replayed_quantities) | unsupported_tickers):

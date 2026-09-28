@@ -9,6 +9,36 @@
 #     preferred_exchange: NASDAQ
 #     quote_currency: USD
 #     reason: Verified manually.
+#     # Optional. Used only by Brinson-Fachler sector attribution (see
+#     # config/benchmark_sectors.yaml). Left unset, this holding is grouped as "Unclassified"
+#     # there rather than guessed at from its name or exchange -- this is the only place Helios
+#     # learns a holding's sector, and it must match a sector name declared in
+#     # config/benchmark_sectors.yaml for the holding to count as classified.
+#     sector: Technology
+#     # Optional. Extra words that identify this holding in a news headline, used only to rank
+#     # news that is about it first (an ETF has no company name to look for).
+#     news_keywords: ["S&P 500"]
 #
 # Existing camelCase aliases remain accepted for compatibility.
-overrides: []
+overrides:
+  # London Stock Exchange lines, verified 2026-09-27 against Trading 212's own instrument
+  # metadata (ISIN, name, quote currency) and its "l" = London ticker suffix. Yahoo's LSE suffix
+  # is ".L"; Helios translates it to each price provider's own format.
+  - isin: IE00BFMXXD54
+    yahoo_ticker: VUAG.L
+    preferred_exchange: LSE
+    quote_currency: GBP
+    reason: "Trading 212 VUAGl_EQ: Vanguard S&P 500 UCITS ETF (Acc), GBP line on the LSE."
+    news_keywords: ["S&P 500"]
+  - isin: IE00B4NCWG09
+    yahoo_ticker: SSLN.L
+    preferred_exchange: LSE
+    quote_currency: GBX
+    reason: "Trading 212 SSLNl_EQ: iShares Physical Silver ETC, quoted in pence (GBX) on the LSE."
+    news_keywords: ["silver price", "silver prices"]
+  - isin: IE00BK5BQT80
+    yahoo_ticker: VWRP.L
+    preferred_exchange: LSE
+    quote_currency: GBP
+    reason: "Trading 212 VWRPl_EQ: Vanguard FTSE All-World UCITS ETF (Acc), GBP line on the LSE."
+    news_keywords: ["FTSE All-World"]

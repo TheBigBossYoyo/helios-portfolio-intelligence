@@ -24,6 +24,15 @@ class NewsService(Protocol):
     async def sync(self) -> object: ...
 
 
+class CardRefreshOutcome(Protocol):
+    @property
+    def action(self) -> str: ...
+
+
+class CardService(Protocol):
+    async def refresh(self, *, force: bool = False) -> CardRefreshOutcome: ...
+
+
 class WorkerContainer(Protocol):
     @property
     def portfolio_sync_service(self) -> SyncService: ...
@@ -33,6 +42,9 @@ class WorkerContainer(Protocol):
 
     @property
     def news_sync_service(self) -> NewsService: ...
+
+    @property
+    def card_history_service(self) -> CardService: ...
 
     async def startup(self) -> None: ...
 
@@ -101,6 +113,18 @@ class HeliosWorker:
                     max_instances=1,
                     coalesce=True,
                 )
+            if (
+                self._settings.card_history_enabled
+                and self._settings.t212_credentials() is not None
+            ):
+                self._scheduler.add_job(
+                    self._run_scheduled_card_history,
+                    trigger="interval",
+                    minutes=self._settings.card_history_poll_minutes,
+                    id="card-history",
+                    max_instances=1,
+                    coalesce=True,
+                )
             # News needs no Trading 212 credentials, so it is scheduled either way. With no
             # feeds configured it is a no-op that reports why.
             self._scheduler.add_job(
@@ -145,6 +169,26 @@ class HeliosWorker:
             await self._container.performance_replay_service.replay()
         except Exception as exc:
             self._logger.warning("worker_sync_failed", error=exc.__class__.__name__)
+            return
+        if self._settings.refresh_after_sync:
+            # New holdings deserve their headlines now, not at the next three-hourly news run.
+            await self._run_scheduled_news_sync()
+
+    async def _run_scheduled_card_history(self) -> None:
+        """Collect a finished export, or request one when a day has passed since the last.
+
+        A newly downloaded export relabels card payments and cashback, so history is replayed
+        straight after it lands.
+        """
+
+        if self._container is None:
+            return
+        try:
+            result = await self._container.card_history_service.refresh()
+            if result.action == "downloaded":
+                await self._container.performance_replay_service.replay()
+        except Exception as exc:
+            self._logger.warning("worker_card_history_failed", error=exc.__class__.__name__)
 
     async def _run_scheduled_news_sync(self) -> None:
         if self._container is None:

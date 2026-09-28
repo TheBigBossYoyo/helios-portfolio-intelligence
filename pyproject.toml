@@ -39,11 +39,18 @@ dev = [
   "types-defusedxml>=0.7,<1.0",
   "types-setuptools>=75.1,<76.0",
 ]
+# The desktop launcher's tray icon. Optional: `helios-desktop` runs without it, in a console.
+desktop = [
+  "Pillow>=11.0,<13.0",
+  "pystray>=0.19,<1.0",
+]
 
 [project.scripts]
 helios = "helios.cli:main"
 helios-migrate = "helios.db:migration_main"
+helios-preflight = "helios.preflight:main"
 helios-worker = "helios.worker:main"
+helios-desktop = "helios.desktop:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -75,7 +82,7 @@ mypy_path = ["src"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["apscheduler.*", "keyring.*", "scipy.*", "structlog.*"]
+module = ["apscheduler.*", "keyring.*", "pystray.*", "scipy.*", "structlog.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

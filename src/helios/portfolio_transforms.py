@@ -98,26 +98,40 @@ def transaction_from_dto(dto: TransactionItem) -> Transaction:
     )
 
 
+def is_executed(dto: HistoricalOrderItem) -> bool:
+    """Whether an order produced a fill. Unfilled orders changed no position and moved no cash.
+
+    The ledger is a record of fills, so an order that was cancelled or rejected before
+    executing has nothing to contribute to it. It is skipped, not failed.
+    """
+
+    return dto.fill is not None
+
+
 def order_history_from_dto(dto: HistoricalOrderItem) -> OrderHistory:
-    if dto.fill.id is None:
+    fill = dto.fill
+    if fill is None:
+        # Callers filter with is_executed first; reaching here is a programming error.
+        raise DomainTransformError("Order never executed; it has no fill to record")
+    if fill.id is None:
         raise DomainTransformError("Order fill is missing a stable id")
     order = dto.order
     instrument = order.instrument
-    wallet_impact = dto.fill.wallet_impact
+    wallet_impact = fill.wallet_impact
     return OrderHistory(
-        fill_id=str(dto.fill.id),
+        fill_id=str(fill.id),
         order_id=str(order.id) if order.id is not None else None,
-        fill_timestamp=dto.fill.filled_at,
+        fill_timestamp=fill.filled_at,
         t212_ticker=(instrument.ticker if instrument is not None else order.ticker),
         isin=instrument.isin if instrument is not None else None,
         instrument_name=instrument.name if instrument is not None else None,
         instrument_currency_code=instrument.currency if instrument is not None else order.currency,
         side=order.side,
         order_type=order.type,
-        fill_type=dto.fill.type,
+        fill_type=fill.type,
         order_quantity=order.quantity,
-        filled_quantity=dto.fill.quantity,
-        fill_price=dto.fill.price,
+        filled_quantity=fill.quantity,
+        fill_price=fill.price,
         order_filled_value=order.filled_value,
         limit_price=order.limit_price,
         stop_price=order.stop_price,

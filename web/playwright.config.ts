@@ -1,7 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
+import { STUB_API_PORT, WEB_PORT } from "./tests/e2e/ports";
 
-const STUB_API_PORT = 8099;
-const WEB_PORT = 3099;
+/** A separate build directory per run, so two runs never overwrite each other's `.next`. */
+const DIST_DIR = process.env.E2E_DIST_DIR || ".next";
 
 /**
  * E2E runs the real production build against a stubbed Helios API, so a run needs no Trading 212
@@ -35,7 +36,7 @@ export default defineConfig({
     },
     {
       command: `npm run build && npx next start --port ${WEB_PORT} --hostname 127.0.0.1`,
-      env: { HELIOS_API_URL: `http://127.0.0.1:${STUB_API_PORT}` },
+      env: { HELIOS_API_URL: `http://127.0.0.1:${STUB_API_PORT}`, NEXT_DIST_DIR: DIST_DIR },
       url: `http://127.0.0.1:${WEB_PORT}`,
       reuseExistingServer: !process.env.CI,
       timeout: 180_000,

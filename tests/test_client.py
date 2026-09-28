@@ -261,7 +261,7 @@ async def test_history_orders_follow_next_page_path_and_snapshot_each_page() -> 
 
     items = await client.get_history_orders()
 
-    assert [item.fill.id for item in items] == ["fill-1", "fill-2"]
+    assert [item.fill.id for item in items if item.fill is not None] == ["fill-1", "fill-2"]
     assert seen_urls == [
         "https://demo.trading212.com/api/v0/equity/history/orders?limit=50",
         "https://demo.trading212.com/api/v0/equity/history/orders?cursor=1",

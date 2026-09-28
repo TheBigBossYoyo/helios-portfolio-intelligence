@@ -4,15 +4,18 @@ from dataclasses import dataclass
 from typing import Protocol, cast, runtime_checkable
 
 from fastapi import Request
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from .ai import AiAnalysisService, ClaudeAiClient
+from .card_history import CardHistoryService
 from .client import Trading212Client
 from .config import Settings, load_settings
 from .db import create_engine, create_session_factory, migrate_database
-from .news import NewsHttpClient, NewsSyncService
+from .news import NewsHttpClient, NewsReparseService, NewsSyncService
 from .performance import (
     AlphaVantageMarketDataProvider,
+    CompositeMarketDataProvider,
     EcbFxRateProvider,
     KenFrenchFactorDataProvider,
     MarketDataProvider,
@@ -27,6 +30,7 @@ from .raw_snapshots import RawSnapshotRepository
 from .reporting import PortfolioQualityReportService
 from .resolver import OpenFigiResolver
 from .services import Trading212Service
+from .t212_reparse import T212ReparseService
 from .thesis import ThesisService
 
 
@@ -43,9 +47,12 @@ class Container:
     portfolio_quality_report_service: PortfolioQualityReportService
     performance_replay_service: PerformanceReplayService
     news_sync_service: NewsSyncService
+    news_reparse_service: NewsReparseService
+    t212_reparse_service: T212ReparseService
     ai_analysis_service: AiAnalysisService
     thesis_service: ThesisService
     t212_service: Trading212Service
+    card_history_service: CardHistoryService
     market_data_provider: object
     fx_rate_provider: object
     factor_data_provider: object
@@ -75,12 +82,27 @@ class AsyncCloseable(Protocol):
     async def aclose(self) -> None: ...
 
 
-def _build_market_data_provider(settings: Settings) -> MarketDataProvider:
-    if settings.market_data_provider == "twelvedata":
-        return TwelveDataMarketDataProvider(settings)
-    if settings.market_data_provider == "alphavantage":
-        return AlphaVantageMarketDataProvider(settings)
+def _build_single_market_data_provider(
+    settings: Settings, provider_name: str, api_key: SecretStr | None
+) -> MarketDataProvider:
+    if provider_name == "twelvedata":
+        return TwelveDataMarketDataProvider(settings, api_key=api_key)
+    if provider_name == "alphavantage":
+        return AlphaVantageMarketDataProvider(settings, api_key=api_key)
     return NullMarketDataProvider()
+
+
+def _build_market_data_provider(settings: Settings) -> MarketDataProvider:
+    primary = _build_single_market_data_provider(
+        settings, settings.market_data_provider, settings.market_data_api_key
+    )
+    fallback_provider = settings.effective_market_data_fallback_provider
+    if fallback_provider == "disabled":
+        return primary
+    fallback = _build_single_market_data_provider(
+        settings, fallback_provider, settings.market_data_fallback_api_key
+    )
+    return CompositeMarketDataProvider(primary, fallback)
 
 
 def build_container(settings: Settings | None = None) -> Container:
@@ -117,12 +139,19 @@ def build_container(settings: Settings | None = None) -> Container:
     news_service = NewsSyncService(
         portfolio_repository, resolved_settings, news_feed_provider.adapters
     )
+    news_reparse_service = NewsReparseService(
+        portfolio_repository, resolved_settings, news_feed_provider.adapters
+    )
+    t212_reparse_service = T212ReparseService(
+        portfolio_repository, snapshot_repository, resolved_settings, session_factory
+    )
     ai_client = ClaudeAiClient(resolved_settings)
     ai_service = AiAnalysisService(
         portfolio_repository, resolved_settings, performance_service, ai_client
     )
     thesis_service = ThesisService(portfolio_repository)
     service = Trading212Service(client)
+    card_history_service = CardHistoryService(portfolio_repository, client, resolved_settings)
     return Container(
         settings=resolved_settings,
         engine=engine,
@@ -135,9 +164,12 @@ def build_container(settings: Settings | None = None) -> Container:
         portfolio_quality_report_service=report_service,
         performance_replay_service=performance_service,
         news_sync_service=news_service,
+        news_reparse_service=news_reparse_service,
+        t212_reparse_service=t212_reparse_service,
         ai_analysis_service=ai_service,
         thesis_service=thesis_service,
         t212_service=service,
+        card_history_service=card_history_service,
         market_data_provider=market_data_provider,
         fx_rate_provider=fx_rate_provider,
         factor_data_provider=factor_data_provider,
@@ -166,8 +198,20 @@ def get_performance_replay_service(request: Request) -> PerformanceReplayService
     return get_container(request).performance_replay_service
 
 
+def get_card_history_service(request: Request) -> CardHistoryService:
+    return get_container(request).card_history_service
+
+
 def get_news_sync_service(request: Request) -> NewsSyncService:
     return get_container(request).news_sync_service
+
+
+def get_news_reparse_service(request: Request) -> NewsReparseService:
+    return get_container(request).news_reparse_service
+
+
+def get_t212_reparse_service(request: Request) -> T212ReparseService:
+    return get_container(request).t212_reparse_service
 
 
 def get_ai_analysis_service(request: Request) -> AiAnalysisService:

@@ -37,25 +37,21 @@ export function DataTable<T>({
   maxHeight,
 }: DataTableProps<T>) {
   if (rows.length === 0) {
-    return (
-      <p className="px-1 py-6 text-center font-mono text-xs text-neutral-600">
-        {empty ?? "No rows"}
-      </p>
-    );
+    return <p className="px-1 py-8 text-center text-sm text-ink-3">{empty ?? "No rows"}</p>;
   }
 
   return (
     <div
-      className="-mx-1 overflow-auto px-1"
+      className="overflow-auto rounded-xl border border-border"
       style={maxHeight ? { maxHeight } : undefined}
     >
-      <table className="w-full min-w-full border-collapse text-xs">
+      <table className="w-full min-w-full border-collapse text-sm">
         {caption ? <caption className="sr-only">{caption}</caption> : null}
-        <thead className={maxHeight ? "sticky top-0 z-10 bg-[#121214]" : undefined}>
+        <thead className="sticky top-0 z-10 bg-surface-2">
           <tr className="border-b border-border">
             {columns.map((column) => (
               <th
-                className={`whitespace-nowrap px-2 py-2 text-[10px] font-medium uppercase tracking-wider text-neutral-500 ${
+                className={`whitespace-nowrap px-3 py-2.5 text-xs font-medium text-ink-3 ${
                   column.numeric ? "text-right" : "text-left"
                 }`}
                 key={column.key}
@@ -68,11 +64,14 @@ export function DataTable<T>({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr className="border-b border-neutral-900 last:border-b-0" key={rowKey(row)}>
+            <tr
+              className="border-b border-border transition-colors last:border-b-0 hover:bg-surface-2"
+              key={rowKey(row)}
+            >
               {columns.map((column) => (
                 <td
-                  className={`whitespace-nowrap px-2 py-2 text-neutral-300 ${
-                    column.numeric ? "text-right tabular-nums" : "text-left"
+                  className={`whitespace-nowrap px-3 py-2.5 text-ink-2 ${
+                    column.numeric ? "tabular-nums text-right text-ink" : "text-left"
                   }`}
                   key={column.key}
                 >

@@ -6,11 +6,12 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
+from typing import cast
 
 import httpx
 import numpy as np
 import pytest
-from hypothesis import given
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -31,21 +32,27 @@ from helios.performance import (
     ANNUALIZATION_DAYS,
     FACTOR_NAMES,
     ONE,
+    AlphaVantageMarketDataProvider,
     BenchmarkDefinition,
+    CompositeMarketDataProvider,
     DailyPricePoint,
     DailyReturnPoint,
     EcbFxRateProvider,
     FactorObservation,
     FxRatePoint,
     KenFrenchFactorDataProvider,
+    MarketDataProvider,
     MarketDataProviderError,
     PerformanceReplayService,
     PriceRequest,
     TwelveDataMarketDataProvider,
     UnknownCurrencyError,
+    _alphavantage_symbol,
     _merge_fx_maps,
     _merge_market_price_maps,
     _missing_price_requests,
+    _split_yahoo_symbol,
+    _twelvedata_symbol_params,
     annualized_return_from_twr,
     brinson_fachler_attribution,
     compute_contributions,
@@ -58,7 +65,12 @@ from helios.performance import (
     historical_var_cvar,
     parse_ken_french_csv,
 )
-from helios.portfolio_repository import PortfolioRepository
+from helios.portfolio_repository import (
+    PERFORMANCE_REPLAY_LEASE_ENDPOINT,
+    PORTFOLIO_SYNC_LEASE_ENDPOINT,
+    PortfolioRepository,
+    SyncAlreadyRunningError,
+)
 from helios.rate_limit import Clock
 
 USD_SETTINGS_OVERRIDES = {"benchmark_vwrp_currency": "USD"}
@@ -89,8 +101,9 @@ class FakeMarketDataProvider:
         requests: Sequence[PriceRequest],
         start_date: date,
         end_date: date,
+        skip_notes: dict[str, str] | None = None,
     ) -> dict[str, list[DailyPricePoint]]:
-        del start_date, end_date
+        del start_date, end_date, skip_notes
         self.seen_requests = list(requests)
         return {
             request.key: self.prices[request.key]
@@ -451,6 +464,8 @@ def test_var_detail_discloses_the_flat_day_share() -> None:
         max_size=60,
     )
 )
+# Generation speed depends on machine load, not on the property under test.
+@settings(suppress_health_check=[HealthCheck.too_slow])
 def test_historical_var_cvar_tail_is_not_above_var(returns: list[float]) -> None:
     metrics = historical_var_cvar(returns)
 
@@ -886,6 +901,98 @@ async def test_replay_marks_partial_nav_when_price_missing(tmp_path: Path) -> No
     assert summary.missing_price_symbols == ["ABC_US_EQ"]
     assert nav_rows[0].valuation_status == "PARTIAL"
     assert nav_rows[0].nav_eur is None
+
+
+@pytest.mark.asyncio
+async def test_replay_surfaces_a_provider_skip_reason_in_its_notes(tmp_path: Path) -> None:
+    """A symbol a provider could not price still needs its *reason* somewhere the operator sees.
+
+    ``missing_price_symbols`` already says *which* holding stayed unpriced; this checks the
+    provider's own explanation (bad plan, unknown symbol, ...) reaches the replay's notes rather
+    than being discarded once the fetch returns.
+    """
+    repository, session_factory = await _repository_and_session_factory(
+        tmp_path, "skip_reason.sqlite3"
+    )
+    async with session_factory() as session:
+        async with session.begin():
+            session.add(
+                Instrument(
+                    t212_ticker="VUAGl_EQ",
+                    yahoo_ticker="VUAG.L",
+                    currency_code="GBP",
+                    mapping_status="resolved",
+                )
+            )
+            session.add(
+                OrderHistory(
+                    fill_id="buy-1",
+                    fill_timestamp=datetime(2024, 1, 5, tzinfo=UTC),
+                    t212_ticker="VUAGl_EQ",
+                    side="BUY",
+                    fill_type="TRADE",
+                    filled_quantity=Decimal("1"),
+                    wallet_currency="EUR",
+                    wallet_net_value=Decimal("90"),
+                )
+            )
+            session.add(
+                Transaction(
+                    reference="dep-1",
+                    ts=datetime(2024, 1, 5, tzinfo=UTC),
+                    transaction_type="DEPOSIT",
+                    currency_code="EUR",
+                    amount=Decimal("100"),
+                )
+            )
+
+    class SkippingProvider:
+        async def fetch_daily_closes(
+            self,
+            *,
+            requests: Sequence[PriceRequest],
+            start_date: date,
+            end_date: date,
+            skip_notes: dict[str, str] | None = None,
+        ) -> dict[str, list[DailyPricePoint]]:
+            del start_date, end_date
+            if skip_notes is not None:
+                for request in requests:
+                    if request.key == "VUAGl_EQ":
+                        skip_notes[request.key] = (
+                            "Twelve Data: symbol VUAG is available starting with the Grow plan "
+                            "(code 403)"
+                        )
+            return {}
+
+    service = PerformanceReplayService(
+        repository,
+        Settings(data_dir=tmp_path),
+        cast(MarketDataProvider, SkippingProvider()),
+        FakeFxRateProvider(
+            {
+                "GBP": [
+                    FxRatePoint(
+                        date(2024, 1, 5),
+                        "GBP",
+                        Decimal("1.1"),
+                        "fixture",
+                        date(2024, 1, 5),
+                        "EXACT",
+                        False,
+                    )
+                ]
+            }
+        ),
+        clock=FixedClock(datetime(2024, 1, 5, tzinfo=UTC)),
+    )
+
+    summary = await service.replay(as_of=date(2024, 1, 5))
+
+    assert summary.missing_price_symbols == ["VUAGl_EQ"]
+    assert any(
+        "VUAGl_EQ" in note and "Grow plan" in note for note in summary.notes
+    ), summary.notes
 
 
 @pytest.mark.asyncio
@@ -1327,6 +1434,458 @@ async def test_twelvedata_error_payload_raises_instead_of_looking_like_an_empty_
         )
 
 
+# ---------------------------------------------------------------------------
+# Symbol translation
+# ---------------------------------------------------------------------------
+
+
+def test_split_yahoo_symbol_recognises_only_the_lse_suffix() -> None:
+    assert _split_yahoo_symbol("VUAG.L") == ("VUAG", "LSE")
+    assert _split_yahoo_symbol("SSLN.L") == ("SSLN", "LSE")
+    # A bare US ticker (resolver.py never leaves a "." in one -- BRK.B becomes BRK-B) passes
+    # through untouched, with no exchange.
+    assert _split_yahoo_symbol("NVDA") == ("NVDA", None)
+    assert _split_yahoo_symbol("BRK-B") == ("BRK-B", None)
+
+
+def test_twelvedata_symbol_params_add_exchange_only_for_lse() -> None:
+    assert _twelvedata_symbol_params("NVDA") == {"symbol": "NVDA"}
+    assert _twelvedata_symbol_params("VUAG.L") == {"symbol": "VUAG", "exchange": "LSE"}
+
+
+def test_alphavantage_symbol_translates_the_lse_suffix() -> None:
+    assert _alphavantage_symbol("NVDA") == "NVDA"
+    assert _alphavantage_symbol("VUAG.L") == "VUAG.LON"
+
+
+async def test_twelvedata_sends_the_translated_symbol_and_exchange_on_the_wire(
+    tmp_path: Path,
+) -> None:
+    """The request Twelve Data actually receives must carry the translated symbol, not Yahoo's."""
+    captured: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json=_twelvedata_payload("GBP"))
+
+    # A paid plan that reaches London: only then is an LSE symbol sent to Twelve Data at all.
+    settings = Settings(
+        data_dir=tmp_path,
+        market_data_provider="twelvedata",
+        market_data_api_key="test-key",
+        twelvedata_exchanges="US,LSE",
+    )
+    provider = TwelveDataMarketDataProvider(settings)
+    provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    await provider.fetch_daily_closes(
+        requests=[PriceRequest("holding:VUAG", "VUAG.L", "GBP")],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 7),
+    )
+
+    assert len(captured) == 1
+    params = captured[0].url.params
+    assert params["symbol"] == "VUAG"
+    assert params["exchange"] == "LSE"
+
+
+async def test_alphavantage_sends_the_translated_symbol_on_the_wire(tmp_path: Path) -> None:
+    captured: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"Time Series (Daily)": {}})
+
+    provider, _ = _alphavantage_provider(tmp_path, handler)
+
+    await provider.fetch_daily_closes(
+        requests=[PriceRequest("holding:VUAG", "VUAG.L", "GBX")],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 7),
+    )
+
+    assert len(captured) == 1
+    assert captured[0].url.params["symbol"] == "VUAG.LON"
+
+
+# ---------------------------------------------------------------------------
+# Per-symbol vs account-level failures
+# ---------------------------------------------------------------------------
+
+
+async def test_twelvedata_symbol_level_error_is_skipped_while_other_symbols_still_price(
+    tmp_path: Path,
+) -> None:
+    """A symbol the free plan doesn't cover must not abort pricing for the rest of the batch."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("symbol") == "VUAG":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 403,
+                    "message": "symbol VUAG is available starting with the Grow plan",
+                    "status": "error",
+                },
+            )
+        return httpx.Response(200, json=_twelvedata_payload("USD"))
+
+    # A paid plan that reaches London: only then is an LSE symbol sent to Twelve Data at all.
+    settings = Settings(
+        data_dir=tmp_path,
+        market_data_provider="twelvedata",
+        market_data_api_key="test-key",
+        twelvedata_exchanges="US,LSE",
+    )
+    provider = TwelveDataMarketDataProvider(settings)
+    provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    skip_notes: dict[str, str] = {}
+    result = await provider.fetch_daily_closes(
+        requests=[
+            PriceRequest("holding:VUAG", "VUAG.L", "GBP"),
+            PriceRequest("bench:cspx", "IVV", None),
+        ],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 7),
+        skip_notes=skip_notes,
+    )
+
+    assert "holding:VUAG" not in result
+    assert len(result["bench:cspx"]) == 2
+    assert "Grow plan" in skip_notes["holding:VUAG"]
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        (401, "Invalid API key"),
+        (429, "You have run out of API credits"),
+    ],
+)
+async def test_twelvedata_account_level_error_raises_instead_of_being_skipped(
+    tmp_path: Path, code: int, message: str
+) -> None:
+    provider, _ = _twelvedata_provider(
+        tmp_path, {"code": code, "message": message, "status": "error"}
+    )
+
+    with pytest.raises(MarketDataProviderError):
+        await provider.fetch_daily_closes(
+            requests=[PriceRequest("holding:X", "X", "USD")],
+            start_date=date(2026, 8, 1),
+            end_date=date(2026, 8, 7),
+        )
+
+
+def _alphavantage_provider(
+    tmp_path: Path, handler: object
+) -> tuple[AlphaVantageMarketDataProvider, httpx.AsyncClient]:
+    settings = Settings(
+        data_dir=tmp_path, market_data_provider="alphavantage", market_data_api_key="test-key"
+    )
+    provider = AlphaVantageMarketDataProvider(settings)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[arg-type]
+    provider._client = client
+    return provider, client
+
+
+def _alphavantage_daily_payload() -> dict[str, object]:
+    return {
+        "Meta Data": {"1. Information": "Daily Prices", "2. Symbol": "TSCO.LON"},
+        "Time Series (Daily)": {
+            "2026-08-06": {
+                "1. open": "270.00",
+                "2. high": "271.00",
+                "3. low": "269.00",
+                "4. close": "270.50",
+                "5. volume": "1000",
+            },
+            "2026-08-05": {
+                "1. open": "268.00",
+                "2. high": "269.00",
+                "3. low": "267.00",
+                "4. close": "268.75",
+                "5. volume": "900",
+            },
+        },
+    }
+
+
+async def test_alphavantage_uses_the_free_daily_endpoint_with_compact_outputsize(
+    tmp_path: Path,
+) -> None:
+    """TIME_SERIES_DAILY_ADJUSTED and outputsize=full are premium-only; the free key needs the
+    unadjusted daily series with the compact (~100 point) window."""
+    captured: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json=_alphavantage_daily_payload())
+
+    provider, _ = _alphavantage_provider(tmp_path, handler)
+
+    result = await provider.fetch_daily_closes(
+        requests=[PriceRequest("holding:TSCO", "TSCO.L", "GBX")],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 7),
+    )
+
+    assert len(captured) == 1
+    params = captured[0].url.params
+    assert params["function"] == "TIME_SERIES_DAILY"
+    assert params["outputsize"] == "compact"
+    assert "adjusted" not in str(params)
+
+    points = result["holding:TSCO"]
+    assert [point.close_price for point in points] == [Decimal("268.75"), Decimal("270.50")]
+    # GBX (pence) is passed through untouched -- Alpha Vantage never reports a currency, and the
+    # only source of truth here is the trusted instrument currency on the request.
+    assert {point.currency_code for point in points} == {"GBX"}
+
+
+async def test_alphavantage_error_message_is_skipped_not_raised(tmp_path: Path) -> None:
+    """'Error Message' means this one symbol -- unknown ticker, bad parameter -- not the account."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200, json={"Error Message": "Invalid API call. Please retry or visit the documentation"}
+        )
+
+    provider, _ = _alphavantage_provider(tmp_path, handler)
+
+    skip_notes: dict[str, str] = {}
+    result = await provider.fetch_daily_closes(
+        requests=[PriceRequest("holding:X", "X", "USD")],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 7),
+        skip_notes=skip_notes,
+    )
+
+    assert result == {}
+    assert "Invalid API call" in skip_notes["holding:X"]
+
+
+@pytest.mark.parametrize("key", ["Note", "Information"])
+async def test_alphavantage_rate_limit_keys_raise_instead_of_being_skipped(
+    tmp_path: Path, key: str
+) -> None:
+    """'Note'/'Information' mean the free plan's rate or daily ceiling was hit -- every other
+    request in the batch would fail the same way, so this must not look like an empty series."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                key: (
+                    "Thank you for using Alpha Vantage! Our standard API rate limit is "
+                    "25 requests per day"
+                )
+            },
+        )
+
+    provider, _ = _alphavantage_provider(tmp_path, handler)
+
+    with pytest.raises(MarketDataProviderError, match="25 requests per day"):
+        await provider.fetch_daily_closes(
+            requests=[PriceRequest("holding:X", "X", "USD")],
+            start_date=date(2026, 8, 1),
+            end_date=date(2026, 8, 7),
+        )
+
+
+async def test_alphavantage_skips_a_request_with_no_trusted_currency(tmp_path: Path) -> None:
+    """Alpha Vantage never reports a quotation currency; without trusted metadata it must not
+    guess (historically USD), which would silently mis-value a non-USD listing."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, json=_alphavantage_daily_payload())
+
+    provider, _ = _alphavantage_provider(tmp_path, handler)
+
+    skip_notes: dict[str, str] = {}
+    result = await provider.fetch_daily_closes(
+        requests=[PriceRequest("holding:TSCO", "TSCO.L", None)],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 7),
+        skip_notes=skip_notes,
+    )
+
+    assert result == {}
+    assert "holding:TSCO" in skip_notes
+
+
+# ---------------------------------------------------------------------------
+# Composite (primary + fallback) provider
+# ---------------------------------------------------------------------------
+
+
+async def test_composite_provider_only_asks_the_fallback_for_the_primarys_gaps() -> None:
+    """The fallback's tiny quota must be spent only on what the primary genuinely couldn't price."""
+    primary = FakeMarketDataProvider(
+        {
+            "holding:NVDA": [
+                DailyPricePoint(
+                    date(2026, 8, 5), Decimal("100"), "USD", "twelvedata", date(2026, 8, 5), "EXACT"
+                )
+            ]
+        }
+    )
+    fallback = FakeMarketDataProvider(
+        {
+            "holding:VUAG": [
+                DailyPricePoint(
+                    date(2026, 8, 5),
+                    Decimal("90"),
+                    "GBP",
+                    "alphavantage",
+                    date(2026, 8, 5),
+                    "EXACT",
+                )
+            ]
+        }
+    )
+    composite = CompositeMarketDataProvider(
+        cast(MarketDataProvider, primary), cast(MarketDataProvider, fallback)
+    )
+
+    result = await composite.fetch_daily_closes(
+        requests=[
+            PriceRequest("holding:NVDA", "NVDA", "USD"),
+            PriceRequest("holding:VUAG", "VUAG.L", "GBP"),
+        ],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 7),
+    )
+
+    assert set(result) == {"holding:NVDA", "holding:VUAG"}
+    assert [request.key for request in fallback.seen_requests] == ["holding:VUAG"]
+
+
+async def test_composite_provider_never_asks_the_fallback_when_the_primary_covers_everything() -> (
+    None
+):
+    primary = FakeMarketDataProvider(
+        {
+            "holding:NVDA": [
+                DailyPricePoint(
+                    date(2026, 8, 5), Decimal("100"), "USD", "twelvedata", date(2026, 8, 5), "EXACT"
+                )
+            ]
+        }
+    )
+    fallback = FakeMarketDataProvider({})
+    composite = CompositeMarketDataProvider(
+        cast(MarketDataProvider, primary), cast(MarketDataProvider, fallback)
+    )
+
+    await composite.fetch_daily_closes(
+        requests=[PriceRequest("holding:NVDA", "NVDA", "USD")],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 7),
+    )
+
+    assert fallback.seen_requests == []
+
+
+async def test_composite_provider_clears_a_skip_note_once_the_fallback_fills_the_gap() -> None:
+    class SkippingPrimary:
+        async def fetch_daily_closes(
+            self,
+            *,
+            requests: Sequence[PriceRequest],
+            start_date: date,
+            end_date: date,
+            skip_notes: dict[str, str] | None = None,
+        ) -> dict[str, list[DailyPricePoint]]:
+            del start_date, end_date
+            if skip_notes is not None:
+                for request in requests:
+                    skip_notes[request.key] = "Twelve Data: not covered by the free plan"
+            return {}
+
+    fallback = FakeMarketDataProvider(
+        {
+            "holding:VUAG": [
+                DailyPricePoint(
+                    date(2026, 8, 5),
+                    Decimal("90"),
+                    "GBP",
+                    "alphavantage",
+                    date(2026, 8, 5),
+                    "EXACT",
+                )
+            ]
+        }
+    )
+    composite = CompositeMarketDataProvider(
+        cast(MarketDataProvider, SkippingPrimary()), cast(MarketDataProvider, fallback)
+    )
+
+    skip_notes: dict[str, str] = {}
+    result = await composite.fetch_daily_closes(
+        requests=[PriceRequest("holding:VUAG", "VUAG.L", "GBP")],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 7),
+        skip_notes=skip_notes,
+    )
+
+    assert "holding:VUAG" in result
+    assert "holding:VUAG" not in skip_notes
+
+
+async def test_composite_provider_reports_both_reasons_when_the_fallback_also_fails() -> None:
+    class SkippingPrimary:
+        async def fetch_daily_closes(
+            self,
+            *,
+            requests: Sequence[PriceRequest],
+            start_date: date,
+            end_date: date,
+            skip_notes: dict[str, str] | None = None,
+        ) -> dict[str, list[DailyPricePoint]]:
+            del start_date, end_date
+            if skip_notes is not None:
+                for request in requests:
+                    skip_notes[request.key] = "Twelve Data: not covered by the free plan"
+            return {}
+
+    class SkippingFallback:
+        async def fetch_daily_closes(
+            self,
+            *,
+            requests: Sequence[PriceRequest],
+            start_date: date,
+            end_date: date,
+            skip_notes: dict[str, str] | None = None,
+        ) -> dict[str, list[DailyPricePoint]]:
+            del start_date, end_date
+            if skip_notes is not None:
+                for request in requests:
+                    skip_notes[request.key] = "Alpha Vantage: unknown symbol"
+            return {}
+
+    composite = CompositeMarketDataProvider(
+        cast(MarketDataProvider, SkippingPrimary()), cast(MarketDataProvider, SkippingFallback())
+    )
+
+    skip_notes: dict[str, str] = {}
+    result = await composite.fetch_daily_closes(
+        requests=[PriceRequest("holding:GHOST", "GHOST.L", "GBP")],
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 7),
+        skip_notes=skip_notes,
+    )
+
+    assert result == {}
+    assert "Twelve Data" in skip_notes["holding:GHOST"]
+    assert "Alpha Vantage" in skip_notes["holding:GHOST"]
+
+
 def _ken_french_zip(name: str, body: str) -> bytes:
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -1420,3 +1979,161 @@ def test_factor_regression_distinguishes_unconfigured_from_no_published_overlap(
     assert "trails the present" in str(configured.detail)
     assert "2026-08-05" in str(configured.detail)
     assert "disabled" not in str(configured.detail)
+
+
+# ---------------------------------------------------------------------------
+# Replay concurrency
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_replay_refuses_to_run_concurrently(tmp_path: Path) -> None:
+    """A second replay must be refused while the first holds the lease.
+
+    Replay rewrites the whole daily_holdings/daily_nav pair and re-fetches every price, so two
+    concurrent runs duplicate provider calls against a metered quota and race to be the last
+    writer. Once the dashboard has a Replay button, a double-click is exactly this case.
+    """
+    repository, session_factory = await _repository_and_session_factory(
+        tmp_path, "replay-lease.sqlite3"
+    )
+    await _seed_single_buy(session_factory)
+    service = _replay_service(repository, tmp_path)
+
+    # Stand in for a replay already in flight by holding its lease.
+    held = await repository.acquire_performance_replay_lease(
+        acquired_at=datetime(2024, 1, 6, tzinfo=UTC), lease_minutes=15
+    )
+
+    with pytest.raises(SyncAlreadyRunningError):
+        await service.replay(as_of=date(2024, 1, 6))
+
+    # The refusal must leave the in-flight run's lease untouched, not steal or clear it.
+    await repository.release_performance_replay_lease(
+        lease=held,
+        completed_at=datetime(2024, 1, 6, tzinfo=UTC),
+        succeeded=True,
+        error_message=None,
+    )
+    summary = await service.replay(as_of=date(2024, 1, 6))
+    assert summary.nav_written > 0
+
+
+@pytest.mark.asyncio
+async def test_replay_releases_its_lease_after_a_failure(tmp_path: Path) -> None:
+    """A crashed replay must not lock the key until the stale cutoff expires."""
+    repository, session_factory = await _repository_and_session_factory(
+        tmp_path, "replay-lease-failure.sqlite3"
+    )
+    await _seed_single_buy(session_factory)
+
+    class ExplodingMarketData:
+        async def fetch_daily_closes(self, **_: object) -> dict[str, list[DailyPricePoint]]:
+            raise RuntimeError("provider down")
+
+    failing = PerformanceReplayService(
+        repository,
+        Settings(data_dir=tmp_path),
+        cast(MarketDataProvider, ExplodingMarketData()),
+        FakeFxRateProvider({}),
+        clock=FixedClock(datetime(2024, 1, 6, tzinfo=UTC)),
+    )
+
+    with pytest.raises(RuntimeError):
+        await failing.replay(as_of=date(2024, 1, 6))
+
+    # The lease is free again, so a healthy replay runs immediately rather than waiting it out.
+    summary = await _replay_service(repository, tmp_path).replay(as_of=date(2024, 1, 6))
+    assert summary.nav_written > 0
+
+
+@pytest.mark.asyncio
+async def test_replay_lease_row_never_appears_as_an_endpoint(tmp_path: Path) -> None:
+    """Lease keys are internal bookkeeping, not upstream endpoints the quality report lists."""
+    repository, session_factory = await _repository_and_session_factory(
+        tmp_path, "replay-lease-hidden.sqlite3"
+    )
+    await _seed_single_buy(session_factory)
+    await _replay_service(repository, tmp_path).replay(as_of=date(2024, 1, 6))
+
+    endpoints = {row.endpoint for row in await repository.list_endpoint_statuses()}
+
+    assert PERFORMANCE_REPLAY_LEASE_ENDPOINT not in endpoints
+    assert PORTFOLIO_SYNC_LEASE_ENDPOINT not in endpoints
+
+
+def _replay_service(repository: PortfolioRepository, tmp_path: Path) -> PerformanceReplayService:
+    return PerformanceReplayService(
+        repository,
+        Settings(data_dir=tmp_path),
+        FakeMarketDataProvider(
+            {
+                "ABC_US_EQ": [
+                    DailyPricePoint(
+                        date(2024, 1, 5),
+                        Decimal("100"),
+                        "USD",
+                        "fixture",
+                        date(2024, 1, 5),
+                        "EXACT",
+                    )
+                ]
+            }
+        ),
+        FakeFxRateProvider(
+            {
+                "USD": [
+                    FxRatePoint(
+                        date(2024, 1, 5),
+                        "USD",
+                        Decimal("0.9"),
+                        "fixture",
+                        date(2024, 1, 5),
+                        "EXACT",
+                        False,
+                    )
+                ]
+            }
+        ),
+        clock=FixedClock(datetime(2024, 1, 6, tzinfo=UTC)),
+    )
+
+
+@pytest.mark.parametrize("flow_timing", ["flow_at_close", "flow_at_open", "intraday_split"])
+def test_daily_twr_never_bridges_an_unvalued_gap(flow_timing: str) -> None:
+    """A deposit made on a day that could not be valued must not become investment gain.
+
+    Found on a real account: a month without London prices, EUR ~930 deposited inside it, and
+    the first valued day afterwards reported +133% because the return was measured against the
+    last valued day before the gap using only that day's (zero) flow. Across a gap the return
+    is unknown, so it is left out; only day-to-day returns between valued neighbours count.
+    """
+    nav_rows = [
+        _nav(date(2024, 1, 1), "500"),
+        _nav(date(2024, 1, 2), None, flow="900"),  # deposit on an unpriced day
+        _nav(date(2024, 1, 3), None),
+        _nav(date(2024, 1, 4), "1400"),  # first valued day after the gap
+        _nav(date(2024, 1, 5), "1414"),  # a genuine +1% day
+    ]
+
+    points = compute_daily_twr(nav_rows, flow_timing=flow_timing)  # type: ignore[arg-type]
+
+    assert [point.as_of_date for point in points] == [date(2024, 1, 5)]
+    assert points[0].value == pytest.approx(0.01)
+
+
+def test_a_withdrawal_is_not_a_drawdown() -> None:
+    """Taking money out halves NAV but loses nothing: the time-weighted index must not move.
+
+    Found on a real account whose 44 withdrawals produced a -37.6% "max drawdown".
+    """
+    nav_rows = [
+        _nav(date(2024, 1, 1), "1000"),
+        _nav(date(2024, 1, 2), "500", flow="-500"),  # withdrawal only
+        _nav(date(2024, 1, 3), "505"),  # +1% genuine gain
+    ]
+
+    drawdown = compute_drawdown(nav_rows)
+
+    assert drawdown is not None
+    assert drawdown.drawdown == 0.0

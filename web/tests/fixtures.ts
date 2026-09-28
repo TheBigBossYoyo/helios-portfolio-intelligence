@@ -1,4 +1,11 @@
-import type { NewsItem, PerformanceReport, Position, QualityReport } from "@/lib/types";
+import type {
+  JournalEntry,
+  NewsItem,
+  PerformanceReport,
+  Position,
+  QualityReport,
+  ThesisDetail,
+} from "@/lib/types";
 
 /**
  * Deterministic fixtures shaped exactly like the backend's serialised DTOs, including the
@@ -266,6 +273,39 @@ export function qualityReport(overrides: Partial<QualityReport> = {}): QualityRe
       },
     ],
     unsupportedActions: [],
+    ...overrides,
+  };
+}
+
+export function thesisDetail(overrides: Partial<ThesisDetail> = {}): ThesisDetail {
+  const journal: JournalEntry[] = [
+    { id: 10, thesisId: 1, createdAt: "2024-04-20T08:00:00Z", note: "Added on the pullback.", tags: "position" },
+  ];
+  return {
+    thesis: {
+      id: 1,
+      t212Ticker: "AAPL_US_EQ",
+      isin: "US0378331005",
+      title: "Services revenue compounds faster than hardware",
+      body: "Recurring services margin should keep expanding.",
+      conviction: "high",
+      status: "active",
+      openedOn: "2024-02-01",
+      outcomeNote: null,
+      closedAt: null,
+      createdAt: "2024-02-01T09:00:00Z",
+      updatedAt: "2024-02-01T09:00:00Z",
+    },
+    context: {
+      t212Ticker: "AAPL_US_EQ",
+      weight: 0.62,
+      contribution: 0.0256,
+      newsCount: 2,
+      latestNewsHeadline: "Apple beats expectations",
+    },
+    allowedTransitions: ["validated", "invalidated", "closed"],
+    editable: false,
+    journal,
     ...overrides,
   };
 }
