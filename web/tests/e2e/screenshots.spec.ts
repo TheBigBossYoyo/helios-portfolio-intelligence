@@ -16,6 +16,8 @@ const PAGES = [
   { path: "/card?view=day", name: "card-day" },
   { path: "/card/merchant/Grocer", name: "merchant" },
   { path: "/holdings/AAPL_US_EQ", name: "holding-detail" },
+  { path: "/plan", name: "plan" },
+  { path: "/watchlist?q=apple", name: "watchlist" },
   { path: "/news", name: "news" },
   { path: "/insights", name: "insights" },
   { path: "/journal", name: "journal" },

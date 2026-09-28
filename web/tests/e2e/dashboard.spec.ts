@@ -311,6 +311,25 @@ test.describe("card", () => {
   });
 });
 
+test.describe("plan", () => {
+  test("shows money in and out and a projection from editable assumptions", async ({ page }) => {
+    await page.goto("/plan");
+
+    await expect(page.getByRole("region", { name: "Monthly averages" })).toContainText("Deposited a month");
+    await expect(page.getByRole("heading", { name: "Money in and out" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "10 years" })).toBeVisible();
+
+    await page.getByLabel("Add a month (€)").fill("500");
+    await page.getByLabel("Years").fill("5");
+    await page.getByRole("button", { name: "Update" }).click();
+
+    await expect(page).toHaveURL(/monthly=500/);
+    await expect(page.getByText(/adding €500\.00 a month for 5 years/)).toBeVisible();
+    await expect(page.getByRole("cell", { name: "5 years" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "10 years" })).toHaveCount(0);
+  });
+});
+
 test.describe("watchlist", () => {
   test("lists followed instruments with their moves and alerts", async ({ page }) => {
     await page.goto("/watchlist");

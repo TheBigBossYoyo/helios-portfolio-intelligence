@@ -12,6 +12,7 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  Target,
   Wallet,
   X,
 } from "lucide-react";
@@ -26,6 +27,7 @@ const LINKS = [
   { href: "/watchlist", label: "Watchlist", Icon: Eye },
   { href: "/performance", label: "Performance", Icon: ChartLine },
   { href: "/card", label: "Card", Icon: CreditCard },
+  { href: "/plan", label: "Plan", Icon: Target },
   { href: "/news", label: "News", Icon: Newspaper },
   { href: "/insights", label: "Insights", Icon: Sparkles },
   { href: "/journal", label: "Journal", Icon: BookOpen },
