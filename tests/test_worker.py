@@ -77,6 +77,14 @@ class FakeSummaryService:
 
 
 @dataclass
+class FakeWeeklyReview:
+    calls: int = 0
+
+    async def maybe_run_scheduled(self) -> None:
+        self.calls += 1
+
+
+@dataclass
 class FakeContainer:
     sync_service: FakeSyncService
     replay_service: FakeReplayService = field(default_factory=FakeReplayService)
@@ -84,6 +92,7 @@ class FakeContainer:
     card_service: FakeCardService = field(default_factory=FakeCardService)
     alerts: FakeAlertService = field(default_factory=FakeAlertService)
     summary: FakeSummaryService = field(default_factory=FakeSummaryService)
+    weekly: FakeWeeklyReview = field(default_factory=FakeWeeklyReview)
     startup_calls: int = 0
     shutdown_calls: int = 0
 
@@ -110,6 +119,10 @@ class FakeContainer:
     @property
     def daily_summary_service(self) -> FakeSummaryService:
         return self.summary
+
+    @property
+    def weekly_review_service(self) -> FakeWeeklyReview:
+        return self.weekly
 
     async def startup(self) -> None:
         self.startup_calls += 1

@@ -440,6 +440,10 @@ export function getLatestAiAnalysis(): Promise<ApiResult<AiAnalysis>> {
   return getJson("/api/v1/ai/latest", parseAiAnalysis);
 }
 
+export function getLatestWeeklyReview(): Promise<ApiResult<AiAnalysis>> {
+  return getJson("/api/v1/ai/weekly/latest", parseAiAnalysis);
+}
+
 export function getTheses(): Promise<ApiResult<Thesis[]>> {
   return getJson("/api/v1/theses", parseTheses);
 }

@@ -16,6 +16,7 @@ from helios.ai import (
     OUTPUT_SCHEMA,
     SEVERITIES,
     AiAnalysisService,
+    AiBrief,
     AiClientResult,
     AiUnavailableError,
     NullAiClient,
@@ -65,9 +66,13 @@ class FakeAiClient:
     def __init__(self, result: AiClientResult) -> None:
         self.result = result
         self.seen_payload: dict[str, Any] | None = None
+        self.seen_brief: AiBrief | None = None
 
-    async def analyse(self, payload: dict[str, Any]) -> AiClientResult:
+    async def analyse(
+        self, payload: dict[str, Any], *, brief: AiBrief | None = None
+    ) -> AiClientResult:
         self.seen_payload = payload
+        self.seen_brief = brief
         return self.result
 
 

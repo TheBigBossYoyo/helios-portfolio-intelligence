@@ -1019,8 +1019,27 @@ const catalogue = [
   { ticker: "ASML_US_EQ", name: "ASML Holding", isin: "USN070592100", currency: "USD", instrumentType: "STOCK", watched: true, held: false },
 ];
 
+// The weekly review: the same shape as an analysis, with the week's own categories.
+const weeklyReview = {
+  ...aiAnalysis,
+  asOf: "2024-04-28T19:00:00Z",
+  summary: "A good week for Apple and a quiet one for Shell; €110 went out by card.",
+  observations: [
+    {
+      rank: 1,
+      category: "movers",
+      t212Ticker: "AAPL_US_EQ",
+      headline: "Apple led the week",
+      detail: "AAPL added €125.70 while a results story ran the same week.",
+      evidence: "result_eur 125.70; 'Apple beats expectations' (29 Apr)",
+      severity: "notable",
+    },
+  ],
+};
+
 const ROUTES = {
   "/health": health,
+  "/api/v1/ai/weekly/latest": weeklyReview,
   "/api/v1/watchlist": watchlist,
   "/api/v1/alerts": alerts,
   "/api/v1/notifications": notifications,
@@ -1095,6 +1114,7 @@ const MUTATIONS = {
     body: { action: "downloaded", detail: "Stored 5 cash rows from the export.", rowsStored: 5 },
   },
   "POST /api/v1/ai/analyse": { action: "ai-analyse", body: aiAnalysis },
+  "POST /api/v1/ai/weekly": { action: "ai-weekly", body: weeklyReview },
   "POST /api/v1/theses": { action: "thesis-write", body: theses[0] },
   "POST /api/v1/journal": { action: "journal-write", body: journal[0] },
   // The settings writes. Keyed by method as well as path, so `GET /api/v1/settings/databases`

@@ -615,6 +615,30 @@ async def run_ai_analysis(
     return AiAnalysisModel.model_validate(analysis, from_attributes=True)
 
 
+@router.post("/api/v1/ai/weekly", response_model=AiAnalysisModel)
+async def write_weekly_review(
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("ai-weekly"))],
+) -> AiAnalysisModel:
+    """Write this week's review now. Bills the Anthropic account, like any analysis run."""
+
+    try:
+        review = await container.weekly_review_service.generate()
+    except AiUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return AiAnalysisModel.model_validate(review, from_attributes=True)
+
+
+@router.get("/api/v1/ai/weekly/latest", response_model=AiAnalysisModel)
+async def latest_weekly_review(
+    service: Annotated[AiAnalysisService, Depends(get_ai_analysis_service)],
+) -> AiAnalysisModel:
+    review = await service.latest("weekly")
+    if review is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No weekly review yet")
+    return AiAnalysisModel.model_validate(review, from_attributes=True)
+
+
 @router.get("/api/v1/ai/latest", response_model=AiAnalysisModel)
 async def get_latest_ai_analysis(
     service: Annotated[AiAnalysisService, Depends(get_ai_analysis_service)],

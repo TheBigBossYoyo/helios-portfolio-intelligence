@@ -321,6 +321,10 @@ class AiRun(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ts: Mapped[datetime] = mapped_column(UTCDateTime(), index=True, nullable=False)
+    #: "analysis" (on demand) or "weekly" (the weekly review).
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="analysis", server_default="analysis"
+    )
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     model: Mapped[str] = mapped_column(String(64), nullable=False)
     effort: Mapped[str | None] = mapped_column(String(16), nullable=True)

@@ -912,9 +912,11 @@ class PortfolioRepository:
             async with session.begin():
                 session.add_all(rows)
 
-    async def latest_ai_run(self) -> AiRun | None:
+    async def latest_ai_run(self, kind: str = "analysis") -> AiRun | None:
         async with self._session_factory() as session:
-            result = await session.scalars(select(AiRun).order_by(AiRun.ts.desc()).limit(1))
+            result = await session.scalars(
+                select(AiRun).where(AiRun.kind == kind).order_by(AiRun.ts.desc()).limit(1)
+            )
             return result.first()
 
     async def list_ai_observations(self, run_id: int) -> list[AiObservation]:

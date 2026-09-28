@@ -13,6 +13,8 @@ from .logging import configure_logging, get_logger
 
 #: How often the worker looks at the clock for the daily summary.
 SUMMARY_CHECK_MINUTES = 10
+#: How often the worker checks whether this week's review is due (only when switched on).
+WEEKLY_REVIEW_CHECK_MINUTES = 30
 
 
 class SyncService(Protocol):
@@ -33,6 +35,10 @@ class AlertChecker(Protocol):
 
 class SummaryWriter(Protocol):
     async def maybe_create(self) -> object | None: ...
+
+
+class WeeklyReviewWriter(Protocol):
+    async def maybe_run_scheduled(self) -> object | None: ...
 
 
 class CardRefreshOutcome(Protocol):
@@ -62,6 +68,9 @@ class WorkerContainer(Protocol):
 
     @property
     def daily_summary_service(self) -> SummaryWriter: ...
+
+    @property
+    def weekly_review_service(self) -> WeeklyReviewWriter: ...
 
     async def startup(self) -> None: ...
 
@@ -161,6 +170,15 @@ class HeliosWorker:
                     max_instances=1,
                     coalesce=True,
                 )
+            if self._settings.weekly_review_enabled:
+                self._scheduler.add_job(
+                    self._run_scheduled_weekly_review,
+                    trigger="interval",
+                    minutes=WEEKLY_REVIEW_CHECK_MINUTES,
+                    id="weekly-review",
+                    max_instances=1,
+                    coalesce=True,
+                )
             # News needs no Trading 212 credentials, so it is scheduled either way. With no
             # feeds configured it is a no-op that reports why.
             self._scheduler.add_job(
@@ -227,6 +245,14 @@ class HeliosWorker:
             await self._container.daily_summary_service.maybe_create()
         except Exception as exc:
             self._logger.warning("worker_summary_failed", error=exc.__class__.__name__)
+
+    async def _run_scheduled_weekly_review(self) -> None:
+        if self._container is None:
+            return
+        try:
+            await self._container.weekly_review_service.maybe_run_scheduled()
+        except Exception as exc:
+            self._logger.warning("worker_weekly_review_failed", error=exc.__class__.__name__)
 
     async def _run_scheduled_card_history(self) -> None:
         """Collect a finished export, or request one when a day has passed since the last.

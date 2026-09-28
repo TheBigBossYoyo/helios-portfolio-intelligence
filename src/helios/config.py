@@ -135,6 +135,11 @@ class Settings(BaseSettings):
     # and news about your holdings. Shown by the desktop tray.
     daily_summary_enabled: bool = True
     daily_summary_time: str = "21:00"
+    # The weekly AI review writes itself on this weekday (0 = Monday ... 6 = Sunday) after this
+    # local time -- only when switched on, because every run bills the Anthropic account.
+    weekly_review_enabled: bool = False
+    weekly_review_weekday: int = 6
+    weekly_review_time: str = "19:00"
     sync_lease_minutes: int = 15
     ecb_base_url: str = "https://data-api.ecb.europa.eu/service/data"
     market_data_provider: str = "disabled"
@@ -310,14 +315,26 @@ class Settings(BaseSettings):
             raise ValueError("value must be positive")
         return value
 
-    @field_validator("daily_summary_time")
+    @field_validator("weekly_review_weekday")
+    @classmethod
+    def valid_weekday(cls, value: int) -> int:
+        if not 0 <= value <= 6:
+            raise ValueError("weekly_review_weekday must be 0 (Monday) to 6 (Sunday)")
+        return value
+
+    @property
+    def weekly_review_at(self) -> dt_time:
+        hours, minutes = (int(part) for part in self.weekly_review_time.split(":"))
+        return dt_time(hours, minutes)
+
+    @field_validator("daily_summary_time", "weekly_review_time")
     @classmethod
     def valid_summary_time(cls, value: str) -> str:
         try:
             hours, minutes = (int(part) for part in value.strip().split(":"))
             dt_time(hours, minutes)
         except ValueError as exc:
-            raise ValueError("daily_summary_time must be HH:MM, e.g. 21:00") from exc
+            raise ValueError("times must be HH:MM, e.g. 21:00") from exc
         return f"{hours:02d}:{minutes:02d}"
 
     @property

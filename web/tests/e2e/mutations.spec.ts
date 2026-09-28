@@ -115,6 +115,20 @@ test.describe("pipeline controls", () => {
     expect(removed?.action).toBe("watchlist-write");
   });
 
+  test("writing the weekly review confirms first, because it costs money", async ({
+    page,
+    request,
+  }) => {
+    await page.goto("/insights");
+
+    await page.getByRole("button", { name: "Write this week's review" }).click();
+    await page.locator("#weekly").getByRole("button", { name: "Confirm — this costs money" }).click();
+    await expect(page.getByText("This week's review is written.")).toBeVisible();
+
+    const call = lastFor(await recorded(request), "POST", /\/api\/v1\/ai\/weekly$/);
+    expect(call?.action).toBe("ai-weekly");
+  });
+
   test("a replay confirms first, then reports what it wrote", async ({ page, request }) => {
     await page.goto("/performance");
 

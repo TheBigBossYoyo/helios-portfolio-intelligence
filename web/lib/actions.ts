@@ -43,6 +43,7 @@ type LocalAction =
   | "card-budget"
   | "alerts-write"
   | "watchlist-write"
+  | "ai-weekly"
   | "ai-analyse"
   | "thesis-write"
   | "journal-write"
@@ -281,6 +282,14 @@ export async function analyseWithAiAction(): Promise<ActionResult> {
   return mutate("/api/v1/ai/analyse", "ai-analyse", {
     successMessage: "Analysis complete.",
     revalidate: ["/", "/insights"],
+  });
+}
+
+/** Write this week's review now. Bills the Anthropic account, like an analysis run. */
+export async function writeWeeklyReviewAction(): Promise<ActionResult> {
+  return mutate("/api/v1/ai/weekly", "ai-weekly", {
+    successMessage: "This week's review is written.",
+    revalidate: ["/insights"],
   });
 }
 

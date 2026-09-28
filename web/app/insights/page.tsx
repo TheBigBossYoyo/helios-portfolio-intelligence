@@ -2,15 +2,15 @@ import { Sparkles } from "lucide-react";
 import { ActionButton } from "@/components/action-button";
 import { AiPanel } from "@/components/ai-panel";
 import { Note, PageHeader, Panel, Unavailable } from "@/components/panel";
-import { analyseWithAiAction } from "@/lib/actions";
-import { getLatestAiAnalysis } from "@/lib/api";
+import { analyseWithAiAction, writeWeeklyReviewAction } from "@/lib/actions";
+import { getLatestAiAnalysis, getLatestWeeklyReview } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { EYEBROW } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
 
 export default async function InsightsPage() {
-  const analysis = await getLatestAiAnalysis();
+  const [analysis, weekly] = await Promise.all([getLatestAiAnalysis(), getLatestWeeklyReview()]);
 
   return (
     <>
@@ -26,6 +26,41 @@ export default async function InsightsPage() {
         description="Claude describing the analytics Helios already computed. Every observation cites the figure it rests on."
         title="AI analysis"
       />
+
+      <section id="weekly">
+        <Panel
+          actions={
+            <div className="flex flex-col items-end gap-1.5">
+              {weekly.ok ? (
+                <span className={EYEBROW}>Written {formatDateTime(weekly.data.asOf)}</span>
+              ) : null}
+              <ActionButton
+                action={writeWeeklyReviewAction}
+                confirmLabel="Confirm — this costs money"
+                icon={<Sparkles aria-hidden="true" size={15} />}
+                label="Write this week's review"
+                pendingLabel="Writing…"
+                variant="secondary"
+              />
+            </div>
+          }
+          subtitle="The past seven days in plain words: the result and what moved it, stories that named those holdings the same week, card spending against your budgets, and alerts that fired."
+          title="Weekly review"
+        >
+          {weekly.ok ? (
+            <AiPanel analysis={weekly.data} />
+          ) : (
+            <Unavailable
+              detail={
+                weekly.status === 404
+                  ? "No weekly review yet. Write one with the button, or switch on HELIOS_WEEKLY_REVIEW_ENABLED to have it written every Sunday evening."
+                  : weekly.error
+              }
+              reason="No weekly review yet"
+            />
+          )}
+        </Panel>
+      </section>
 
       <Panel title="Latest analysis">
         {analysis.ok ? (
@@ -61,9 +96,14 @@ export default async function InsightsPage() {
             traced back to the numbers behind it.
           </Note>
           <Note>
-            Analysis runs only when you ask — the button above, <code>helios ai-analyse</code>, or
-            the API with the local-action header. It is never on a schedule, because each run
-            costs money.
+            Analysis runs only when you ask — the buttons above, <code>helios ai-analyse</code>, or
+            the API with the local-action header. The one exception is the weekly review, and only
+            if you switch it on (HELIOS_WEEKLY_REVIEW_ENABLED): then it writes itself once a week.
+            Each run costs a few cents.
+          </Note>
+          <Note>
+            The weekly review may say a story naming a holding appeared the same week as its move;
+            it is told never to claim the story caused the move.
           </Note>
         </div>
       </Panel>

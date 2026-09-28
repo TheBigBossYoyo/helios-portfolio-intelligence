@@ -311,6 +311,17 @@ test.describe("card", () => {
   });
 });
 
+test.describe("weekly review", () => {
+  test("shows the latest weekly review with its evidence", async ({ page }) => {
+    await page.goto("/insights");
+
+    const weekly = page.locator("#weekly");
+    await expect(weekly.getByRole("heading", { name: "Weekly review" })).toBeVisible();
+    await expect(weekly.getByText("Apple led the week")).toBeVisible();
+    await expect(weekly.getByText(/result_eur 125\.70/)).toBeVisible();
+  });
+});
+
 test.describe("plan", () => {
   test("shows money in and out and a projection from editable assumptions", async ({ page }) => {
     await page.goto("/plan");
@@ -467,31 +478,37 @@ test.describe("AI insights", () => {
   test("cites the evidence behind every observation", async ({ page }) => {
     await page.goto("/insights");
 
-    await expect(page.getByText("One holding dominates the portfolio")).toBeVisible();
-    await expect(page.getByText(/top5_weight = 1\.0/)).toBeVisible();
-    await expect(page.getByText(/volatility = 0\.2275/)).toBeVisible();
+    const analysis = page.locator("section", { hasText: "Latest analysis" }).last();
+    await expect(analysis.getByText("One holding dominates the portfolio")).toBeVisible();
+    await expect(analysis.getByText(/top5_weight = 1\.0/)).toBeVisible();
+    await expect(analysis.getByText(/volatility = 0\.2275/)).toBeVisible();
     // Every observation row carries an evidence line.
-    await expect(page.getByText("evidence", { exact: false })).toHaveCount(2);
+    await expect(analysis.getByText("evidence", { exact: false })).toHaveCount(2);
   });
 
   test("names the metrics the analytics could not compute", async ({ page }) => {
     await page.goto("/insights");
 
-    await expect(page.getByText(/Reported as unavailable/)).toBeVisible();
-    await expect(page.getByText(/sortino, attribution/)).toBeVisible();
+    const analysis = page.locator("section", { hasText: "Latest analysis" }).last();
+    await expect(analysis.getByText(/Reported as unavailable/)).toBeVisible();
+    await expect(analysis.getByText(/sortino, attribution/)).toBeVisible();
   });
 
   test("discloses the model and token spend", async ({ page }) => {
     await page.goto("/insights");
 
-    await expect(page.getByText("claude-opus-5")).toBeVisible();
-    await expect(page.getByText(/4210 in \/ 890 out/)).toBeVisible();
+    const analysis = page.locator("section", { hasText: "Latest analysis" }).last();
+    await expect(analysis.getByText("claude-opus-5")).toBeVisible();
+    await expect(analysis.getByText(/4210 in \/ 890 out/)).toBeVisible();
   });
 
-  test("explains that analysis never runs on a schedule", async ({ page }) => {
+  test("explains that analysis runs only when asked, bar an opt-in weekly review", async ({
+    page,
+  }) => {
     await page.goto("/insights");
 
-    await expect(page.getByText(/never on a schedule/)).toBeVisible();
+    await expect(page.getByText(/Analysis runs only when you ask/)).toBeVisible();
+    await expect(page.getByText(/only\s+if you switch it on/)).toBeVisible();
   });
 });
 

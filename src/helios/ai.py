@@ -25,6 +25,7 @@ travels with the output through the API, the CLI and the dashboard.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -163,8 +164,26 @@ class AiAnalysis:
     detail: str | None = None
 
 
+@dataclass(frozen=True)
+class AiBrief:
+    """What the model is told and the shape its answer must take."""
+
+    system: str
+    schema: dict[str, Any]
+    instruction: str
+
+
+ANALYSIS_BRIEF = AiBrief(
+    system=SYSTEM_PROMPT,
+    schema=OUTPUT_SCHEMA,
+    instruction="Analyse this portfolio. Respond only with the JSON schema.",
+)
+
+
 class AiClient(Protocol):
-    async def analyse(self, payload: dict[str, Any]) -> AiClientResult: ...
+    async def analyse(
+        self, payload: dict[str, Any], *, brief: AiBrief | None = None
+    ) -> AiClientResult: ...
 
 
 @dataclass(frozen=True)
@@ -183,8 +202,10 @@ class AiClientResult:
 class NullAiClient:
     """Used when no API key is configured; keeps the whole pipeline runnable offline."""
 
-    async def analyse(self, payload: dict[str, Any]) -> AiClientResult:
-        del payload
+    async def analyse(
+        self, payload: dict[str, Any], *, brief: AiBrief | None = None
+    ) -> AiClientResult:
+        del payload, brief
         return AiClientResult(
             status="unavailable",
             model="none",
@@ -219,10 +240,13 @@ class ClaudeAiClient:
         if self._client is not None:
             await self._client.close()
 
-    async def analyse(self, payload: dict[str, Any]) -> AiClientResult:
+    async def analyse(
+        self, payload: dict[str, Any], *, brief: AiBrief | None = None
+    ) -> AiClientResult:
         if self._client is None:
             return await NullAiClient().analyse(payload)
         settings = self._settings
+        brief = brief or ANALYSIS_BRIEF
         try:
             response = await self._client.beta.messages.create(
                 model=settings.anthropic_model,
@@ -231,14 +255,14 @@ class ClaudeAiClient:
                 thinking={"type": "adaptive"},
                 output_config={
                     "effort": settings.anthropic_effort,
-                    "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA},
+                    "format": {"type": "json_schema", "schema": brief.schema},
                 },
                 # The system prompt is byte-stable across runs, so it caches; the portfolio
                 # payload that follows is what varies.
                 system=[
                     {
                         "type": "text",
-                        "text": SYSTEM_PROMPT,
+                        "text": brief.system,
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
@@ -250,7 +274,8 @@ class ClaudeAiClient:
                     {
                         "role": "user",
                         "content": (
-                            "Analyse this portfolio. Respond only with the JSON schema.\n\n"
+                            brief.instruction
+                            + "\n\n"
                             + json.dumps(payload, indent=2, sort_keys=True)
                         ),
                     }
@@ -515,7 +540,7 @@ class AiAnalysisService:
                 detail=result.detail,
             )
 
-        observations = _parse_observations(result.parsed)
+        observations = parse_observations(result.parsed)
         await self._repository.insert_ai_observations(
             [
                 AiObservation(
@@ -548,9 +573,9 @@ class AiAnalysisService:
             disclosure=DISCLOSURE,
         )
 
-    async def latest(self) -> AiAnalysis | None:
+    async def latest(self, kind: str = "analysis") -> AiAnalysis | None:
         """The most recent stored run, so the dashboard costs nothing to open."""
-        run = await self._repository.latest_ai_run()
+        run = await self._repository.latest_ai_run(kind)
         if run is None:
             return None
         observations = await self._repository.list_ai_observations(run.id)
@@ -582,7 +607,9 @@ class AiAnalysisService:
         )
 
 
-def _parse_observations(parsed: dict[str, Any]) -> list[AiObservationView]:
+def parse_observations(
+    parsed: dict[str, Any], *, categories: Sequence[str] = CATEGORIES
+) -> list[AiObservationView]:
     """Keep only well-formed observations that cite evidence.
 
     An observation without evidence is dropped rather than shown: the citation is the whole
@@ -608,7 +635,11 @@ def _parse_observations(parsed: dict[str, Any]) -> list[AiObservationView]:
         views.append(
             AiObservationView(
                 rank=index,
-                category=category if category in CATEGORIES else "performance",
+                category=(
+                    category
+                    if isinstance(category, str) and category in categories
+                    else categories[0]
+                ),
                 t212_ticker=ticker if isinstance(ticker, str) and ticker else None,
                 headline=headline.strip(),
                 detail=detail.strip(),
