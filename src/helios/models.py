@@ -7,6 +7,8 @@ from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
+from .compression import CompressedJSON, CompressedText
+
 
 class UTCDateTime(TypeDecorator[datetime]):
     impl = DateTime(timezone=True)
@@ -65,7 +67,8 @@ class RawSnapshot(Base):
     ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     http_status: Mapped[int] = mapped_column(Integer, nullable=False)
     content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    payload_json: Mapped[object] = mapped_column(JSON, nullable=False)
+    #: Stored compressed; reads back as the JSON value written.
+    payload_json: Mapped[object] = mapped_column(CompressedJSON(), nullable=False)
 
 
 class Instrument(Base):
@@ -242,7 +245,7 @@ class RawNews(Base):
     ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     http_status: Mapped[int] = mapped_column(Integer, nullable=False)
     content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(CompressedText(), nullable=False)
 
 
 class NewsItem(Base):
@@ -433,7 +436,7 @@ class T212Export(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     downloaded_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body: Mapped[str | None] = mapped_column(CompressedText(), nullable=True)
 
 
 class T212ExportRow(Base):

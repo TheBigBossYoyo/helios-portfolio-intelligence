@@ -438,6 +438,7 @@ MUTATING_ROUTES: list[tuple[str, str, str]] = [
     ("POST", "/api/v1/watchlist", "watchlist-write"),
     ("POST", "/api/v1/ai/weekly", "ai-weekly"),
     ("POST", "/api/v1/backups", "backup"),
+    ("POST", "/api/v1/storage/compact", "storage-compact"),
     ("DELETE", "/api/v1/watchlist/AAPL_US_EQ", "watchlist-write"),
     ("DELETE", "/api/v1/alerts/1", "alerts-write"),
     ("POST", "/api/v1/notifications/1/delivered", "notifications-ack"),
@@ -506,6 +507,7 @@ def test_guard_covers_every_mutating_route_the_router_declares(tmp_path: Path) -
         ("POST", "/api/v1/watchlist"),
         ("POST", "/api/v1/ai/weekly"),
         ("POST", "/api/v1/backups"),
+        ("POST", "/api/v1/storage/compact"),
         ("DELETE", "/api/v1/watchlist/{ticker}"),
         ("DELETE", "/api/v1/alerts/{alert_id}"),
         ("POST", "/api/v1/notifications/{notification_id}/delivered"),
@@ -1196,3 +1198,22 @@ def test_alerts_are_created_listed_and_deleted(tmp_path: Path) -> None:
     assert [alert["kind"] for alert in listed] == ["below"]
     assert (deleted.status_code, gone.status_code) == (204, 404)
     assert notifications.json() == []
+
+
+def test_storage_status_and_compact(tmp_path: Path) -> None:
+    app = create_app(Settings(data_dir=tmp_path))
+
+    with TestClient(app) as client:
+        before = client.get("/api/v1/storage")
+        compacted = client.post(
+            "/api/v1/storage/compact", headers={"X-Helios-Local-Action": "storage-compact"}
+        )
+
+    assert before.status_code == 200
+    assert before.json()["rawNewsRetentionDays"] == 7
+    assert before.json()["databaseBytes"] > 0
+    assert compacted.status_code == 200
+    body = compacted.json()
+    assert body["rawNewsPruned"] == 0
+    assert body["vacuumed"] is True
+    assert body["status"]["freeBytes"] == 0

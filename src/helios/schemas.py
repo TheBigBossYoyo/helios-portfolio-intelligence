@@ -437,6 +437,25 @@ class BackupStatusModel(DTOModel):
     count: int
 
 
+class StorageStatusModel(DTOModel):
+    database_bytes: int = Field(alias="databaseBytes")
+    wal_bytes: int = Field(alias="walBytes")
+    free_bytes: int = Field(alias="freeBytes")
+    raw_news_rows: int = Field(alias="rawNewsRows")
+    raw_snapshot_rows: int = Field(alias="rawSnapshotRows")
+    raw_news_retention_days: int = Field(alias="rawNewsRetentionDays")
+
+
+class StorageCompactModel(DTOModel):
+    raw_news_pruned: int = Field(alias="rawNewsPruned")
+    snapshots_pruned: int = Field(alias="snapshotsPruned")
+    vacuumed: bool
+    bytes_before: int = Field(alias="bytesBefore")
+    bytes_after: int = Field(alias="bytesAfter")
+    detail: str
+    status: StorageStatusModel
+
+
 class PriceAlertModel(DTOModel):
     id: int
     ticker: str
@@ -766,9 +785,7 @@ class NavPointModel(DTOModel):
     dividend_eur: Decimal = Field(default=Decimal("0"), alias="dividendEur")
     interest_eur: Decimal = Field(default=Decimal("0"), alias="interestEur")
     fee_eur: Decimal = Field(default=Decimal("0"), alias="feeEur")
-    net_deposits_to_date_eur: Decimal = Field(
-        default=Decimal("0"), alias="netDepositsToDateEur"
-    )
+    net_deposits_to_date_eur: Decimal = Field(default=Decimal("0"), alias="netDepositsToDateEur")
     deposit_eur: Decimal = Field(default=Decimal("0"), alias="depositEur")
     withdrawal_eur: Decimal = Field(default=Decimal("0"), alias="withdrawalEur")
     card_spending_eur: Decimal = Field(default=Decimal("0"), alias="cardSpendingEur")

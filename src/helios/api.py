@@ -104,6 +104,8 @@ from .schemas import (
     QualityReport,
     RestartResponse,
     SettingsSnapshotModel,
+    StorageCompactModel,
+    StorageStatusModel,
     ThesisCreateRequest,
     ThesisDetailModel,
     ThesisEditRequest,
@@ -454,6 +456,49 @@ async def run_backup_now(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
         ) from exc
     return _backup_model(status_now)
+
+
+def _storage_model(container: Container) -> StorageStatusModel:
+    current = container.storage_service.status()
+    return StorageStatusModel(
+        database_bytes=current.database_bytes,
+        wal_bytes=current.wal_bytes,
+        free_bytes=current.free_bytes,
+        raw_news_rows=current.raw_news_rows,
+        raw_snapshot_rows=current.raw_snapshot_rows,
+        raw_news_retention_days=container.settings.raw_news_retention_days,
+    )
+
+
+@router.get("/api/v1/storage", response_model=StorageStatusModel)
+async def get_storage_status(
+    container: Annotated[Container, Depends(get_container)],
+) -> StorageStatusModel:
+    return await asyncio.to_thread(_storage_model, container)
+
+
+@router.post("/api/v1/storage/compact", response_model=StorageCompactModel)
+async def compact_storage(
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("storage-compact"))],
+) -> StorageCompactModel:
+    """Drop raw data nothing replays any more, then shrink the file."""
+
+    result = await container.storage_service.compact(force_vacuum=True)
+    freed = max(result.bytes_before - result.bytes_after, 0)
+    detail = (
+        f"Freed {freed / 1_048_576:.1f} MB: dropped {result.raw_news_pruned:,} old feed bodies "
+        f"and {result.snapshots_pruned:,} old snapshots."
+    )
+    return StorageCompactModel(
+        raw_news_pruned=result.raw_news_pruned,
+        snapshots_pruned=result.snapshots_pruned,
+        vacuumed=result.vacuumed,
+        bytes_before=result.bytes_before,
+        bytes_after=result.bytes_after,
+        detail=detail,
+        status=await asyncio.to_thread(_storage_model, container),
+    )
 
 
 @router.get("/api/v1/alerts", response_model=list[PriceAlertModel])
@@ -1046,9 +1091,7 @@ async def put_credential(
                 verified = await verify_t212_credentials(
                     api_key=api_key,
                     api_secret=secret_source,
-                    base_url=effective_t212_base_url(
-                        settings, env_path=_env_path(settings)
-                    ),
+                    base_url=effective_t212_base_url(settings, env_path=_env_path(settings)),
                 )
             except SettingsWriteError as exc:
                 raise HTTPException(

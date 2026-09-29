@@ -139,6 +139,18 @@ test.describe("pipeline controls", () => {
     expect(call?.action).toBe("backup");
   });
 
+  test("compacting storage reports what it freed", async ({ page, request }) => {
+    await page.goto("/settings");
+
+    await expect(page.getByText("25.0 MB", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Compact now" }).click();
+    await expect(
+      page.getByText("Freed 87.0 MB: dropped 1,200 old feed bodies and 2 old snapshots."),
+    ).toBeVisible();
+    const call = lastFor(await recorded(request), "POST", /\/api\/v1\/storage\/compact$/);
+    expect(call?.action).toBe("storage-compact");
+  });
+
   test("a replay confirms first, then reports what it wrote", async ({ page, request }) => {
     await page.goto("/performance");
 

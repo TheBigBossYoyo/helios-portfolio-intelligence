@@ -9,6 +9,7 @@ import type {
   JournalEntry,
   AppNotification,
   BackupStatus,
+  StorageStatus,
   CardHistory,
   InstrumentDetail,
   InstrumentMatch,
@@ -391,6 +392,12 @@ export function getInstrumentDetail(ticker: string): Promise<ApiResult<Instrumen
 
 export function parseList<T>(value: unknown): T[] | null {
   return Array.isArray(value) ? (value as T[]) : null;
+}
+
+export function getStorageStatus(): Promise<ApiResult<StorageStatus>> {
+  return getJson("/api/v1/storage", (value) =>
+    parseShape<StorageStatus>(value, ["databaseBytes", "walBytes", "freeBytes", "rawNewsRetentionDays"]),
+  );
 }
 
 export function getBackupStatus(): Promise<ApiResult<BackupStatus>> {

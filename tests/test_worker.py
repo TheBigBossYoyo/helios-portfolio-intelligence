@@ -37,10 +37,19 @@ class FakeNewsService:
     calls: int = 0
     error: Exception | None = None
 
+    targets_changed: bool = True
+    skipped: int = 0
+
     async def sync(self) -> None:
         self.calls += 1
         if self.error is not None:
             raise self.error
+
+    async def sync_if_targets_changed(self) -> None:
+        if not self.targets_changed:
+            self.skipped += 1
+            return
+        await self.sync()
 
 
 @dataclass
@@ -102,6 +111,15 @@ class FakeBudgets:
 
 
 @dataclass
+class FakeStorage:
+    calls: int = 0
+
+    async def compact(self, *, force_vacuum: bool = False) -> None:
+        del force_vacuum
+        self.calls += 1
+
+
+@dataclass
 class FakeContainer:
     sync_service: FakeSyncService
     replay_service: FakeReplayService = field(default_factory=FakeReplayService)
@@ -112,6 +130,7 @@ class FakeContainer:
     weekly: FakeWeeklyReview = field(default_factory=FakeWeeklyReview)
     backups: FakeBackups = field(default_factory=FakeBackups)
     budgets: FakeBudgets = field(default_factory=FakeBudgets)
+    storage: FakeStorage = field(default_factory=FakeStorage)
     startup_calls: int = 0
     shutdown_calls: int = 0
 
@@ -150,6 +169,10 @@ class FakeContainer:
     @property
     def budget_notifier(self) -> FakeBudgets:
         return self.budgets
+
+    @property
+    def storage_service(self) -> FakeStorage:
+        return self.storage
 
     async def startup(self) -> None:
         self.startup_calls += 1
@@ -216,6 +239,7 @@ async def test_worker_starts_without_credentials(tmp_path: Path) -> None:
             "price-alerts",
             "daily-summary",
             "backup",
+            "storage-compact",
             "news-sync",
         ]
         assert container.sync_service.calls == 0
@@ -252,6 +276,7 @@ async def test_worker_registers_interval_job_and_runs_initial_sync(tmp_path: Pat
             "price-alerts",
             "daily-summary",
             "backup",
+            "storage-compact",
             "news-sync",
         ]
         job = scheduler.jobs[0]
@@ -425,3 +450,59 @@ async def test_alert_and_summary_jobs_call_their_services(tmp_path: Path) -> Non
     assert (container.alerts.calls, container.summary.calls) == (1, 1)
     # The alerts job also checks budgets.
     assert (container.budgets.calls, container.backups.calls) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_portfolio_leaves_news_to_its_own_cadence(tmp_path: Path) -> None:
+    """Hourly syncs no longer refetch every feed: only a changed set of holdings does."""
+    container = FakeContainer(
+        sync_service=FakeSyncService(), news_service=FakeNewsService(targets_changed=False)
+    )
+    worker = HeliosWorker(
+        Settings(data_dir=tmp_path, refresh_after_sync=True),
+        container_factory=lambda _settings: container,
+        scheduler=FakeScheduler(),
+    )
+    worker._logger = FakeLogger()
+    worker._container = container
+
+    await worker._run_scheduled_sync()
+
+    assert container.replay_service.calls == 1
+    assert container.news_service.calls == 0
+    assert container.news_service.skipped == 1
+
+
+@pytest.mark.asyncio
+async def test_storage_compaction_is_scheduled_daily_and_can_be_switched_off(
+    tmp_path: Path,
+) -> None:
+    container = FakeContainer(sync_service=FakeSyncService())
+    scheduler = FakeScheduler()
+    worker = HeliosWorker(
+        Settings(data_dir=tmp_path),
+        container_factory=lambda _settings: container,
+        scheduler=scheduler,
+    )
+    worker._logger = FakeLogger()
+    await worker.start()
+    try:
+        job = next(job for job in scheduler.jobs if job["id"] == "storage-compact")
+        assert job["minutes"] == 24 * 60
+        await worker._run_scheduled_compact()
+        assert container.storage.calls == 1
+    finally:
+        await worker.shutdown()
+
+    off = FakeScheduler()
+    quiet = HeliosWorker(
+        Settings(data_dir=tmp_path, storage_compact_enabled=False),
+        container_factory=lambda _settings: FakeContainer(sync_service=FakeSyncService()),
+        scheduler=off,
+    )
+    quiet._logger = FakeLogger()
+    await quiet.start()
+    try:
+        assert "storage-compact" not in [job["id"] for job in off.jobs]
+    finally:
+        await quiet.shutdown()

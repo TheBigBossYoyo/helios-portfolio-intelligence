@@ -45,6 +45,7 @@ type LocalAction =
   | "watchlist-write"
   | "ai-weekly"
   | "backup"
+  | "storage-compact"
   | "ai-analyse"
   | "thesis-write"
   | "journal-write"
@@ -299,6 +300,16 @@ export async function backupNowAction(): Promise<ActionResult> {
   return mutate("/api/v1/backups", "backup", {
     successMessage: "Backed up and verified.",
     revalidate: ["/settings"],
+  });
+}
+
+/** Drop raw data nothing replays any more and shrink the database file. */
+export async function compactStorageAction(): Promise<ActionResult> {
+  return mutate("/api/v1/storage/compact", "storage-compact", {
+    successMessage: "Storage compacted.",
+    messageFromResponse: true,
+    revalidate: ["/settings"],
+    timeoutMs: 120_000,
   });
 }
 

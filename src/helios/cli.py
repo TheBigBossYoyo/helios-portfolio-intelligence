@@ -5,6 +5,7 @@ import asyncio
 import json
 import sys
 from collections.abc import Awaitable, Callable, Iterable
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from .schemas import (
     QualityReport,
     ThesisModel,
 )
+from .storage import compact_database
 from .t212_reparse import T212ReparseSummary
 
 
@@ -45,6 +47,8 @@ def main() -> int:
         return asyncio.run(_run_news_reparse())
     if args.command == "t212-reparse":
         return asyncio.run(_run_t212_reparse())
+    if args.command == "compact":
+        return _run_compact(vacuum=args.vacuum)
     if args.command == "backup":
         return _run_backup(dest=args.dest, keep=args.keep)
     if args.command == "news":
@@ -79,6 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
     news_parser.add_argument("--limit", type=int, default=20)
     subparsers.add_parser("ai-analyse")
     subparsers.add_parser("ai-latest")
+
+    compact_parser = subparsers.add_parser("compact")
+    compact_parser.add_argument(
+        "--vacuum",
+        action="store_true",
+        help="Rewrite the file even when little of it is free.",
+    )
 
     backup_parser = subparsers.add_parser("backup")
     backup_parser.add_argument(
@@ -207,6 +218,26 @@ async def _run_t212_reparse() -> int:
         _print_error("helios.t212_reparse.error", exc.__class__.__name__)
         return 2
     print(_render_t212_reparse_summary(summary))
+    return 0
+
+
+def _run_compact(*, vacuum: bool) -> int:
+    settings = load_settings()
+    path = settings.sqlite_path
+    if not path.exists():
+        print(f"No database at {path}")
+        return 1
+    result = compact_database(
+        path,
+        now=datetime.now(UTC),
+        raw_news_retention_days=settings.raw_news_retention_days,
+        force_vacuum=vacuum,
+    )
+    print(
+        f"Dropped {result.raw_news_pruned} raw feed bodies and {result.snapshots_pruned} "
+        f"snapshots; {'shrank the file' if result.vacuumed else 'no VACUUM needed'}: "
+        f"{format_size(result.bytes_before)} -> {format_size(result.bytes_after)}"
+    )
     return 0
 
 

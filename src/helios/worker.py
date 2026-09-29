@@ -17,6 +17,8 @@ SUMMARY_CHECK_MINUTES = 10
 WEEKLY_REVIEW_CHECK_MINUTES = 30
 #: How often the worker checks whether a backup is due (it runs once the last is a day old).
 BACKUP_CHECK_MINUTES = 60
+#: Retention and VACUUM run once a day.
+STORAGE_COMPACT_MINUTES = 24 * 60
 
 
 class SyncService(Protocol):
@@ -29,6 +31,12 @@ class ReplayService(Protocol):
 
 class NewsService(Protocol):
     async def sync(self) -> object: ...
+
+    async def sync_if_targets_changed(self) -> object | None: ...
+
+
+class StorageCompactor(Protocol):
+    async def compact(self, *, force_vacuum: bool = False) -> object: ...
 
 
 class AlertChecker(Protocol):
@@ -87,6 +95,9 @@ class WorkerContainer(Protocol):
 
     @property
     def budget_notifier(self) -> BudgetChecker: ...
+
+    @property
+    def storage_service(self) -> StorageCompactor: ...
 
     async def startup(self) -> None: ...
 
@@ -195,6 +206,15 @@ class HeliosWorker:
                     max_instances=1,
                     coalesce=True,
                 )
+            if self._settings.storage_compact_enabled:
+                self._scheduler.add_job(
+                    self._run_scheduled_compact,
+                    trigger="interval",
+                    minutes=STORAGE_COMPACT_MINUTES,
+                    id="storage-compact",
+                    max_instances=1,
+                    coalesce=True,
+                )
             if self._settings.weekly_review_enabled:
                 self._scheduler.add_job(
                     self._run_scheduled_weekly_review,
@@ -250,8 +270,12 @@ class HeliosWorker:
             self._logger.warning("worker_sync_failed", error=exc.__class__.__name__)
             return
         if self._settings.refresh_after_sync:
-            # New holdings deserve their headlines now, not at the next three-hourly news run.
-            await self._run_scheduled_news_sync()
+            # New holdings deserve their headlines now, not at the next three-hourly news run;
+            # an unchanged portfolio leaves the news to its own cadence.
+            try:
+                await self._container.news_sync_service.sync_if_targets_changed()
+            except Exception as exc:
+                self._logger.warning("worker_news_sync_failed", error=exc.__class__.__name__)
 
     async def _run_scheduled_alerts(self) -> None:
         if self._container is None:
@@ -274,6 +298,16 @@ class HeliosWorker:
             await self._container.backup_service.run_if_due()
         except Exception as exc:
             self._logger.warning("worker_backup_failed", error=exc.__class__.__name__)
+
+    async def _run_scheduled_compact(self) -> None:
+        """Drop raw data nothing replays any more and shrink the file when worth it."""
+
+        if self._container is None:
+            return
+        try:
+            await self._container.storage_service.compact()
+        except Exception as exc:
+            self._logger.warning("worker_storage_compact_failed", error=exc.__class__.__name__)
 
     async def _run_scheduled_summary(self) -> None:
         """Write today's summary once it is past the configured time (a no-op otherwise)."""

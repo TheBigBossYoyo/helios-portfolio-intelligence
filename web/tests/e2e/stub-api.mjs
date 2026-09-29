@@ -1046,8 +1046,18 @@ const backupStatus = {
   count: 7,
 };
 
+const storageStatus = {
+  databaseBytes: 25_165_824,
+  walBytes: 1_048_576,
+  freeBytes: 524_288,
+  rawNewsRows: 1_240,
+  rawSnapshotRows: 310,
+  rawNewsRetentionDays: 7,
+};
+
 const ROUTES = {
   "/health": health,
+  "/api/v1/storage": storageStatus,
   "/api/v1/backups": backupStatus,
   "/api/v1/ai/weekly/latest": weeklyReview,
   "/api/v1/watchlist": watchlist,
@@ -1126,6 +1136,18 @@ const MUTATIONS = {
   "POST /api/v1/ai/analyse": { action: "ai-analyse", body: aiAnalysis },
   "POST /api/v1/ai/weekly": { action: "ai-weekly", body: weeklyReview },
   "POST /api/v1/backups": { action: "backup", body: backupStatus },
+  "POST /api/v1/storage/compact": {
+    action: "storage-compact",
+    body: {
+      rawNewsPruned: 1200,
+      snapshotsPruned: 2,
+      vacuumed: true,
+      bytesBefore: 117_440_512,
+      bytesAfter: 26_214_400,
+      detail: "Freed 87.0 MB: dropped 1,200 old feed bodies and 2 old snapshots.",
+      status: storageStatus,
+    },
+  },
   "POST /api/v1/theses": { action: "thesis-write", body: theses[0] },
   "POST /api/v1/journal": { action: "journal-write", body: journal[0] },
   // The settings writes. Keyed by method as well as path, so `GET /api/v1/settings/databases`

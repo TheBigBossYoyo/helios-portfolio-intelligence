@@ -386,6 +386,15 @@ export interface BackupStatus {
   count: number;
 }
 
+export interface StorageStatus {
+  databaseBytes: number;
+  walBytes: number;
+  freeBytes: number;
+  rawNewsRows: number;
+  rawSnapshotRows: number;
+  rawNewsRetentionDays: number;
+}
+
 export type AlertKind = "above" | "below" | "gain_pct" | "loss_pct";
 
 export interface PriceAlert {

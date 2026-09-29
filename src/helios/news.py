@@ -726,6 +726,23 @@ class NewsSyncService:
         self._settings = settings
         self._adapters = dict(adapters or {})
         self._clock = clock or SystemClock()
+        self._last_target_key: frozenset[str] | None = None
+
+    async def sync_if_targets_changed(self) -> NewsSyncSummary | None:
+        """Sync only when the set of held or watched instruments changed since the last sync.
+
+        The worker calls this after every portfolio sync, so a new holding gets its headlines
+        straight away; an unchanged portfolio waits for the regular news cadence instead of
+        fetching (and storing) every feed again each hour.
+        """
+
+        targets = await self._repository.list_instrument_news_targets()
+        key = frozenset(target.t212_ticker for target in targets)
+        if key == self._last_target_key:
+            return None
+        summary = await self.sync()
+        self._last_target_key = key
+        return summary
 
     async def sync(self) -> NewsSyncSummary:
         now = self._clock.utcnow()
@@ -759,6 +776,7 @@ class NewsSyncService:
             )
 
         targets = await self._repository.list_instrument_news_targets()
+        self._last_target_key = frozenset(target.t212_ticker for target in targets)
         collected: list[CollectedItem] = []
         notes: list[str] = []
         failures: list[str] = []
@@ -1063,9 +1081,9 @@ class NewsReparseService:
             )
 
         try:
-            feeds_by_key = {entry.key: entry for entry in _load_all_news_feeds(
-                self._settings.news_feeds_path
-            )}
+            feeds_by_key = {
+                entry.key: entry for entry in _load_all_news_feeds(self._settings.news_feeds_path)
+            }
         except NewsFeedConfigError as error:
             return NewsReparseSummary(
                 as_of=now,

@@ -17,6 +17,7 @@ import {
 } from "@/components/settings-forms";
 import {
   backupNowAction,
+  compactStorageAction,
   connectTrading212Action,
   createDatabaseAction,
   restartApiAction,
@@ -24,7 +25,7 @@ import {
   saveSettingAction,
   switchDatabaseAction,
 } from "@/lib/actions";
-import { getBackupStatus, getDatabases, getSettings } from "@/lib/api";
+import { getBackupStatus, getDatabases, getSettings, getStorageStatus } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import type { DatabaseInfo } from "@/lib/types";
 
@@ -59,10 +60,11 @@ const AI_CREDENTIAL_FIELDS = ["anthropic_api_key"];
 const NEWS_CREDENTIAL_FIELDS = ["news_marketaux_api_key"];
 
 export default async function SettingsPage() {
-  const [settings, databases, backups] = await Promise.all([
+  const [settings, databases, backups, storage] = await Promise.all([
     getSettings(),
     getDatabases(),
     getBackupStatus(),
+    getStorageStatus(),
   ]);
 
   if (!settings.ok) {
@@ -321,6 +323,40 @@ export default async function SettingsPage() {
           </div>
         </Panel>
 
+        <Panel
+          actions={
+            <ActionButton
+              action={compactStorageAction}
+              label="Compact now"
+              pendingLabel="Compacting…"
+              variant="secondary"
+            />
+          }
+          subtitle="Raw copies of what Trading 212 and the news feeds sent are stored compressed. Once a day Helios drops the ones nothing needs any more and shrinks the file."
+          title="Storage"
+        >
+          {storage.ok ? (
+            <div className="flex flex-col gap-4">
+              <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                <StorageFigure label="Database" value={megabytes(storage.data.databaseBytes + storage.data.walBytes)} />
+                <StorageFigure label="Reclaimable" value={megabytes(storage.data.freeBytes)} />
+                <StorageFigure label="Raw feed bodies" value={storage.data.rawNewsRows.toLocaleString("en-GB")} />
+                <StorageFigure
+                  label="Raw Trading 212 responses"
+                  value={storage.data.rawSnapshotRows.toLocaleString("en-GB")}
+                />
+              </dl>
+              <Note>
+                Feed bodies are kept {storage.data.rawNewsRetentionDays} days; the articles parsed
+                from them stay for good. Order, dividend and transaction history is never
+                dropped: it is the record everything else is rebuilt from.
+              </Note>
+            </div>
+          ) : (
+            <Unavailable detail={storage.error} reason="Storage status unavailable" />
+          )}
+        </Panel>
+
         <Panel subtitle="Headline feeds, and the identity Helios gives the SEC's own feed." title="News">
           <div className="flex flex-col gap-5">
             {newsCredentials.length > 0 ? (
@@ -522,4 +558,17 @@ function formatBytes(bytes: number): string {
     unit += 1;
   }
   return `${value.toFixed(1)} ${units[unit]}`;
+}
+
+function megabytes(bytes: number): string {
+  return `${(bytes / 1_048_576).toFixed(1)} MB`;
+}
+
+function StorageFigure({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <dt className="text-sm text-ink-3">{label}</dt>
+      <dd className="text-lg font-semibold tabular-nums text-ink">{value}</dd>
+    </div>
+  );
 }

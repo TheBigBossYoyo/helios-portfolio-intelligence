@@ -182,7 +182,7 @@ def _bump(counts: dict[str, int], reason: str) -> None:
     counts[reason] = counts.get(reason, 0) + 1
 
 
-def _classify_endpoint(raw_endpoint: str) -> tuple[str, str]:
+def classify_endpoint(raw_endpoint: str) -> tuple[str, str]:
     """(category, canonical label) for a stored `raw_snapshots.endpoint` value.
 
     A raw endpoint may be a bare path (`/equity/history/orders`), a path with a pagination query
@@ -286,7 +286,7 @@ class T212ReparseService:
         items_parsed = 0
 
         for raw in raw_rows:
-            _category, endpoint = _classify_endpoint(raw.endpoint)
+            _category, endpoint = classify_endpoint(raw.endpoint)
             accumulator = accumulators.setdefault(endpoint, _EndpointAccumulator())
 
             if not (200 <= raw.http_status < 300):

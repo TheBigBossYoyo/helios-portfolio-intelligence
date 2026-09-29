@@ -35,6 +35,7 @@ from .raw_snapshots import RawSnapshotRepository
 from .reporting import PortfolioQualityReportService
 from .resolver import OpenFigiResolver
 from .services import Trading212Service
+from .storage import StorageService
 from .t212_reparse import T212ReparseService
 from .thesis import ThesisService
 from .watchlist import WatchlistService
@@ -66,6 +67,7 @@ class Container:
     weekly_review_service: WeeklyReviewService
     backup_service: BackupService
     budget_notifier: BudgetNotifier
+    storage_service: StorageService
     daily_summary_service: DailySummaryService
     market_data_provider: object
     fx_rate_provider: object
@@ -205,6 +207,7 @@ def build_container(settings: Settings | None = None) -> Container:
         watchlist_service=watchlist_service,
         weekly_review_service=weekly_review_service,
         backup_service=BackupService(resolved_settings),
+        storage_service=StorageService(resolved_settings),
         budget_notifier=BudgetNotifier(portfolio_repository),
         daily_summary_service=daily_summary_service,
         market_data_provider=market_data_provider,

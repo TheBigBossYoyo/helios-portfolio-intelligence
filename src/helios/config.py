@@ -146,6 +146,10 @@ class Settings(BaseSettings):
     backup_dir: Path | None = None
     backup_keep: int = 14
     backup_interval_hours: int = 24
+    # Raw feed bodies are only needed to re-parse recent fetches; the articles themselves are
+    # kept. Older bodies are dropped by the daily storage job (see helios.storage).
+    raw_news_retention_days: int = 7
+    storage_compact_enabled: bool = True
     sync_lease_minutes: int = 15
     ecb_base_url: str = "https://data-api.ecb.europa.eu/service/data"
     market_data_provider: str = "disabled"
@@ -315,6 +319,7 @@ class Settings(BaseSettings):
         "alerts_poll_minutes",
         "backup_keep",
         "backup_interval_hours",
+        "raw_news_retention_days",
         "anthropic_max_tokens",
         "anthropic_timeout_seconds",
         "ai_max_news_items",
