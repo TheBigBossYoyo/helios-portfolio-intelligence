@@ -29,7 +29,6 @@ from .models import (
     PositionLive,
     PositionReconciliation,
     PriceAlert,
-    RawNews,
     SyncStatus,
     T212Export,
     T212ExportRow,
@@ -38,6 +37,7 @@ from .models import (
     WatchlistItem,
 )
 from .portfolio_transforms import InstrumentSeed
+from .raw_store import RawNewsRecord, add_raw_news, list_raw_news
 
 METADATA_ENDPOINT = "/equity/metadata/instruments"
 PORTFOLIO_SYNC_LEASE_ENDPOINT = "__portfolio_sync__"
@@ -961,17 +961,17 @@ class PortfolioRepository:
                 for ticker, isin, yahoo, name in rows.all()
             ]
 
-    async def insert_raw_news(self, row: RawNews) -> int:
+    async def insert_raw_news(self, record: RawNewsRecord) -> int:
+        """Store a feed body, compressed against the previous fetch of the same feed."""
         async with self._session_factory() as session:
             async with session.begin():
-                session.add(row)
+                row = await add_raw_news(session, record)
             return row.id
 
-    async def list_raw_news(self) -> list[RawNews]:
+    async def list_raw_news(self) -> list[RawNewsRecord]:
         """Every stored raw feed body, oldest first -- the replay input for `news-reparse`."""
         async with self._session_factory() as session:
-            statement = select(RawNews).order_by(RawNews.id)
-            return list(await session.scalars(statement))
+            return await list_raw_news(session)
 
     async def list_all_instrument_news_targets(self) -> list[InstrumentNewsTarget]:
         """Every instrument Helios has metadata for, not just ones currently held.

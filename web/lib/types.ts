@@ -392,7 +392,7 @@ export interface StorageStatus {
   freeBytes: number;
   rawNewsRows: number;
   rawSnapshotRows: number;
-  rawNewsRetentionDays: number;
+  rawStoredBytes: number;
 }
 
 export type AlertKind = "above" | "below" | "gain_pct" | "loss_pct";

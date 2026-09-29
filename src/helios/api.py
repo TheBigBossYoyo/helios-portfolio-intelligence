@@ -466,7 +466,7 @@ def _storage_model(container: Container) -> StorageStatusModel:
         free_bytes=current.free_bytes,
         raw_news_rows=current.raw_news_rows,
         raw_snapshot_rows=current.raw_snapshot_rows,
-        raw_news_retention_days=container.settings.raw_news_retention_days,
+        raw_stored_bytes=current.raw_stored_bytes,
     )
 
 
@@ -482,17 +482,15 @@ async def compact_storage(
     container: Annotated[Container, Depends(get_container)],
     _guard: Annotated[None, Depends(require_local_action("storage-compact"))],
 ) -> StorageCompactModel:
-    """Drop raw data nothing replays any more, then shrink the file."""
+    """Hand free space in the database file back to the disk. Never removes data."""
 
     result = await container.storage_service.compact(force_vacuum=True)
     freed = max(result.bytes_before - result.bytes_after, 0)
     detail = (
-        f"Freed {freed / 1_048_576:.1f} MB: dropped {result.raw_news_pruned:,} old feed bodies "
-        f"and {result.snapshots_pruned:,} old snapshots."
+        f"Compacted: {result.bytes_after / 1_048_576:.1f} MB, "
+        f"{freed / 1_048_576:.1f} MB given back to the disk. No data was removed."
     )
     return StorageCompactModel(
-        raw_news_pruned=result.raw_news_pruned,
-        snapshots_pruned=result.snapshots_pruned,
         vacuumed=result.vacuumed,
         bytes_before=result.bytes_before,
         bytes_after=result.bytes_after,

@@ -1210,10 +1210,10 @@ def test_storage_status_and_compact(tmp_path: Path) -> None:
         )
 
     assert before.status_code == 200
-    assert before.json()["rawNewsRetentionDays"] == 7
     assert before.json()["databaseBytes"] > 0
+    assert before.json()["rawNewsRows"] == 0
     assert compacted.status_code == 200
     body = compacted.json()
-    assert body["rawNewsPruned"] == 0
+    assert "No data was removed" in body["detail"]
     assert body["vacuumed"] is True
     assert body["status"]["freeBytes"] == 0

@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Index, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
-from .compression import CompressedJSON, CompressedText
+from .compression import CompressedText
 
 
 class UTCDateTime(TypeDecorator[datetime]):
@@ -67,8 +67,13 @@ class RawSnapshot(Base):
     ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     http_status: Mapped[int] = mapped_column(Integer, nullable=False)
     content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    #: Stored compressed; reads back as the JSON value written.
-    payload_json: Mapped[object] = mapped_column(CompressedJSON(), nullable=False)
+    #: The JSON payload, compressed (see helios.compression); read and written through
+    #: helios.raw_store, which decodes deltas against ``delta_base_id``.
+    payload_blob: Mapped[bytes] = mapped_column("payload_json", LargeBinary, nullable=False)
+    stream_key: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    delta_base_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (Index("ix_raw_snapshots_stream", "stream_key", "id"),)
 
 
 class Instrument(Base):
@@ -245,7 +250,12 @@ class RawNews(Base):
     ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     http_status: Mapped[int] = mapped_column(Integer, nullable=False)
     content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    body: Mapped[str] = mapped_column(CompressedText(), nullable=False)
+    #: The body, compressed (see helios.compression); read and written through helios.raw_store.
+    body_blob: Mapped[bytes] = mapped_column("body", LargeBinary, nullable=False)
+    stream_key: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    delta_base_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (Index("ix_raw_news_stream", "stream_key", "id"),)
 
 
 class NewsItem(Base):

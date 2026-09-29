@@ -1052,7 +1052,7 @@ const storageStatus = {
   freeBytes: 524_288,
   rawNewsRows: 1_240,
   rawSnapshotRows: 310,
-  rawNewsRetentionDays: 7,
+  rawStoredBytes: 1_887_436,
 };
 
 const ROUTES = {
@@ -1139,12 +1139,10 @@ const MUTATIONS = {
   "POST /api/v1/storage/compact": {
     action: "storage-compact",
     body: {
-      rawNewsPruned: 1200,
-      snapshotsPruned: 2,
       vacuumed: true,
-      bytesBefore: 117_440_512,
-      bytesAfter: 26_214_400,
-      detail: "Freed 87.0 MB: dropped 1,200 old feed bodies and 2 old snapshots.",
+      bytesBefore: 33_021_952,
+      bytesAfter: 12_939_264,
+      detail: "Compacted: 12.3 MB, 19.2 MB given back to the disk. No data was removed.",
       status: storageStatus,
     },
   },

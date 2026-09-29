@@ -14,7 +14,7 @@ from sqlalchemy.pool import NullPool
 
 from helios.config import Settings
 from helios.db import migrate_database
-from helios.models import Instrument, NewsItem, PositionLive, RawNews
+from helios.models import Instrument, NewsItem, PositionLive
 from helios.news import (
     CollectedItem,
     FeedRequest,
@@ -36,6 +36,7 @@ from helios.news import (
 )
 from helios.portfolio_repository import InstrumentNewsTarget, PortfolioRepository
 from helios.rate_limit import Clock
+from helios.raw_store import RawNewsRecord
 
 NOW = datetime(2024, 5, 1, 12, 0, tzinfo=UTC)
 
@@ -540,8 +541,8 @@ async def test_sync_stores_raw_before_parsed(tmp_path: Path) -> None:
     summary = await service.sync()
 
     async with session_factory() as session:
-        raw_rows = list(await session.scalars(select(RawNews)))
         items = list(await session.scalars(select(NewsItem)))
+    raw_rows = await repository.list_raw_news()
 
     assert summary.raw_stored == 1
     # The exact bytes the publisher served are kept, so a parser fix can be replayed.
@@ -669,7 +670,7 @@ async def test_sync_survives_one_failing_publisher(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_sync_keeps_the_raw_body_when_parsing_fails(tmp_path: Path) -> None:
-    repository, session_factory = await _repository(tmp_path, "news_parsefail.sqlite3")
+    repository, _ = await _repository(tmp_path, "news_parsefail.sqlite3")
     feeds = _write(tmp_path, "  - key: broken\n    label: B\n    url: https://x/f\n")
     service = NewsSyncService(
         repository,
@@ -680,8 +681,7 @@ async def test_sync_keeps_the_raw_body_when_parsing_fails(tmp_path: Path) -> Non
 
     summary = await service.sync()
 
-    async with session_factory() as session:
-        raw_rows = list(await session.scalars(select(RawNews)))
+    raw_rows = await repository.list_raw_news()
 
     assert summary.raw_stored == 1 and len(raw_rows) == 1
     assert summary.items_written == 0
@@ -887,7 +887,9 @@ async def _seed_raw_news(
     repository: PortfolioRepository, *, feed_key: str, url: str, body: str, ts: datetime = NOW
 ) -> int:
     return await repository.insert_raw_news(
-        RawNews(feed_key=feed_key, url=url, ts=ts, http_status=200, content_type=None, body=body)
+        RawNewsRecord(
+            feed_key=feed_key, url=url, ts=ts, http_status=200, content_type=None, body=body
+        )
     )
 
 

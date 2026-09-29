@@ -49,10 +49,11 @@ from defusedxml import ElementTree as SafeElementTree
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .config import Settings
-from .models import NewsItem, RawNews
+from .models import NewsItem
 from .news_relevance import CompanyTerms, RelevanceResult, classify, company_terms
 from .portfolio_repository import InstrumentNewsTarget, PortfolioRepository
 from .rate_limit import Clock, SystemClock
+from .raw_store import RawNewsRecord
 from .resolver import load_instrument_overrides
 
 ALLOWED_SCHEMES = frozenset({"http", "https"})
@@ -726,23 +727,6 @@ class NewsSyncService:
         self._settings = settings
         self._adapters = dict(adapters or {})
         self._clock = clock or SystemClock()
-        self._last_target_key: frozenset[str] | None = None
-
-    async def sync_if_targets_changed(self) -> NewsSyncSummary | None:
-        """Sync only when the set of held or watched instruments changed since the last sync.
-
-        The worker calls this after every portfolio sync, so a new holding gets its headlines
-        straight away; an unchanged portfolio waits for the regular news cadence instead of
-        fetching (and storing) every feed again each hour.
-        """
-
-        targets = await self._repository.list_instrument_news_targets()
-        key = frozenset(target.t212_ticker for target in targets)
-        if key == self._last_target_key:
-            return None
-        summary = await self.sync()
-        self._last_target_key = key
-        return summary
 
     async def sync(self) -> NewsSyncSummary:
         now = self._clock.utcnow()
@@ -776,7 +760,6 @@ class NewsSyncService:
             )
 
         targets = await self._repository.list_instrument_news_targets()
-        self._last_target_key = frozenset(target.t212_ticker for target in targets)
         collected: list[CollectedItem] = []
         notes: list[str] = []
         failures: list[str] = []
@@ -803,7 +786,7 @@ class NewsSyncService:
                     continue
                 fetched += 1
                 raw_id = await self._repository.insert_raw_news(
-                    RawNews(
+                    RawNewsRecord(
                         feed_key=request.feed_key,
                         url=response.url,
                         ts=now,

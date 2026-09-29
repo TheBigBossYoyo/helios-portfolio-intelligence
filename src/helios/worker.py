@@ -17,8 +17,9 @@ SUMMARY_CHECK_MINUTES = 10
 WEEKLY_REVIEW_CHECK_MINUTES = 30
 #: How often the worker checks whether a backup is due (it runs once the last is a day old).
 BACKUP_CHECK_MINUTES = 60
-#: Retention and VACUUM run once a day.
+#: Compaction runs once a day, and once this long after the worker starts.
 STORAGE_COMPACT_MINUTES = 24 * 60
+STORAGE_STARTUP_DELAY_SECONDS = 300
 
 
 class SyncService(Protocol):
@@ -31,8 +32,6 @@ class ReplayService(Protocol):
 
 class NewsService(Protocol):
     async def sync(self) -> object: ...
-
-    async def sync_if_targets_changed(self) -> object | None: ...
 
 
 class StorageCompactor(Protocol):
@@ -149,6 +148,7 @@ class HeliosWorker:
         self._container: WorkerContainer | None = None
         self._initial_sync_task: asyncio.Task[None] | None = None
         self._initial_news_task: asyncio.Task[None] | None = None
+        self._initial_compact_task: asyncio.Task[None] | None = None
 
     async def start(self) -> Scheduler:
         container = self._container_factory(self._settings)
@@ -243,10 +243,12 @@ class HeliosWorker:
             self._initial_sync_task = asyncio.create_task(self._run_scheduled_sync())
             self._logger.info("worker_started", sync_enabled=True)
         self._initial_news_task = asyncio.create_task(self._run_scheduled_news_sync())
+        if self._settings.storage_compact_enabled:
+            self._initial_compact_task = asyncio.create_task(self._compact_after_start())
         return self._scheduler
 
     async def shutdown(self) -> None:
-        for task in (self._initial_sync_task, self._initial_news_task):
+        for task in (self._initial_sync_task, self._initial_news_task, self._initial_compact_task):
             if task is None:
                 continue
             task.cancel()
@@ -254,6 +256,7 @@ class HeliosWorker:
                 await task
         self._initial_sync_task = None
         self._initial_news_task = None
+        self._initial_compact_task = None
         if self._scheduler.running:
             self._scheduler.shutdown(wait=False)
         if self._container is not None:
@@ -270,12 +273,8 @@ class HeliosWorker:
             self._logger.warning("worker_sync_failed", error=exc.__class__.__name__)
             return
         if self._settings.refresh_after_sync:
-            # New holdings deserve their headlines now, not at the next three-hourly news run;
-            # an unchanged portfolio leaves the news to its own cadence.
-            try:
-                await self._container.news_sync_service.sync_if_targets_changed()
-            except Exception as exc:
-                self._logger.warning("worker_news_sync_failed", error=exc.__class__.__name__)
+            # New holdings deserve their headlines now, not at the next three-hourly news run.
+            await self._run_scheduled_news_sync()
 
     async def _run_scheduled_alerts(self) -> None:
         if self._container is None:
@@ -299,8 +298,14 @@ class HeliosWorker:
         except Exception as exc:
             self._logger.warning("worker_backup_failed", error=exc.__class__.__name__)
 
+    async def _compact_after_start(self) -> None:
+        """Compact once soon after start, so a migration's freed space goes back to the disk."""
+
+        await asyncio.sleep(STORAGE_STARTUP_DELAY_SECONDS)
+        await self._run_scheduled_compact()
+
     async def _run_scheduled_compact(self) -> None:
-        """Drop raw data nothing replays any more and shrink the file when worth it."""
+        """Return free space to the disk (lossless: see helios.storage)."""
 
         if self._container is None:
             return

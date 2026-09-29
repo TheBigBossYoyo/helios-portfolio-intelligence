@@ -443,12 +443,10 @@ class StorageStatusModel(DTOModel):
     free_bytes: int = Field(alias="freeBytes")
     raw_news_rows: int = Field(alias="rawNewsRows")
     raw_snapshot_rows: int = Field(alias="rawSnapshotRows")
-    raw_news_retention_days: int = Field(alias="rawNewsRetentionDays")
+    raw_stored_bytes: int = Field(alias="rawStoredBytes")
 
 
 class StorageCompactModel(DTOModel):
-    raw_news_pruned: int = Field(alias="rawNewsPruned")
-    snapshots_pruned: int = Field(alias="snapshotsPruned")
     vacuumed: bool
     bytes_before: int = Field(alias="bytesBefore")
     bytes_after: int = Field(alias="bytesAfter")

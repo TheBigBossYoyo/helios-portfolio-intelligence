@@ -396,7 +396,7 @@ export function parseList<T>(value: unknown): T[] | null {
 
 export function getStorageStatus(): Promise<ApiResult<StorageStatus>> {
   return getJson("/api/v1/storage", (value) =>
-    parseShape<StorageStatus>(value, ["databaseBytes", "walBytes", "freeBytes", "rawNewsRetentionDays"]),
+    parseShape<StorageStatus>(value, ["databaseBytes", "walBytes", "freeBytes", "rawStoredBytes"]),
   );
 }
 

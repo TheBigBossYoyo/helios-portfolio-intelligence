@@ -139,13 +139,13 @@ test.describe("pipeline controls", () => {
     expect(call?.action).toBe("backup");
   });
 
-  test("compacting storage reports what it freed", async ({ page, request }) => {
+  test("compacting storage reports what it gave back", async ({ page, request }) => {
     await page.goto("/settings");
 
     await expect(page.getByText("25.0 MB", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Compact now" }).click();
     await expect(
-      page.getByText("Freed 87.0 MB: dropped 1,200 old feed bodies and 2 old snapshots."),
+      page.getByText("Compacted: 12.3 MB, 19.2 MB given back to the disk. No data was removed."),
     ).toBeVisible();
     const call = lastFor(await recorded(request), "POST", /\/api\/v1\/storage\/compact$/);
     expect(call?.action).toBe("storage-compact");

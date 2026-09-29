@@ -332,24 +332,27 @@ export default async function SettingsPage() {
               variant="secondary"
             />
           }
-          subtitle="Raw copies of what Trading 212 and the news feeds sent are stored compressed. Once a day Helios drops the ones nothing needs any more and shrinks the file."
+          subtitle="Everything Trading 212 and the news feeds ever sent is kept, compressed. Helios gives free space back to the disk by itself every day."
           title="Storage"
         >
           {storage.ok ? (
             <div className="flex flex-col gap-4">
               <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                 <StorageFigure label="Database" value={megabytes(storage.data.databaseBytes + storage.data.walBytes)} />
-                <StorageFigure label="Reclaimable" value={megabytes(storage.data.freeBytes)} />
-                <StorageFigure label="Raw feed bodies" value={storage.data.rawNewsRows.toLocaleString("en-GB")} />
+                <StorageFigure label="Raw data, compressed" value={megabytes(storage.data.rawStoredBytes)} />
+                <StorageFigure label="Feed downloads kept" value={storage.data.rawNewsRows.toLocaleString("en-GB")} />
                 <StorageFigure
-                  label="Raw Trading 212 responses"
+                  label="Trading 212 responses kept"
                   value={storage.data.rawSnapshotRows.toLocaleString("en-GB")}
                 />
               </dl>
               <Note>
-                Feed bodies are kept {storage.data.rawNewsRetentionDays} days; the articles parsed
-                from them stay for good. Order, dividend and transaction history is never
-                dropped: it is the record everything else is rebuilt from.
+                Nothing is ever deleted to save space. Each download is stored as the difference
+                from the previous one of the same feed or endpoint, so a new copy of a feed costs a
+                few hundred bytes, and every row reads back exactly as it arrived.
+                {storage.data.freeBytes > 0
+                  ? ` ${megabytes(storage.data.freeBytes)} of free space will go back to the disk at the next compaction.`
+                  : ""}
               </Note>
             </div>
           ) : (

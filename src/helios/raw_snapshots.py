@@ -6,10 +6,9 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Protocol
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from .models import RawSnapshot
+from .raw_store import RawSnapshotRecord, add_raw_snapshot, list_raw_snapshots
 
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
@@ -41,18 +40,19 @@ class RawSnapshotRepository:
         payload: JsonValue,
     ) -> None:
         async with self._session_factory() as session:
-            session.add(
-                RawSnapshot(
-                    endpoint=endpoint,
-                    ts=recorded_at,
-                    http_status=http_status,
-                    content_type=content_type,
-                    payload_json=payload,
+            async with session.begin():
+                await add_raw_snapshot(
+                    session,
+                    RawSnapshotRecord(
+                        endpoint=endpoint,
+                        ts=recorded_at,
+                        http_status=http_status,
+                        content_type=content_type,
+                        payload_json=payload,
+                    ),
                 )
-            )
-            await session.commit()
 
-    async def list_snapshots(self) -> list[RawSnapshot]:
+    async def list_snapshots(self) -> list[RawSnapshotRecord]:
         """Every stored Trading 212 response, oldest first -- the replay input for `t212-reparse`.
 
         Mirrors `PortfolioRepository.list_raw_news`: no filtering happens in SQL because a raw
@@ -60,8 +60,7 @@ class RawSnapshotRepository:
         URL), so `t212_reparse` classifies rows in Python instead.
         """
         async with self._session_factory() as session:
-            statement = select(RawSnapshot).order_by(RawSnapshot.id)
-            return list(await session.scalars(statement))
+            return await list_raw_snapshots(session)
 
 
 def encode_payload(content: bytes, content_type: str | None) -> JsonValue:
