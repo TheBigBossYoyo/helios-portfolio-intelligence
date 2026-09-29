@@ -15,7 +15,7 @@ from starlette.testclient import TestClient as StarletteClient
 from helios.app import create_app as create_api
 from helios.config import Settings
 from helios.db import migrate_database
-from helios.devices import CODE_LENGTH, DeviceService, normalise_code
+from helios.devices import CODE_LENGTH, DeviceService, normalise_code, pick_addresses
 from helios.gateway import COOKIE, REMOTE_HEADER, create_app, device_name
 from helios.rate_limit import Clock
 
@@ -84,6 +84,14 @@ async def test_codes_expire_and_a_new_code_retires_the_old_one(tmp_path: Path) -
     assert normalise_code(" ab-cd ") == "ABCD"
 
 
+def test_only_the_routed_address_and_tailscale_are_offered() -> None:
+    # WSL and Hyper-V adapters have private addresses too; no phone can reach them.
+    others = ["172.27.16.1", "192.168.1.9", "100.101.102.103", "127.0.0.1"]
+    assert pick_addresses("192.168.1.9", others) == ["192.168.1.9", "100.101.102.103"]
+    assert pick_addresses(None, others) == ["100.101.102.103"]
+    assert pick_addresses("8.8.8.8", []) == []  # a public address is not a home network
+
+
 def test_device_names_come_from_the_user_agent() -> None:
     assert device_name("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)") == "iPhone"
     assert device_name("Mozilla/5.0 (Linux; Android 15; Pixel 9) Mobile Safari") == "Android phone"
@@ -149,6 +157,7 @@ def test_pairing_sets_the_cookie_and_a_paired_phone_is_forwarded_marked_remote()
             REMOTE_HEADER: "0",
             "X-Helios-Local-Action": "settings-write",
             "cookie": f"{COOKIE}=good-token; other=1",
+            "accept-encoding": "br",
         },
     )
 
@@ -159,6 +168,8 @@ def test_pairing_sets_the_cookie_and_a_paired_phone_is_forwarded_marked_remote()
     assert "x-helios-local-action" not in forwarded.headers
     assert forwarded.headers["host"] == "192.168.1.20:8787"
     assert "good-token" not in forwarded.headers.get("cookie", "")
+    # Compression exactly as the phone asked for it.
+    assert forwarded.headers["accept-encoding"] == "br"
 
 
 def test_wrong_codes_are_refused_and_rate_limited() -> None:

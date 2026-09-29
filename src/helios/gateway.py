@@ -67,6 +67,8 @@ HOP_BY_HOP = frozenset(
         "host",
     }
 )
+#: Response headers the gateway's own server sets (or recomputes while streaming).
+RESPONSE_OWN_HEADERS = frozenset({"content-length", "date", "server"})
 #: Headers a phone must never be able to set for the dashboard.
 STRIPPED_REQUEST_HEADERS = frozenset({REMOTE_HEADER, LOCAL_ACTION_HEADER.lower(), "cookie"})
 
@@ -246,6 +248,10 @@ def _forward_headers(request: Request, remote_host: str) -> list[tuple[str, str]
         headers.append(("cookie", kept))
     # Server actions compare Origin with Host, so the phone's own Host is kept.
     headers.append(("host", request.headers.get("host", remote_host)))
+    # The body is passed through as the dashboard encodes it, so ask for exactly what the phone
+    # accepts (the HTTP client would otherwise add its own gzip preference).
+    if "accept-encoding" not in request.headers:
+        headers.append(("accept-encoding", "identity"))
     headers.append((REMOTE_HEADER, "1"))
     headers.append(("x-forwarded-for", request.client.host if request.client else ""))
     headers.append(("x-forwarded-proto", request.url.scheme))
@@ -324,7 +330,7 @@ def create_app(
         headers = {
             key: value
             for key, value in upstream_response.headers.items()
-            if key.lower() not in HOP_BY_HOP and key.lower() != "content-length"
+            if key.lower() not in HOP_BY_HOP and key.lower() not in RESPONSE_OWN_HEADERS
         }
         return StreamingResponse(
             upstream_response.aiter_raw(),

@@ -58,32 +58,48 @@ def normalise_code(code: str) -> str:
     return "".join(ch for ch in code.upper() if ch.isalnum())
 
 
-def lan_addresses() -> list[str]:
-    """This computer's private IPv4 addresses (Wi-Fi, Ethernet, Tailscale), best first."""
+def pick_addresses(primary: str | None, others: list[str]) -> list[str]:
+    """The address a phone on the same Wi-Fi can use, then any Tailscale address.
 
-    found: list[str] = []
-    try:
-        # A UDP "connection" sends nothing; it only asks the OS which interface would route out.
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-            probe.connect(("192.0.2.1", 9))
-            found.append(probe.getsockname()[0])
-    except OSError:
-        pass
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            found.append(str(info[4][0]))
-    except OSError:
-        pass
+    Only the interface the computer routes through counts as "the Wi-Fi": Windows also has
+    virtual adapters (WSL, Hyper-V, VPNs) with private addresses no phone can reach.
+    """
+
     addresses: list[str] = []
-    for raw in found:
+    for raw in [primary, *others]:
+        if raw is None or raw in addresses:
+            continue
         try:
             address = ipaddress.IPv4Address(raw)
         except ValueError:
             continue
-        shared = address in ipaddress.IPv4Network("100.64.0.0/10")  # Tailscale / CGNAT
-        if (address.is_private or shared) and not address.is_loopback and raw not in addresses:
+        if address.is_loopback:
+            continue
+        if (raw == primary and address.is_private) or is_tailscale(raw):
             addresses.append(raw)
     return addresses
+
+
+def lan_addresses() -> list[str]:
+    """This computer's address on its network, and its Tailscale address if it has one."""
+
+    primary: str | None = None
+    try:
+        # A UDP "connection" sends nothing; it only asks the OS which interface would route out.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 9))
+            primary = str(probe.getsockname()[0])
+    except OSError:
+        pass
+    others: list[str] = []
+    try:
+        others = [
+            str(info[4][0])
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        ]
+    except OSError:
+        pass
+    return pick_addresses(primary, others)
 
 
 def is_tailscale(address: str) -> bool:
