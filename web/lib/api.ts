@@ -8,6 +8,7 @@ import type {
   Health,
   JournalEntry,
   AppNotification,
+  BackupStatus,
   CardHistory,
   InstrumentDetail,
   InstrumentMatch,
@@ -390,6 +391,10 @@ export function getInstrumentDetail(ticker: string): Promise<ApiResult<Instrumen
 
 export function parseList<T>(value: unknown): T[] | null {
   return Array.isArray(value) ? (value as T[]) : null;
+}
+
+export function getBackupStatus(): Promise<ApiResult<BackupStatus>> {
+  return getJson("/api/v1/backups", (value) => parseShape<BackupStatus>(value, ["enabled", "directory", "count"]));
 }
 
 export function getWatchlist(): Promise<ApiResult<WatchEntry[]>> {

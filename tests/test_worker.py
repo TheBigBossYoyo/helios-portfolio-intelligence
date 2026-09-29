@@ -85,6 +85,23 @@ class FakeWeeklyReview:
 
 
 @dataclass
+class FakeBackups:
+    calls: int = 0
+
+    async def run_if_due(self) -> None:
+        self.calls += 1
+
+
+@dataclass
+class FakeBudgets:
+    calls: int = 0
+
+    async def check(self) -> list[object]:
+        self.calls += 1
+        return []
+
+
+@dataclass
 class FakeContainer:
     sync_service: FakeSyncService
     replay_service: FakeReplayService = field(default_factory=FakeReplayService)
@@ -93,6 +110,8 @@ class FakeContainer:
     alerts: FakeAlertService = field(default_factory=FakeAlertService)
     summary: FakeSummaryService = field(default_factory=FakeSummaryService)
     weekly: FakeWeeklyReview = field(default_factory=FakeWeeklyReview)
+    backups: FakeBackups = field(default_factory=FakeBackups)
+    budgets: FakeBudgets = field(default_factory=FakeBudgets)
     startup_calls: int = 0
     shutdown_calls: int = 0
 
@@ -123,6 +142,14 @@ class FakeContainer:
     @property
     def weekly_review_service(self) -> FakeWeeklyReview:
         return self.weekly
+
+    @property
+    def backup_service(self) -> FakeBackups:
+        return self.backups
+
+    @property
+    def budget_notifier(self) -> FakeBudgets:
+        return self.budgets
 
     async def startup(self) -> None:
         self.startup_calls += 1
@@ -188,6 +215,7 @@ async def test_worker_starts_without_credentials(tmp_path: Path) -> None:
         assert [job["id"] for job in scheduler.jobs] == [
             "price-alerts",
             "daily-summary",
+            "backup",
             "news-sync",
         ]
         assert container.sync_service.calls == 0
@@ -223,6 +251,7 @@ async def test_worker_registers_interval_job_and_runs_initial_sync(tmp_path: Pat
             "portfolio-sync",
             "price-alerts",
             "daily-summary",
+            "backup",
             "news-sync",
         ]
         job = scheduler.jobs[0]
@@ -389,7 +418,10 @@ async def test_alert_and_summary_jobs_call_their_services(tmp_path: Path) -> Non
     try:
         await worker._run_scheduled_alerts()
         await worker._run_scheduled_summary()
+        await worker._run_scheduled_backup()
     finally:
         await worker.shutdown()
 
     assert (container.alerts.calls, container.summary.calls) == (1, 1)
+    # The alerts job also checks budgets.
+    assert (container.budgets.calls, container.backups.calls) == (1, 1)

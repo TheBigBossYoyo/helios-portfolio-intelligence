@@ -15,6 +15,8 @@ from .logging import configure_logging, get_logger
 SUMMARY_CHECK_MINUTES = 10
 #: How often the worker checks whether this week's review is due (only when switched on).
 WEEKLY_REVIEW_CHECK_MINUTES = 30
+#: How often the worker checks whether a backup is due (it runs once the last is a day old).
+BACKUP_CHECK_MINUTES = 60
 
 
 class SyncService(Protocol):
@@ -39,6 +41,14 @@ class SummaryWriter(Protocol):
 
 class WeeklyReviewWriter(Protocol):
     async def maybe_run_scheduled(self) -> object | None: ...
+
+
+class BackupRunner(Protocol):
+    async def run_if_due(self) -> object | None: ...
+
+
+class BudgetChecker(Protocol):
+    async def check(self) -> Sequence[object]: ...
 
 
 class CardRefreshOutcome(Protocol):
@@ -71,6 +81,12 @@ class WorkerContainer(Protocol):
 
     @property
     def weekly_review_service(self) -> WeeklyReviewWriter: ...
+
+    @property
+    def backup_service(self) -> BackupRunner: ...
+
+    @property
+    def budget_notifier(self) -> BudgetChecker: ...
 
     async def startup(self) -> None: ...
 
@@ -170,6 +186,15 @@ class HeliosWorker:
                     max_instances=1,
                     coalesce=True,
                 )
+            if self._settings.backup_enabled:
+                self._scheduler.add_job(
+                    self._run_scheduled_backup,
+                    trigger="interval",
+                    minutes=BACKUP_CHECK_MINUTES,
+                    id="backup",
+                    max_instances=1,
+                    coalesce=True,
+                )
             if self._settings.weekly_review_enabled:
                 self._scheduler.add_job(
                     self._run_scheduled_weekly_review,
@@ -235,6 +260,20 @@ class HeliosWorker:
             await self._container.alert_service.evaluate()
         except Exception as exc:
             self._logger.warning("worker_alerts_failed", error=exc.__class__.__name__)
+        try:
+            await self._container.budget_notifier.check()
+        except Exception as exc:
+            self._logger.warning("worker_budgets_failed", error=exc.__class__.__name__)
+
+    async def _run_scheduled_backup(self) -> None:
+        """A verified copy of the database, once the last one is a day old."""
+
+        if self._container is None:
+            return
+        try:
+            await self._container.backup_service.run_if_due()
+        except Exception as exc:
+            self._logger.warning("worker_backup_failed", error=exc.__class__.__name__)
 
     async def _run_scheduled_summary(self) -> None:
         """Write today's summary once it is past the configured time (a no-op otherwise)."""

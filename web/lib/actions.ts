@@ -44,6 +44,7 @@ type LocalAction =
   | "alerts-write"
   | "watchlist-write"
   | "ai-weekly"
+  | "backup"
   | "ai-analyse"
   | "thesis-write"
   | "journal-write"
@@ -290,6 +291,14 @@ export async function writeWeeklyReviewAction(): Promise<ActionResult> {
   return mutate("/api/v1/ai/weekly", "ai-weekly", {
     successMessage: "This week's review is written.",
     revalidate: ["/insights"],
+  });
+}
+
+/** A verified copy of the database, now. */
+export async function backupNowAction(): Promise<ActionResult> {
+  return mutate("/api/v1/backups", "backup", {
+    successMessage: "Backed up and verified.",
+    revalidate: ["/settings"],
   });
 }
 

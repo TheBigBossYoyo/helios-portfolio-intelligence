@@ -377,6 +377,15 @@ export interface WatchEntry {
   activeAlerts: number;
 }
 
+export interface BackupStatus {
+  enabled: boolean;
+  directory: string;
+  lastPath: string | null;
+  lastAt: string | null;
+  lastSizeBytes: number | null;
+  count: number;
+}
+
 export type AlertKind = "above" | "below" | "gain_pct" | "loss_pct";
 
 export interface PriceAlert {

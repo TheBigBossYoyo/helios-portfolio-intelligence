@@ -129,6 +129,16 @@ test.describe("pipeline controls", () => {
     expect(call?.action).toBe("ai-weekly");
   });
 
+  test("backing up now carries the local-action header", async ({ page, request }) => {
+    await page.goto("/settings");
+
+    await expect(page.getByText(/Last backup .* \(3\.0 MB\), 7 kept in/)).toBeVisible();
+    await page.getByRole("button", { name: "Back up now" }).click();
+    await expect(page.getByText("Backed up and verified.")).toBeVisible();
+    const call = lastFor(await recorded(request), "POST", /\/api\/v1\/backups$/);
+    expect(call?.action).toBe("backup");
+  });
+
   test("a replay confirms first, then reports what it wrote", async ({ page, request }) => {
     await page.goto("/performance");
 

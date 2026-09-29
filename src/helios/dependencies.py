@@ -13,6 +13,7 @@ from .card_history import CardHistoryService
 from .client import Trading212Client
 from .config import Settings, load_settings
 from .db import create_engine, create_session_factory, migrate_database
+from .housekeeping import BackupService, BudgetNotifier
 from .instrument_detail import InstrumentDetailService
 from .news import NewsHttpClient, NewsReparseService, NewsSyncService
 from .performance import (
@@ -63,6 +64,8 @@ class Container:
     alert_service: AlertService
     watchlist_service: WatchlistService
     weekly_review_service: WeeklyReviewService
+    backup_service: BackupService
+    budget_notifier: BudgetNotifier
     daily_summary_service: DailySummaryService
     market_data_provider: object
     fx_rate_provider: object
@@ -201,6 +204,8 @@ def build_container(settings: Settings | None = None) -> Container:
         alert_service=alert_service,
         watchlist_service=watchlist_service,
         weekly_review_service=weekly_review_service,
+        backup_service=BackupService(resolved_settings),
+        budget_notifier=BudgetNotifier(portfolio_repository),
         daily_summary_service=daily_summary_service,
         market_data_provider=market_data_provider,
         fx_rate_provider=fx_rate_provider,

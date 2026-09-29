@@ -322,6 +322,17 @@ test.describe("weekly review", () => {
   });
 });
 
+test.describe("settings: notifications and backups", () => {
+  test("offers the summary, weekly review and backup switches", async ({ page }) => {
+    await page.goto("/settings");
+
+    await expect(page.getByRole("heading", { name: "Notifications and reviews" })).toBeVisible();
+    await expect(page.getByLabel("Weekly AI review")).toBeVisible();
+    await expect(page.getByRole("combobox", { name: /^Daily summary/ })).toBeVisible();
+    await expect(page.getByLabel("Backup folder")).toBeVisible();
+  });
+});
+
 test.describe("plan", () => {
   test("shows money in and out and a projection from editable assumptions", async ({ page }) => {
     await page.goto("/plan");

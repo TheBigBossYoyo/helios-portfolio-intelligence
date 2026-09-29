@@ -1,6 +1,7 @@
 import { AlertTriangle } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { ActionButton } from "@/components/action-button";
 import { DataTable, type Column } from "@/components/data-table";
 import { Note, PageHeader, Panel, Unavailable } from "@/components/panel";
 import { StatusBadge } from "@/components/status-badge";
@@ -15,6 +16,7 @@ import {
   type Choice,
 } from "@/components/settings-forms";
 import {
+  backupNowAction,
   connectTrading212Action,
   createDatabaseAction,
   restartApiAction,
@@ -22,7 +24,7 @@ import {
   saveSettingAction,
   switchDatabaseAction,
 } from "@/lib/actions";
-import { getDatabases, getSettings } from "@/lib/api";
+import { getBackupStatus, getDatabases, getSettings } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import type { DatabaseInfo } from "@/lib/types";
 
@@ -33,6 +35,11 @@ const MARKET_DATA_PROVIDERS: Choice[] = [
   { value: "alphavantage", label: "Alpha Vantage" },
   { value: "eodhd", label: "EODHD" },
   { value: "disabled", label: "Disabled" },
+];
+
+const ON_OFF: Choice[] = [
+  { value: "true", label: "On" },
+  { value: "false", label: "Off" },
 ];
 
 const BENCHMARKS: Choice[] = [
@@ -52,7 +59,11 @@ const AI_CREDENTIAL_FIELDS = ["anthropic_api_key"];
 const NEWS_CREDENTIAL_FIELDS = ["news_marketaux_api_key"];
 
 export default async function SettingsPage() {
-  const [settings, databases] = await Promise.all([getSettings(), getDatabases()]);
+  const [settings, databases, backups] = await Promise.all([
+    getSettings(),
+    getDatabases(),
+    getBackupStatus(),
+  ]);
 
   if (!settings.ok) {
     return (
@@ -81,6 +92,7 @@ export default async function SettingsPage() {
     ((snapshot.editable.t212_base_url ?? "").includes("demo.") ? "demo" : "live");
   const dataCredentials = snapshot.credentials.filter((row) => DATA_CREDENTIAL_FIELDS.includes(row.field));
   const aiCredentials = snapshot.credentials.filter((row) => AI_CREDENTIAL_FIELDS.includes(row.field));
+  const aiKeySet = snapshot.credentials.some((row) => row.field === "anthropic_api_key" && row.present);
   const newsCredentials = snapshot.credentials.filter((row) => NEWS_CREDENTIAL_FIELDS.includes(row.field));
   const knownFields = new Set([
     ...T212_CREDENTIAL_FIELDS,
@@ -216,6 +228,96 @@ export default async function SettingsPage() {
                 placeholder="claude-opus-5"
               />
             ) : null}
+          </div>
+        </Panel>
+
+        <Panel
+          subtitle="What Helios tells you without being opened: the evening summary, and the weekly AI review."
+          title="Notifications and reviews"
+        >
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+            <ChoiceSettingForm
+              action={saveSettingAction}
+              choices={ON_OFF}
+              current={snapshot.editable.daily_summary_enabled ?? "true"}
+              description="A Windows notification each evening: the day's result, the biggest movers, card spending and new stories about your holdings. Free."
+              field="daily_summary_enabled"
+              label="Daily summary"
+            />
+            <TextSettingForm
+              action={saveSettingAction}
+              current={snapshot.editable.daily_summary_time ?? "21:00"}
+              description="Your computer's local time, 24-hour."
+              field="daily_summary_time"
+              label="Daily summary time"
+              placeholder="21:00"
+            />
+            <ChoiceSettingForm
+              action={saveSettingAction}
+              choices={ON_OFF}
+              current={snapshot.editable.weekly_review_enabled ?? "false"}
+              description={`Claude writes the weekly review on Insights every Sunday and a notification says when it's ready. Each run costs a few cents on your Anthropic account${aiKeySet ? "" : " — add your Anthropic API key above first, or it cannot run"}.`}
+              field="weekly_review_enabled"
+              label="Weekly AI review"
+            />
+            <TextSettingForm
+              action={saveSettingAction}
+              current={snapshot.editable.weekly_review_time ?? "19:00"}
+              description="On Sundays, from this local time."
+              field="weekly_review_time"
+              label="Weekly review time"
+              placeholder="19:00"
+            />
+          </div>
+        </Panel>
+
+        <Panel
+          actions={
+            <ActionButton
+              action={backupNowAction}
+              label="Back up now"
+              pendingLabel="Backing up…"
+              variant="secondary"
+            />
+          }
+          subtitle="Card exports, budgets, alerts, the watchlist and your journal exist only in Helios's database. It keeps verified daily copies."
+          title="Backups"
+        >
+          <div className="flex flex-col gap-5">
+            {backups.ok ? (
+              <Note>
+                {backups.data.lastAt
+                  ? `Last backup ${formatDateTime(backups.data.lastAt)}${
+                      backups.data.lastSizeBytes !== null
+                        ? ` (${(backups.data.lastSizeBytes / 1_048_576).toFixed(1)} MB)`
+                        : ""
+                    }, ${backups.data.count} kept in ${backups.data.directory}.`
+                  : `No backup yet. The first one is made within the hour, into ${backups.data.directory}.`}{" "}
+                To restore one: quit Helios from the tray, copy the backup over{" "}
+                <code>{snapshot.activeDatabase}</code> in the Helios folder, delete any -wal and
+                -shm files next to it, and start Helios again.
+              </Note>
+            ) : (
+              <Unavailable detail={backups.error} reason="Backup status unavailable" />
+            )}
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+              <ChoiceSettingForm
+                action={saveSettingAction}
+                choices={ON_OFF}
+                current={snapshot.editable.backup_enabled ?? "true"}
+                description="One verified copy a day; the last 14 are kept."
+                field="backup_enabled"
+                label="Daily backups"
+              />
+              <TextSettingForm
+                action={saveSettingAction}
+                current={snapshot.editable.backup_dir ?? ""}
+                description="Leave empty for the data folder. A OneDrive or Dropbox folder keeps the copies off this computer too."
+                field="backup_dir"
+                label="Backup folder"
+                placeholder="C:\Users\you\OneDrive\Helios backups"
+              />
+            </div>
           </div>
         </Panel>
 

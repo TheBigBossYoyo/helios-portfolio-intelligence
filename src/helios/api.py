@@ -56,6 +56,7 @@ from .dependencies import (
     get_t212_service,
     get_thesis_service,
 )
+from .housekeeping import BackupError, BackupStatus
 from .instrument_detail import InstrumentDetailService, UnknownInstrumentError
 from .logging import get_logger
 from .models import PriceAlert
@@ -72,6 +73,7 @@ from .reporting import NoQualityReportDataError, PortfolioQualityReportService
 from .schemas import (
     AccountSummary,
     AiAnalysisModel,
+    BackupStatusModel,
     CardBudgetModel,
     CardBudgetWriteRequest,
     CardHistoryModel,
@@ -418,6 +420,40 @@ async def remove_from_watchlist(
 ) -> None:
     if not await container.watchlist_service.remove(ticker):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not on the watchlist")
+
+
+def _backup_model(status: BackupStatus) -> BackupStatusModel:
+    return BackupStatusModel(
+        enabled=status.enabled,
+        directory=str(status.directory),
+        lastPath=str(status.last_path) if status.last_path else None,
+        lastAt=status.last_at,
+        lastSizeBytes=status.last_size_bytes,
+        count=status.count,
+    )
+
+
+@router.get("/api/v1/backups", response_model=BackupStatusModel)
+async def get_backup_status(
+    container: Annotated[Container, Depends(get_container)],
+) -> BackupStatusModel:
+    return _backup_model(container.backup_service.status())
+
+
+@router.post("/api/v1/backups", response_model=BackupStatusModel)
+async def run_backup_now(
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("backup"))],
+) -> BackupStatusModel:
+    """Make a verified copy of the database now."""
+
+    try:
+        status_now = await container.backup_service.run()
+    except BackupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+    return _backup_model(status_now)
 
 
 @router.get("/api/v1/alerts", response_model=list[PriceAlertModel])

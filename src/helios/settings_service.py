@@ -75,7 +75,18 @@ EDITABLE_SETTINGS: Final[dict[str, str]] = {
     "market_data_fallback_provider": "HELIOS_MARKET_DATA_FALLBACK_PROVIDER",
     "anthropic_model": "HELIOS_ANTHROPIC_MODEL",
     "analytics_passive_benchmark_key": "HELIOS_ANALYTICS_PASSIVE_BENCHMARK_KEY",
+    "daily_summary_enabled": "HELIOS_DAILY_SUMMARY_ENABLED",
+    "daily_summary_time": "HELIOS_DAILY_SUMMARY_TIME",
+    "weekly_review_enabled": "HELIOS_WEEKLY_REVIEW_ENABLED",
+    "weekly_review_time": "HELIOS_WEEKLY_REVIEW_TIME",
+    "backup_enabled": "HELIOS_BACKUP_ENABLED",
+    "backup_dir": "HELIOS_BACKUP_DIR",
 }
+
+_BOOLEAN_SETTINGS: Final = frozenset(
+    {"daily_summary_enabled", "weekly_review_enabled", "backup_enabled"}
+)
+_TIME_SETTINGS: Final = frozenset({"daily_summary_time", "weekly_review_time"})
 
 #: Environment variable name per credential field, for the `.env` fallback path.
 CREDENTIAL_ENV_NAMES: Final[dict[str, str]] = {
@@ -225,7 +236,7 @@ def read_snapshot(
             )
         )
 
-    editable = {field: str(getattr(settings, field, "") or "") for field in EDITABLE_SETTINGS}
+    editable = {field: _editable_text(getattr(settings, field, "")) for field in EDITABLE_SETTINGS}
     # Show the fallback actually in use, so the dropdown never says "Disabled" while a saved
     # Alpha Vantage key is pricing London listings.
     editable["market_data_fallback_provider"] = settings.effective_market_data_fallback_provider
@@ -457,6 +468,13 @@ def write_env_settings(env_path: Path, updates: dict[str, str]) -> None:
         raise
 
 
+def _editable_text(value: object) -> str:
+    """A setting as the dashboard shows it: booleans as true/false, unset as empty."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value or "")
+
+
 def apply_editable_setting(field: str, value: str) -> tuple[str, str]:
     """Validate one non-credential setting and return its (env name, normalised value)."""
 
@@ -478,6 +496,30 @@ def apply_editable_setting(field: str, value: str) -> tuple[str, str]:
             raise SettingsWriteError(
                 f"market_data_fallback_provider must be one of {sorted(MARKET_DATA_PROVIDERS)}"
             )
+    if field in _BOOLEAN_SETTINGS:
+        lowered = normalised.lower()
+        if lowered not in {"true", "false"}:
+            raise SettingsWriteError(f"{field} must be true or false")
+        normalised = lowered
+    if field in _TIME_SETTINGS:
+        try:
+            hours, minutes = (int(part) for part in normalised.split(":"))
+            if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+                raise ValueError
+        except ValueError as exc:
+            raise SettingsWriteError(f"{field} must be a time like 21:00") from exc
+        normalised = f"{hours:02d}:{minutes:02d}"
+    if field == "backup_dir" and normalised:
+        folder = Path(normalised).expanduser()
+        if not folder.is_absolute():
+            raise SettingsWriteError(
+                "backup_dir must be a full path, e.g. C:/Users/you/OneDrive/Helios"
+            )
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise SettingsWriteError(f"backup_dir cannot be created: {exc.strerror}") from exc
+        normalised = str(folder)
     if field == "analytics_passive_benchmark_key":
         if normalised.lower() not in BENCHMARK_KEYS:
             raise SettingsWriteError(

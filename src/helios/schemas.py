@@ -428,6 +428,15 @@ class WatchRequest(DTOModel):
     note: str | None = Field(default=None, max_length=200)
 
 
+class BackupStatusModel(DTOModel):
+    enabled: bool
+    directory: str
+    last_path: str | None = Field(default=None, alias="lastPath")
+    last_at: datetime | None = Field(default=None, alias="lastAt")
+    last_size_bytes: int | None = Field(default=None, alias="lastSizeBytes")
+    count: int
+
+
 class PriceAlertModel(DTOModel):
     id: int
     ticker: str

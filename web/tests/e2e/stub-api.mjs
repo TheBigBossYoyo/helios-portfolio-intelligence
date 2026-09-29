@@ -1037,8 +1037,18 @@ const weeklyReview = {
   ],
 };
 
+const backupStatus = {
+  enabled: true,
+  directory: "C:\Helios\data\backups",
+  lastPath: "C:\Helios\data\backups\helios-20240429T020000Z.sqlite3",
+  lastAt: "2024-04-29T02:00:00Z",
+  lastSizeBytes: 3_145_728,
+  count: 7,
+};
+
 const ROUTES = {
   "/health": health,
+  "/api/v1/backups": backupStatus,
   "/api/v1/ai/weekly/latest": weeklyReview,
   "/api/v1/watchlist": watchlist,
   "/api/v1/alerts": alerts,
@@ -1115,6 +1125,7 @@ const MUTATIONS = {
   },
   "POST /api/v1/ai/analyse": { action: "ai-analyse", body: aiAnalysis },
   "POST /api/v1/ai/weekly": { action: "ai-weekly", body: weeklyReview },
+  "POST /api/v1/backups": { action: "backup", body: backupStatus },
   "POST /api/v1/theses": { action: "thesis-write", body: theses[0] },
   "POST /api/v1/journal": { action: "journal-write", body: journal[0] },
   // The settings writes. Keyed by method as well as path, so `GET /api/v1/settings/databases`

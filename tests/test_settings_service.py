@@ -391,3 +391,18 @@ async def test_switching_requires_a_real_database_with_a_schema(tmp_path: Path) 
 
     await create_database(settings, "helios-live.sqlite3")
     assert resolve_switch_target(settings, "helios-live.sqlite3") == "helios-live.sqlite3"
+
+
+def test_summary_and_weekly_review_switches_are_editable_and_validated() -> None:
+    assert apply_editable_setting("weekly_review_enabled", " TRUE ") == (
+        "HELIOS_WEEKLY_REVIEW_ENABLED",
+        "true",
+    )
+    assert apply_editable_setting("daily_summary_time", "7:05") == (
+        "HELIOS_DAILY_SUMMARY_TIME",
+        "07:05",
+    )
+    with pytest.raises(SettingsWriteError, match="true or false"):
+        apply_editable_setting("daily_summary_enabled", "sometimes")
+    with pytest.raises(SettingsWriteError, match="a time like"):
+        apply_editable_setting("weekly_review_time", "25:00")

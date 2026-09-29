@@ -140,6 +140,12 @@ class Settings(BaseSettings):
     weekly_review_enabled: bool = False
     weekly_review_weekday: int = 6
     weekly_review_time: str = "19:00"
+    # Daily verified database backups. The folder can be a synced one (OneDrive, Dropbox) to
+    # keep a copy off this machine; unset means <data_dir>/backups.
+    backup_enabled: bool = True
+    backup_dir: Path | None = None
+    backup_keep: int = 14
+    backup_interval_hours: int = 24
     sync_lease_minutes: int = 15
     ecb_base_url: str = "https://data-api.ecb.europa.eu/service/data"
     market_data_provider: str = "disabled"
@@ -280,6 +286,8 @@ class Settings(BaseSettings):
         "market_data_fallback_api_key",
         "news_marketaux_api_key",
         "anthropic_api_key",
+        # An empty backup folder means "the default", not the current directory.
+        "backup_dir",
         mode="before",
     )
     @classmethod
@@ -305,6 +313,8 @@ class Settings(BaseSettings):
         "card_export_cadence_hours",
         "card_history_poll_minutes",
         "alerts_poll_minutes",
+        "backup_keep",
+        "backup_interval_hours",
         "anthropic_max_tokens",
         "anthropic_timeout_seconds",
         "ai_max_news_items",
