@@ -2,6 +2,7 @@ import { ArrowDownRight, ArrowUpRight, Info } from "lucide-react";
 import { EMPTY, decimalToNumber, formatDay, formatEur, formatSignedPercent } from "@/lib/format";
 import type { PeriodSummary } from "@/lib/types";
 import { DIVERGING, SERIES } from "@/lib/viz";
+import { SEGMENTED } from "@/lib/ui";
 
 /** Colour of money moved in or out: its own identity, never a gain or a loss colour. */
 export const MONEY_MOVED_COLOR = SERIES.three;
@@ -38,13 +39,13 @@ export function PeriodTabs({
   basePath: string;
 }) {
   return (
-    <nav aria-label="Period" className="flex flex-wrap gap-1 rounded-xl bg-surface-3 p-1">
+    <nav aria-label="Period" className={`${SEGMENTED} w-full sm:w-auto`}>
       {periods.map((period) => {
         const active = period.key === selected;
         return (
           <a
             aria-current={active ? "true" : undefined}
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+            className={`flex-1 rounded-lg px-2 py-1.5 text-center text-sm font-medium transition-colors sm:flex-none sm:px-3 ${
               active ? "bg-surface text-ink shadow-card" : "text-ink-3 hover:text-ink"
             }`}
             href={`${basePath}?period=${period.key}`}
@@ -273,7 +274,7 @@ export function PeriodTable({
 }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-border">
-      <table className="w-full border-collapse whitespace-nowrap text-sm">
+      <table className={`w-full border-collapse whitespace-nowrap text-sm ${compact ? "" : "stack-sm"}`}>
         <caption className="sr-only">Investment result and money moved for every period</caption>
         <thead className="bg-surface-2">
           <tr className="border-b border-border text-xs text-ink-3">
@@ -315,7 +316,7 @@ export function PeriodTable({
                 }`}
                 key={period.key}
               >
-                <td className="px-3 py-2">
+                <td className="px-3 py-2" data-label="Period">
                   <a
                     aria-current={active ? "true" : undefined}
                     className="font-medium text-ink hover:underline"
@@ -324,18 +325,18 @@ export function PeriodTable({
                     {compact ? (SHORT_LABEL[period.key] ?? period.key) : period.label}
                   </a>
                 </td>
-                <td className={`tabular-nums px-3 py-2 text-right font-medium ${tone}`}>
+                <td className={`tabular-nums px-3 py-2 text-right font-medium ${tone}`} data-label="Investment result">
                   {period.status === "ok" ? signedEur(result) : EMPTY}
                 </td>
-                <td className={`tabular-nums px-3 py-2 text-right ${tone}`}>
+                <td className={`tabular-nums px-3 py-2 text-right ${tone}`} data-label="Return">
                   {period.twr !== null ? formatSignedPercent(period.twr) : EMPTY}
                 </td>
                 {compact ? null : (
                   <>
-                    <td className="tabular-nums px-3 py-2 text-right text-ink-2">
+                    <td className="tabular-nums px-3 py-2 text-right text-ink-2" data-label="Money added">
                       {signedEur(decimalToNumber(period.netDepositsEur))}
                     </td>
-                    <td className="tabular-nums px-3 py-2 text-right text-ink-2">
+                    <td className="tabular-nums px-3 py-2 text-right text-ink-2" data-label="Change in value">
                       {period.status === "ok"
                         ? signedEur(decimalToNumber(period.valueChangeEur))
                         : EMPTY}

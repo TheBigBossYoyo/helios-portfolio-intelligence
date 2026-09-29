@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { requestHeaders } from "./stubs/next-headers";
 import {
   addJournalEntryAction,
   analyseWithAiAction,
@@ -492,3 +493,32 @@ function formData(fields: Record<string, string>): FormData {
   }
   return form;
 }
+
+describe("from a paired phone", () => {
+  afterEach(() => {
+    requestHeaders.delete("x-helios-remote");
+  });
+
+  it("refuses settings changes and restarts without calling the API", async () => {
+    const mock = stubFetch();
+    requestHeaders.set("x-helios-remote", "1");
+
+    const setting = await saveSettingAction(formData({ field: "t212_base_url", value: "x" }));
+    const restart = await restartApiAction();
+
+    expect(mock).not.toHaveBeenCalled();
+    for (const result of [setting, restart]) {
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toBe("Change this on the computer running Helios.");
+    }
+  });
+
+  it("still syncs: everyday actions work from the phone", async () => {
+    stubFetch(200, {});
+    requestHeaders.set("x-helios-remote", "1");
+
+    await syncPortfolioAction();
+
+    expect(calls[0].headers["X-Helios-Local-Action"]).toBe("sync");
+  });
+});

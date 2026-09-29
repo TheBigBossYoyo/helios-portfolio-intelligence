@@ -24,8 +24,10 @@ Design decisions worth knowing before changing any of it:
   runs from the runtime directory, not from ``web/.next``, so a developer running ``npm run
   build`` or the Playwright suite cannot overwrite files the running app is serving. The copy is
   rebuilt only when the web sources' content hash changes.
-* **Everything runs on loopback,** exactly as the Compose stack does. Nothing here opens a port
-  beyond 127.0.0.1.
+* **Everything runs on loopback,** exactly as the Compose stack does -- except the phone gateway
+  (``helios.gateway``), and only once phone access is switched on in Settings. It then listens
+  on the network, admits only paired phones, and forwards them to the dashboard; the API is
+  never reachable from the network.
 """
 
 from __future__ import annotations
@@ -78,7 +80,7 @@ RESTART_WINDOW_SECONDS: Final = 300.0
 LOG_ROTATE_BYTES: Final = 5_000_000
 
 #: A settings restart implies a restart of these too: they read configuration once at startup.
-DEPENDENTS: Final[Mapping[str, tuple[str, ...]]] = {"api": ("worker",)}
+DEPENDENTS: Final[Mapping[str, tuple[str, ...]]] = {"api": ("worker", "gateway")}
 
 CREATE_NO_WINDOW: Final = 0x08000000
 
@@ -506,7 +508,11 @@ class Supervisor:
             to_restart: list[str] = []
             for name in exited:
                 for candidate in (name, *DEPENDENTS.get(name, ())):
-                    if candidate not in to_restart and candidate not in self._failed:
+                    if (
+                        candidate in self._order
+                        and candidate not in to_restart
+                        and candidate not in self._failed
+                    ):
                         to_restart.append(candidate)
             to_restart.sort(key=self._order.index)
 
@@ -700,6 +706,14 @@ def build_service_specs(
             cwd=paths.web_server,
             ready_url=ports.web_url,
             ready_timeout=60.0,
+        ),
+        # Restarted with the API (DEPENDENTS), so switching phone access on in Settings and
+        # pressing Restart rebinds it to the network.
+        ServiceSpec(
+            name="gateway",
+            command=(python, "-m", "helios.gateway"),
+            env={**backend_env, "HELIOS_API_URL": ports.api_url, "HELIOS_WEB_URL": ports.web_url},
+            cwd=paths.root,
         ),
     ]
 

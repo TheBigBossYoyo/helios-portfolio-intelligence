@@ -16,7 +16,7 @@ import {
 } from "@/lib/card";
 import { EMPTY, categoryLabel, formatEur, formatPercent } from "@/lib/format";
 import type { CardTransaction } from "@/lib/types";
-import { CARD, LINK } from "@/lib/ui";
+import { CARD, LINK, SEGMENTED } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -148,7 +148,7 @@ export default async function MerchantPage({
 
       <Panel
         actions={
-          <nav aria-label="Group spending by" className="flex gap-1 rounded-xl bg-surface-3 p-1">
+          <nav aria-label="Group spending by" className={SEGMENTED}>
             {GRANULARITIES.map((option) => (
               <a
                 aria-current={option.key === granularity ? "true" : undefined}

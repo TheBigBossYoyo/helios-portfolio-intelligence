@@ -567,3 +567,80 @@ class DailyNav(Base):
     valuation_status: Mapped[str] = mapped_column(String(32), nullable=False)
     missing_price_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     missing_fx_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class PairedDevice(Base):
+    """A phone allowed to open Helios through the phone-access gateway (see helios.gateway).
+
+    Only a hash of the device's token is stored; the token itself lives in that phone's cookie.
+    """
+
+    __tablename__ = "paired_devices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class DevicePairing(Base):
+    """A one-time pairing code shown on the computer, valid for a few minutes."""
+
+    __tablename__ = "device_pairings"
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class EarningsEvent(Base):
+    """A scheduled earnings report, from Alpha Vantage's earnings calendar."""
+
+    __tablename__ = "earnings_events"
+
+    t212_ticker: Mapped[str] = mapped_column(String(64), primary_key=True)
+    report_date: Mapped[date] = mapped_column(primary_key=True)
+    fiscal_date_ending: Mapped[date | None] = mapped_column(nullable=True)
+    estimate_eps: Mapped[Decimal | None] = mapped_column(MONEY_NUMERIC, nullable=True)
+    currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: "pre-market", "post-market" or None when the company has not said.
+    time_of_day: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class DividendEvent(Base):
+    """A dividend as the company declared it (past and announced), from Alpha Vantage."""
+
+    __tablename__ = "dividend_events"
+
+    t212_ticker: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ex_date: Mapped[date] = mapped_column(primary_key=True)
+    payment_date: Mapped[date | None] = mapped_column(nullable=True)
+    declaration_date: Mapped[date | None] = mapped_column(nullable=True)
+    amount_per_share: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    currency_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class EventFetch(Base):
+    """When each calendar source was last asked, so the daily quota is spent once."""
+
+    __tablename__ = "event_fetches"
+
+    key: Mapped[str] = mapped_column(String(96), primary_key=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AllocationTarget(Base):
+    """The share of the portfolio you want a holding to be (0..1). Planning only: never traded."""
+
+    __tablename__ = "allocation_targets"
+
+    t212_ticker: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target_weight: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)

@@ -16,7 +16,7 @@ interface PanelProps {
 export function Panel({ title, subtitle, actions, children, flush, className }: PanelProps) {
   return (
     <section className={`${CARD} theme-fade flex min-w-0 flex-col ${className ?? ""}`}>
-      <header className="flex flex-wrap items-start justify-between gap-3 px-5 pb-1 pt-4">
+      <header className="flex flex-wrap items-start justify-between gap-3 px-4 pb-1 pt-4 sm:px-5">
         <div className="min-w-0">
           <h2 className="text-[15px] font-semibold tracking-tight text-ink">{title}</h2>
           {subtitle ? (
@@ -25,7 +25,7 @@ export function Panel({ title, subtitle, actions, children, flush, className }: 
         </div>
         {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
       </header>
-      <div className={flush ? "pb-2 pt-3" : "px-5 pb-5 pt-3"}>{children}</div>
+      <div className={flush ? "pb-2 pt-3" : "px-4 pb-4 pt-3 sm:px-5 sm:pb-5"}>{children}</div>
     </section>
   );
 }

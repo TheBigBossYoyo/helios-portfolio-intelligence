@@ -7,11 +7,15 @@ export type ThemePreference = "light" | "dark" | "system";
 
 export const THEME_STORAGE_KEY = "helios-theme";
 
+/** The phone's status-bar colour: the top bar's surface in each theme. */
+const LIGHT_BAR = "#ffffff";
+const DARK_BAR = "#141820";
+
 /**
  * Runs in <head> before first paint (see app/layout.tsx), so the page never flashes the wrong
  * theme. Kept as a string because it must execute before React exists. Light is the default.
  */
-export const THEME_BOOT_SCRIPT = `(function(){try{var p=localStorage.getItem("${THEME_STORAGE_KEY}")||"light";var d=p==="dark"||(p==="system"&&window.matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.setAttribute("data-theme",d?"dark":"light");}catch(e){document.documentElement.setAttribute("data-theme","light");}})();`;
+export const THEME_BOOT_SCRIPT = `(function(){try{var p=localStorage.getItem("${THEME_STORAGE_KEY}")||"light";var d=p==="dark"||(p==="system"&&window.matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.setAttribute("data-theme",d?"dark":"light");document.querySelectorAll('meta[name="theme-color"]').forEach(function(m){m.setAttribute("content",d?"${DARK_BAR}":"${LIGHT_BAR}")});}catch(e){document.documentElement.setAttribute("data-theme","light");}})();`;
 
 export function resolveTheme(preference: ThemePreference, systemDark: boolean): "light" | "dark" {
   if (preference === "system") return systemDark ? "dark" : "light";
@@ -29,7 +33,12 @@ function readPreference(): ThemePreference {
 
 function apply(preference: ThemePreference) {
   const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  document.documentElement.setAttribute("data-theme", resolveTheme(preference, systemDark));
+  const theme = resolveTheme(preference, systemDark);
+  document.documentElement.setAttribute("data-theme", theme);
+  // The status bar follows Helios's theme, not the phone's.
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+    meta.setAttribute("content", theme === "dark" ? DARK_BAR : LIGHT_BAR);
+  }
 }
 
 const OPTIONS = [

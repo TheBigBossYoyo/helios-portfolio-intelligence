@@ -25,7 +25,7 @@ async def test_sqlite_wal_mode_is_enabled(tmp_path: Path) -> None:
     assert await fetch_journal_mode(engine) == "wal"
     async with engine.connect() as connection:
         revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0018_delta_raw"
+    assert revision == "0021_allocation_targets"
 
     await engine.dispose()
 
@@ -60,7 +60,7 @@ async def test_migration_stamps_matching_legacy_schema(tmp_path: Path) -> None:
     migrated_engine = create_engine(settings)
     async with migrated_engine.connect() as connection:
         revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0018_delta_raw"
+    assert revision == "0021_allocation_targets"
     await migrated_engine.dispose()
 
 

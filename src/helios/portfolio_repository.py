@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from .models import (
     AiObservation,
     AiRun,
+    AllocationTarget,
     CardBudget,
     DailyHolding,
     DailyHoldingFlow,
@@ -611,6 +612,27 @@ class PortfolioRepository:
                     return
                 await session.merge(
                     CardBudget(category=category, monthly_limit=monthly_limit, updated_at=now)
+                )
+
+    async def list_allocation_targets(self) -> list[AllocationTarget]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(
+                    select(AllocationTarget).order_by(AllocationTarget.t212_ticker)
+                )
+            )
+
+    async def replace_allocation_targets(
+        self, targets: dict[str, Decimal], *, now: datetime
+    ) -> None:
+        """The whole plan at once: tickers left out lose their target."""
+        async with self._session_factory() as session:
+            async with session.begin():
+                await session.execute(delete(AllocationTarget))
+                session.add_all(
+                    AllocationTarget(t212_ticker=ticker, target_weight=weight, updated_at=now)
+                    for ticker, weight in targets.items()
+                    if weight > 0
                 )
 
     async def list_withdrawals_since(self, since: datetime) -> list[Transaction]:

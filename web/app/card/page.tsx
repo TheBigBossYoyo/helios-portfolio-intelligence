@@ -43,7 +43,7 @@ import {
 } from "@/lib/format";
 import { paginate, parsePageParam } from "@/lib/pagination";
 import type { CardHistoryStatus, CardTransaction } from "@/lib/types";
-import { CARD } from "@/lib/ui";
+import { CARD, SEGMENTED } from "@/lib/ui";
 import { STATUS } from "@/lib/viz";
 import { MONEY_MOVED_COLOR } from "@/components/period-change";
 
@@ -227,7 +227,7 @@ export default async function CardPage({
 
       <Panel
         actions={
-          <nav aria-label="Group spending by" className="flex gap-1 rounded-xl bg-surface-3 p-1">
+          <nav aria-label="Group spending by" className={SEGMENTED}>
             {GRANULARITIES.map((option) => (
               <a
                 aria-current={option.key === granularity ? "true" : undefined}

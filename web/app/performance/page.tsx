@@ -43,6 +43,7 @@ import type {
   NavPoint,
   PeriodSummary,
 } from "@/lib/types";
+import { SEGMENTED } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -383,7 +384,7 @@ export default async function PerformancePage({
                 <h3 className="text-sm font-semibold text-ink">
                   {selectedMonth.label}, stock by stock
                 </h3>
-                <nav aria-label="Month" className="flex flex-wrap gap-1 rounded-xl bg-surface-3 p-1">
+                <nav aria-label="Month" className={SEGMENTED}>
                   {valuedMonths.map((month) => (
                     <a
                       aria-current={month.key === selectedMonth.key ? "true" : undefined}

@@ -2,23 +2,25 @@
 
 import {
   BookOpen,
+  CalendarDays,
   ChartLine,
   CreditCard,
   Eye,
   LayoutDashboard,
+  LayoutGrid,
   Lock,
-  Menu,
   Newspaper,
+  RotateCw,
+  Scale,
   Settings,
   ShieldCheck,
   Sparkles,
   Target,
   Wallet,
-  X,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useCallback, useEffect, useState, useTransition } from "react";
 import { ThemeToggle } from "./theme-toggle";
 
 const LINKS = [
@@ -27,13 +29,18 @@ const LINKS = [
   { href: "/watchlist", label: "Watchlist", Icon: Eye },
   { href: "/performance", label: "Performance", Icon: ChartLine },
   { href: "/card", label: "Card", Icon: CreditCard },
+  { href: "/calendar", label: "Calendar", Icon: CalendarDays },
   { href: "/plan", label: "Plan", Icon: Target },
+  { href: "/targets", label: "Targets", Icon: Scale },
   { href: "/news", label: "News", Icon: Newspaper },
   { href: "/insights", label: "Insights", Icon: Sparkles },
   { href: "/journal", label: "Journal", Icon: BookOpen },
   { href: "/data-quality", label: "Data quality", Icon: ShieldCheck },
   { href: "/settings", label: "Settings", Icon: Settings },
 ] as const;
+
+/** The phone's tab bar: the four pages opened most, then everything else under More. */
+const TAB_HREFS: readonly string[] = ["/", "/holdings", "/card", "/news"];
 
 export interface AccountStatus {
   /** Which Trading 212 account the configured credentials belong to; null if the API is down. */
@@ -88,7 +95,7 @@ function AccountBadge({ account }: { account: AccountStatus }) {
   );
 }
 
-function NavLinks({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
+function NavLinks({ pathname }: { pathname: string }) {
   return (
     <ul className="flex flex-col gap-0.5">
       {LINKS.map(({ href, label, Icon }) => {
@@ -103,7 +110,6 @@ function NavLinks({ pathname, onNavigate }: { pathname: string; onNavigate?: () 
                   : "text-ink-2 hover:bg-surface-3 hover:text-ink"
               }`}
               href={href}
-              onClick={onNavigate}
             >
               <Icon aria-hidden="true" size={18} strokeWidth={active ? 2.25 : 1.75} />
               {label}
@@ -128,15 +134,174 @@ function SidebarFooter({ account }: { account: AccountStatus }) {
   );
 }
 
+/** Re-renders the page from the server: the standalone phone app has no browser reload. */
+function RefreshButton() {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  return (
+    <button
+      aria-label="Refresh"
+      className="flex h-10 w-10 items-center justify-center rounded-full text-ink-2 active:bg-surface-3"
+      disabled={pending}
+      onClick={() => startTransition(() => router.refresh())}
+      type="button"
+    >
+      <RotateCw
+        aria-hidden="true"
+        className={pending ? "animate-spin" : undefined}
+        size={19}
+        strokeWidth={2}
+      />
+    </button>
+  );
+}
+
+function AccountPill({ account }: { account: AccountStatus }) {
+  const offline = account.environment === null;
+  const live = account.environment === "live";
+  const tone = offline
+    ? "bg-negative-soft text-negative"
+    : live
+      ? "bg-positive-soft text-positive"
+      : "bg-warning-soft text-warning";
+  const dot = offline ? "var(--status-critical)" : live ? "var(--status-good)" : "var(--status-warning)";
+  return (
+    <span className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>
+      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full" style={{ background: dot }} />
+      {offline ? "Offline" : live ? "Live" : "Practice"}
+    </span>
+  );
+}
+
+function MoreSheet({
+  account,
+  pathname,
+  onClose,
+}: {
+  account: AccountStatus;
+  pathname: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previous;
+    };
+  }, [onClose]);
+
+  const rest = LINKS.filter((link) => !TAB_HREFS.includes(link.href));
+  return (
+    <div className="fixed inset-0 z-50 lg:hidden">
+      <button
+        aria-label="Close"
+        className="sheet-backdrop absolute inset-0 bg-black/40"
+        onClick={onClose}
+        type="button"
+      />
+      <div
+        aria-label="More pages"
+        aria-modal="true"
+        className="sheet-panel absolute inset-x-0 bottom-0 flex max-h-[85vh] flex-col gap-5 overflow-y-auto rounded-t-3xl border-t border-border bg-surface px-5 pb-[calc(env(safe-area-inset-bottom)+1.25rem)] pt-3 shadow-pop"
+        role="dialog"
+      >
+        <span aria-hidden="true" className="mx-auto h-1.5 w-10 shrink-0 rounded-full bg-border-strong" />
+        <nav aria-label="More">
+          <ul className="grid grid-cols-3 gap-2.5">
+            {rest.map(({ href, label, Icon }) => {
+              const active = isActive(pathname, href);
+              return (
+                <li key={href}>
+                  <Link
+                    aria-current={active ? "page" : undefined}
+                    className={`flex h-20 flex-col items-center justify-center gap-1.5 rounded-2xl border text-xs font-medium transition-colors ${
+                      active
+                        ? "border-transparent bg-accent-soft text-accent-ink"
+                        : "border-border bg-surface-2 text-ink-2 active:bg-surface-3"
+                    }`}
+                    href={href}
+                    onClick={onClose}
+                  >
+                    <Icon aria-hidden="true" size={22} strokeWidth={active ? 2.25 : 1.75} />
+                    {label}
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </nav>
+        <SidebarFooter account={account} />
+      </div>
+    </div>
+  );
+}
+
+function TabBar({
+  pathname,
+  moreOpen,
+  onMore,
+}: {
+  pathname: string;
+  moreOpen: boolean;
+  onMore: () => void;
+}) {
+  const tabs = LINKS.filter((link) => TAB_HREFS.includes(link.href));
+  const moreActive = moreOpen || !tabs.some((tab) => isActive(pathname, tab.href));
+  const item = (active: boolean) =>
+    `flex w-full flex-col items-center gap-0.5 pb-1.5 pt-2 text-[11px] font-medium transition-colors ${
+      active ? "text-accent-ink" : "text-ink-3 active:text-ink"
+    }`;
+  const pill = (active: boolean) =>
+    `flex h-8 w-14 items-center justify-center rounded-full transition-colors ${
+      active ? "bg-accent-soft" : ""
+    }`;
+  return (
+    <nav
+      aria-label="Tabs"
+      className="theme-fade fixed inset-x-0 bottom-0 z-40 border-t border-border bg-surface/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden"
+    >
+      <ul className="mx-auto grid max-w-lg grid-cols-5">
+        {tabs.map(({ href, label, Icon }) => {
+          const active = isActive(pathname, href);
+          return (
+            <li key={href}>
+              <Link aria-current={active ? "page" : undefined} className={item(active)} href={href}>
+                <span className={pill(active)}>
+                  <Icon aria-hidden="true" size={21} strokeWidth={active ? 2.25 : 1.75} />
+                </span>
+                {label}
+              </Link>
+            </li>
+          );
+        })}
+        <li>
+          <button aria-expanded={moreOpen} className={item(moreActive)} onClick={onMore} type="button">
+            <span className={pill(moreActive)}>
+              <LayoutGrid aria-hidden="true" size={21} strokeWidth={moreActive ? 2.25 : 1.75} />
+            </span>
+            More
+          </button>
+        </li>
+      </ul>
+    </nav>
+  );
+}
+
 /**
- * Primary navigation: a fixed sidebar on desktop, a top bar with a drawer on small screens.
- * The account badge states which Trading 212 environment the numbers come from — demo and live
- * figures look identical, so the page must say which one you are reading.
+ * Primary navigation: a fixed sidebar on desktop; on a phone, a slim top bar and an app-style
+ * tab bar with the remaining pages in a sheet. The account badge states which Trading 212
+ * environment the numbers come from — demo and live figures look identical, so the page must
+ * say which one you are reading.
  */
 export function SiteNav({ account }: { account: AccountStatus }) {
   const pathname = usePathname();
-  // Closed by the links themselves (onNavigate) and the backdrop, not by watching the route.
-  const [open, setOpen] = useState(false);
+  const [more, setMore] = useState(false);
+  const close = useCallback(() => setMore(false), []);
 
   return (
     <>
@@ -151,38 +316,21 @@ export function SiteNav({ account }: { account: AccountStatus }) {
         <SidebarFooter account={account} />
       </aside>
 
-      <div className="theme-fade sticky top-0 z-30 flex items-center justify-between border-b border-border bg-surface/90 px-4 py-3 backdrop-blur lg:hidden">
-        <Link className="flex items-center gap-2" href="/">
-          <HeliosMark size={26} />
-          <span className="text-base font-semibold tracking-tight text-ink">Helios</span>
-        </Link>
-        <button
-          aria-expanded={open}
-          aria-label={open ? "Close menu" : "Open menu"}
-          className="rounded-lg p-2 text-ink-2 hover:bg-surface-3"
-          onClick={() => setOpen((value) => !value)}
-          type="button"
-        >
-          {open ? <X size={20} /> : <Menu size={20} />}
-        </button>
-      </div>
-
-      {open ? (
-        <div className="fixed inset-0 z-40 lg:hidden">
-          <button
-            aria-label="Close menu"
-            className="absolute inset-0 bg-black/30"
-            onClick={() => setOpen(false)}
-            type="button"
-          />
-          <div className="absolute inset-y-0 left-0 flex w-72 flex-col gap-6 overflow-y-auto border-r border-border bg-surface px-4 py-5 shadow-pop">
-            <nav aria-label="Primary">
-              <NavLinks onNavigate={() => setOpen(false)} pathname={pathname} />
-            </nav>
-            <SidebarFooter account={account} />
+      <header className="theme-fade sticky top-0 z-30 border-b border-border bg-surface/90 pt-[env(safe-area-inset-top)] backdrop-blur-xl lg:hidden">
+        <div className="flex h-14 items-center justify-between pl-4 pr-2">
+          <Link className="flex items-center gap-2" href="/">
+            <HeliosMark size={26} />
+            <span className="text-base font-semibold tracking-tight text-ink">Helios</span>
+          </Link>
+          <div className="flex items-center gap-1">
+            <AccountPill account={account} />
+            <RefreshButton />
           </div>
         </div>
-      ) : null}
+      </header>
+
+      <TabBar moreOpen={more} onMore={() => setMore((value) => !value)} pathname={pathname} />
+      {more ? <MoreSheet account={account} onClose={close} pathname={pathname} /> : null}
     </>
   );
 }

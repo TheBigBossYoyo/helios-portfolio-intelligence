@@ -151,6 +151,77 @@ test.describe("pipeline controls", () => {
     expect(call?.action).toBe("storage-compact");
   });
 
+  test("pairing a phone shows its code and QR, and unpairing names the action", async ({
+    page,
+    request,
+  }) => {
+    await page.goto("/settings");
+
+    await expect(page.getByTestId("pairing-code")).toHaveText("K7QX3MPA");
+    await expect(page.getByRole("img", { name: "QR code for pairing a phone" })).toBeVisible();
+    await expect(page.getByText("http://100.101.102.103:8787")).toBeVisible();
+
+    await page.getByRole("button", { name: "Pair a phone" }).click();
+    await expect(page.getByText("Scan the QR code with your phone, or type the code.")).toBeVisible();
+    const pair = lastFor(await recorded(request), "POST", /\/api\/v1\/devices\/pairing$/);
+    expect(pair?.action).toBe("device-pair");
+
+    await page.getByRole("button", { name: "Unpair" }).click();
+    await page.getByRole("button", { name: "Confirm unpair" }).click();
+    await expect(page.getByText("Unpaired.")).toBeVisible();
+    const revoke = lastFor(await recorded(request), "DELETE", /\/api\/v1\/devices\/1$/);
+    expect(revoke?.action).toBe("device-revoke");
+  });
+
+  test("the calendar shows declared and estimated events, and refreshing names its action", async ({
+    page,
+    request,
+  }) => {
+    await page.goto("/calendar");
+
+    const upcoming = page.getByRole("region", { name: "May 2024" });
+    await expect(upcoming.getByText("Apple Inc. reports results")).toBeVisible();
+    await expect(upcoming.getByText("After the close · analysts expect 1.5 USD a share")).toBeVisible();
+    await expect(upcoming.getByText("Declared")).toBeVisible();
+    await expect(upcoming.getByText("Watching")).toBeVisible();
+    await expect(page.getByRole("region", { name: "June 2024" }).getByText("Estimate")).toBeVisible();
+    await expect(page.getByText("€13.60")).toBeVisible();
+    await expect(page.getByRole("cell", { name: "Quarterly" }).first()).toBeVisible();
+
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect(page.getByText("Calendar updated.")).toBeVisible();
+    const call = lastFor(await recorded(request), "POST", /\/api\/v1\/calendar\/refresh$/);
+    expect(call?.action).toBe("calendar-refresh");
+  });
+
+  test("targets show the drift, split a deposit, and save the plan", async ({ page, request }) => {
+    await page.goto("/targets?deposit=250");
+
+    await expect(page.getByText("62.5% now · target 50.0%")).toBeVisible();
+    const deposit = page.getByRole("table", { name: "How to split the deposit" });
+    await expect(deposit.getByRole("cell", { name: "€250.00" })).toBeVisible();
+    await expect(page.getByText("Sell €412.60")).toBeVisible();
+
+    const apple = page.getByRole("textbox", { name: "Target for AAPL, percent" });
+    await apple.fill("70");
+    await expect(page.getByText("Targets add up to 120.0%")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save targets" })).toBeDisabled();
+    await apple.fill("40");
+    await page.getByRole("textbox", { name: "Target for ASML, percent" }).fill("10");
+    await page.getByRole("button", { name: "Save targets" }).click();
+    await expect(page.getByText("Targets saved.")).toBeVisible();
+
+    const call = lastFor(await recorded(request), "PUT", /\/api\/v1\/allocation\/targets$/);
+    expect(call?.action).toBe("targets-write");
+    expect(JSON.parse(call?.body ?? "{}")).toEqual({
+      targets: [
+        { ticker: "AAPL_US_EQ", weight: "0.4000" },
+        { ticker: "SHEL_EQ", weight: "0.5000" },
+        { ticker: "ASML_US_EQ", weight: "0.1000" },
+      ],
+    });
+  });
+
   test("a replay confirms first, then reports what it wrote", async ({ page, request }) => {
     await page.goto("/performance");
 

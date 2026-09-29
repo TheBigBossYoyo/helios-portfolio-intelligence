@@ -81,10 +81,11 @@ EDITABLE_SETTINGS: Final[dict[str, str]] = {
     "weekly_review_time": "HELIOS_WEEKLY_REVIEW_TIME",
     "backup_enabled": "HELIOS_BACKUP_ENABLED",
     "backup_dir": "HELIOS_BACKUP_DIR",
+    "phone_access_enabled": "HELIOS_PHONE_ACCESS_ENABLED",
 }
 
 _BOOLEAN_SETTINGS: Final = frozenset(
-    {"daily_summary_enabled", "weekly_review_enabled", "backup_enabled"}
+    {"daily_summary_enabled", "weekly_review_enabled", "backup_enabled", "phone_access_enabled"}
 )
 _TIME_SETTINGS: Final = frozenset({"daily_summary_time", "weekly_review_time"})
 

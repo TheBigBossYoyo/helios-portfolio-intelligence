@@ -19,8 +19,11 @@ Trading 212's app shows you positions and a simple return figure, but nothing li
 - Lets you follow stocks you don't own on a watchlist: same page as a holding, with daily prices, news and alerts on live quotes.
 - Shows how much you deposit each month, how much goes back out by card and how much stays invested, and projects where steady saving could take the portfolio as a range of outcomes from assumptions you set (not a forecast).
 - Sends a Windows notification when an alert fires, plus a short summary each evening, and can have Claude write a weekly review of what moved and why it made the news (on request, or weekly if you switch it on).
+- Keeps a calendar of earnings reports and dividends for what you hold and watch (Alpha Vantage's free earnings calendar and declared dividends), estimates the dividends nobody has announced yet from each company's own rhythm and your own after-tax payments, and shows dividend income month by month, received and expected. A notification comes the day before a holding reports and when a dividend lands.
+- Lets you set a target share for each holding, shows how far you have drifted, splits your next deposit so only what is below target gets bought, and lists the trades that would put you exactly on target. It is a plan for you to act on: Helios never places an order.
 - Lets you record an investment thesis before you know the outcome, then journal updates and later mark it validated, invalidated or closed.
-- Ships a dashboard (overview, holdings, watchlist, performance, card, plan, news, insights, journal, data-quality, settings) that reads the same API as the CLI, and runs as a desktop app with a tray icon.
+- Works on your phone: an app-style layout with a tab bar, installable to the home screen, reached over your Wi-Fi or Tailscale once you pair the phone from Settings.
+- Ships a dashboard (overview, holdings, watchlist, performance, card, calendar, plan, targets, news, insights, journal, data-quality, settings) that reads the same API as the CLI, and runs as a desktop app with a tray icon.
 
 ## How it works
 
@@ -44,6 +47,8 @@ helios-desktop --install-shortcut             # Desktop + Start Menu shortcuts
 ```
 
 Then open Helios from the shortcut. It builds the dashboard the first time, starts the API, the worker and the web server, opens the app window and sits in the tray. Keys go in through the Settings page, which checks them before saving. `helios-desktop --autostart on` starts it with Windows.
+
+On your phone: in Settings → Phone, switch phone access on and press Restart, then Pair a phone and scan the QR code (or open the address shown and type the code). Add it to the home screen and it opens full screen like an app. Only paired phones get in, each can be unpaired, and a phone can use everything except settings: keys, databases and pairing stay on the computer. Everything else keeps listening on loopback; the one process on the network is a small gateway that checks the phone's pairing and forwards it to the dashboard, never to the API. Away from home, [Tailscale](https://tailscale.com) on both devices gives the same address from anywhere (`tailscale serve 8787` adds HTTPS).
 
 Or with Docker:
 

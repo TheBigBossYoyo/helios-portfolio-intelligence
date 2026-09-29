@@ -13,6 +13,8 @@ from .card_history import CardHistoryService
 from .client import Trading212Client
 from .config import Settings, load_settings
 from .db import create_engine, create_session_factory, migrate_database
+from .devices import DeviceService
+from .events import MarketEventsService
 from .housekeeping import BackupService, BudgetNotifier
 from .instrument_detail import InstrumentDetailService
 from .news import NewsHttpClient, NewsReparseService, NewsSyncService
@@ -68,6 +70,8 @@ class Container:
     backup_service: BackupService
     budget_notifier: BudgetNotifier
     storage_service: StorageService
+    device_service: DeviceService
+    market_events_service: MarketEventsService
     daily_summary_service: DailySummaryService
     market_data_provider: object
     fx_rate_provider: object
@@ -208,6 +212,8 @@ def build_container(settings: Settings | None = None) -> Container:
         weekly_review_service=weekly_review_service,
         backup_service=BackupService(resolved_settings),
         storage_service=StorageService(resolved_settings),
+        device_service=DeviceService(session_factory),
+        market_events_service=MarketEventsService(session_factory, resolved_settings),
         budget_notifier=BudgetNotifier(portfolio_repository),
         daily_summary_service=daily_summary_service,
         market_data_provider=market_data_provider,

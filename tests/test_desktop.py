@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from helios.desktop import (
+    DEPENDENTS,
     DesktopError,
     DesktopPaths,
     Ports,
@@ -431,3 +432,20 @@ def test_notification_relay_waits_quietly_while_the_api_is_down() -> None:
     relay = NotificationRelay("http://api", lambda *_: None, fetch=down, ack=lambda *_: None)
 
     assert relay.poll_once() == 0
+
+
+def test_the_phone_gateway_runs_beside_the_dashboard_and_restarts_with_the_api(
+    tmp_path: Path,
+) -> None:
+    paths = DesktopPaths(root=tmp_path / "repo", runtime=tmp_path / "runtime")
+    specs = {
+        spec.name: spec
+        for spec in build_service_specs(paths, Ports(api=8101, web=3101), python="py", node="node")
+    }
+
+    gateway = specs["gateway"]
+    assert gateway.command == ("py", "-m", "helios.gateway")
+    assert gateway.env["HELIOS_API_URL"] == "http://127.0.0.1:8101"
+    assert gateway.env["HELIOS_WEB_URL"] == "http://127.0.0.1:3101"
+    # Switching phone access on is applied by the Settings page's Restart, which restarts the API.
+    assert "gateway" in DEPENDENTS["api"]

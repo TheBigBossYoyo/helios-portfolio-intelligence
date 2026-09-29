@@ -454,6 +454,111 @@ class StorageCompactModel(DTOModel):
     status: StorageStatusModel
 
 
+class PairedDeviceModel(DTOModel):
+    id: int
+    name: str
+    created_at: datetime = Field(alias="createdAt")
+    last_seen_at: datetime | None = Field(default=None, alias="lastSeenAt")
+
+
+class PhoneAddressModel(DTOModel):
+    url: str
+    kind: str  # "wifi" or "tailscale"
+
+
+class PairingModel(DTOModel):
+    code: str
+    expires_at: datetime = Field(alias="expiresAt")
+    urls: list[str]
+
+
+class PhoneAccessModel(DTOModel):
+    enabled: bool
+    port: int
+    #: Whether the gateway is reachable from the network right now (off until a restart).
+    listening: bool
+    addresses: list[PhoneAddressModel]
+    pairing: PairingModel | None = None
+    devices: list[PairedDeviceModel]
+
+
+class DeviceClaimRequest(DTOModel):
+    code: str = Field(min_length=1, max_length=32)
+    name: str = Field(default="Phone", max_length=120)
+
+
+class DeviceClaimModel(DTOModel):
+    id: int
+    token: str
+
+
+class DeviceVerifyRequest(DTOModel):
+    token: str = Field(min_length=1, max_length=256)
+
+
+class CalendarEventModel(DTOModel):
+    day: date
+    kind: str
+    ticker: str
+    name: str | None = None
+    held: bool
+    confirmed: bool
+    time_of_day: str | None = Field(default=None, alias="timeOfDay")
+    estimate_eps: Decimal | None = Field(default=None, alias="estimateEps")
+    eps_currency: str | None = Field(default=None, alias="epsCurrency")
+    ex_date: date | None = Field(default=None, alias="exDate")
+    amount_per_share: Decimal | None = Field(default=None, alias="amountPerShare")
+    currency_code: str | None = Field(default=None, alias="currencyCode")
+    amount_eur: Decimal | None = Field(default=None, alias="amountEur")
+    after_tax: bool = Field(default=False, alias="afterTax")
+
+
+class IncomeMonthModel(DTOModel):
+    month: str
+    received_eur: Decimal = Field(alias="receivedEur")
+    projected_eur: Decimal = Field(alias="projectedEur")
+
+
+class HoldingIncomeModel(DTOModel):
+    ticker: str
+    name: str | None = None
+    shares: Decimal
+    payments_per_year: int | None = Field(default=None, alias="paymentsPerYear")
+    amount_per_share: Decimal | None = Field(default=None, alias="amountPerShare")
+    currency_code: str | None = Field(default=None, alias="currencyCode")
+    annual_eur: Decimal | None = Field(default=None, alias="annualEur")
+    yield_pct: float | None = Field(default=None, alias="yieldPct")
+    next_ex_date: date | None = Field(default=None, alias="nextExDate")
+    next_payment_date: date | None = Field(default=None, alias="nextPaymentDate")
+    next_confirmed: bool = Field(alias="nextConfirmed")
+    after_tax: bool = Field(alias="afterTax")
+    received_12m_eur: Decimal = Field(alias="received12mEur")
+    source: str
+
+
+class CalendarModel(DTOModel):
+    as_of: date = Field(alias="asOf")
+    provider_available: bool = Field(alias="providerAvailable")
+    earnings_fetched_at: datetime | None = Field(default=None, alias="earningsFetchedAt")
+    events: list[CalendarEventModel]
+    months: list[IncomeMonthModel]
+    holdings: list[HoldingIncomeModel]
+    received_12m_eur: Decimal = Field(alias="received12mEur")
+    projected_12m_eur: Decimal = Field(alias="projected12mEur")
+    portfolio_value_eur: Decimal | None = Field(default=None, alias="portfolioValueEur")
+    notes: list[str]
+
+
+class AllocationTargetModel(DTOModel):
+    ticker: str = Field(min_length=1, max_length=64)
+    #: Share of the planned portfolio, 0..1.
+    weight: Decimal = Field(ge=0, le=1)
+
+
+class AllocationTargetsRequest(DTOModel):
+    targets: list[AllocationTargetModel] = Field(max_length=200)
+
+
 class PriceAlertModel(DTOModel):
     id: int
     ticker: str

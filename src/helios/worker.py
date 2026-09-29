@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -20,6 +20,8 @@ BACKUP_CHECK_MINUTES = 60
 #: Compaction runs once a day, and once this long after the worker starts.
 STORAGE_COMPACT_MINUTES = 24 * 60
 STORAGE_STARTUP_DELAY_SECONDS = 300
+#: How often the worker checks whether a calendar source is due.
+EVENTS_CHECK_MINUTES = 180
 
 
 class SyncService(Protocol):
@@ -32,6 +34,12 @@ class ReplayService(Protocol):
 
 class NewsService(Protocol):
     async def sync(self) -> object: ...
+
+
+class EventsRefresher(Protocol):
+    async def refresh(self, *, force: bool = False) -> object: ...
+
+    async def notify(self, sink: Any) -> Sequence[object]: ...
 
 
 class StorageCompactor(Protocol):
@@ -97,6 +105,12 @@ class WorkerContainer(Protocol):
 
     @property
     def storage_service(self) -> StorageCompactor: ...
+
+    @property
+    def market_events_service(self) -> EventsRefresher: ...
+
+    @property
+    def portfolio_repository(self) -> Any: ...
 
     async def startup(self) -> None: ...
 
@@ -206,6 +220,16 @@ class HeliosWorker:
                     max_instances=1,
                     coalesce=True,
                 )
+            # Earnings dates and declared dividends: due sources only, so most runs ask
+            # nothing (the earnings calendar daily, each company's dividends weekly).
+            self._scheduler.add_job(
+                self._run_scheduled_events,
+                trigger="interval",
+                minutes=EVENTS_CHECK_MINUTES,
+                id="market-events",
+                max_instances=1,
+                coalesce=True,
+            )
             if self._settings.storage_compact_enabled:
                 self._scheduler.add_job(
                     self._run_scheduled_compact,
@@ -287,6 +311,20 @@ class HeliosWorker:
             await self._container.budget_notifier.check()
         except Exception as exc:
             self._logger.warning("worker_budgets_failed", error=exc.__class__.__name__)
+        try:
+            await self._container.market_events_service.notify(
+                self._container.portfolio_repository
+            )
+        except Exception as exc:
+            self._logger.warning("worker_event_notices_failed", error=exc.__class__.__name__)
+
+    async def _run_scheduled_events(self) -> None:
+        if self._container is None:
+            return
+        try:
+            await self._container.market_events_service.refresh()
+        except Exception as exc:
+            self._logger.warning("worker_events_failed", error=exc.__class__.__name__)
 
     async def _run_scheduled_backup(self) -> None:
         """A verified copy of the database, once the last one is a day old."""

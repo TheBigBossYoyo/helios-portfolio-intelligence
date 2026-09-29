@@ -749,6 +749,7 @@ const settingsSnapshot = {
     market_data_provider: "twelvedata",
     anthropic_model: "claude-opus-5",
     analytics_passive_benchmark_key: "vwrp",
+    phone_access_enabled: "true",
   },
   keyringBackend: "WinVaultKeyring",
   keyringAvailable: true,
@@ -1046,6 +1047,88 @@ const backupStatus = {
   count: 7,
 };
 
+const calendarMonths = [];
+for (let index = 0; index < 24; index += 1) {
+  const month = ((4 + index) % 12) + 1;
+  const year = 2023 + Math.floor((4 + index) / 12);
+  const key = `${year}-${String(month).padStart(2, "0")}`;
+  const past = index <= 11;
+  const quarterly = month % 3 === 2;
+  calendarMonths.push({
+    month: key,
+    receivedEur: past && quarterly ? "3.10" : past && month % 3 === 0 ? "1.25" : "0",
+    projectedEur: !past && quarterly ? "3.40" : !past && month % 3 === 0 ? "1.30" : "0",
+  });
+}
+
+const marketCalendar = {
+  asOf: "2024-04-29",
+  providerAvailable: true,
+  earningsFetchedAt: "2024-04-29T06:00:00Z",
+  events: [
+    {
+      day: "2024-05-02", kind: "earnings", ticker: "AAPL_US_EQ", name: "Apple Inc.", held: true, confirmed: true,
+      timeOfDay: "post-market", estimateEps: "1.50", epsCurrency: "USD", exDate: null, amountPerShare: null,
+      currencyCode: null, amountEur: null, afterTax: false,
+    },
+    {
+      day: "2024-05-16", kind: "dividend", ticker: "AAPL_US_EQ", name: "Apple Inc.", held: true, confirmed: true,
+      timeOfDay: null, estimateEps: null, epsCurrency: null, exDate: "2024-05-10", amountPerShare: "0.25",
+      currencyCode: "USD", amountEur: "2.47", afterTax: true,
+    },
+    {
+      day: "2024-05-21", kind: "earnings", ticker: "NVDA_US_EQ", name: "Nvidia", held: false, confirmed: true,
+      timeOfDay: null, estimateEps: "5.59", epsCurrency: "USD", exDate: null, amountPerShare: null,
+      currencyCode: null, amountEur: null, afterTax: false,
+    },
+    {
+      day: "2024-06-24", kind: "dividend", ticker: "SHEL_EQ", name: "Shell plc", held: true, confirmed: false,
+      timeOfDay: null, estimateEps: null, epsCurrency: null, exDate: null, amountPerShare: "0.344",
+      currencyCode: "USD", amountEur: "0.93", afterTax: false,
+    },
+  ],
+  months: calendarMonths,
+  holdings: [
+    {
+      ticker: "AAPL_US_EQ", name: "Apple Inc.", shares: "12.3456789", paymentsPerYear: 4, amountPerShare: "0.25",
+      currencyCode: "USD", annualEur: "9.88", yieldPct: 0.0048, nextExDate: "2024-05-10",
+      nextPaymentDate: "2024-05-16", nextConfirmed: true, afterTax: true, received12mEur: "9.30", source: "declared",
+    },
+    {
+      ticker: "SHEL_EQ", name: "Shell plc", shares: "40", paymentsPerYear: 4, amountPerShare: "0.344",
+      currencyCode: "USD", annualEur: "3.72", yieldPct: 0.003, nextExDate: null,
+      nextPaymentDate: "2024-06-24", nextConfirmed: false, afterTax: false, received12mEur: "3.75", source: "history",
+    },
+    {
+      ticker: "NEW_EQ", name: "New Holding", shares: "1", paymentsPerYear: null, amountPerShare: null,
+      currencyCode: "EUR", annualEur: "0", yieldPct: null, nextExDate: null,
+      nextPaymentDate: null, nextConfirmed: false, afterTax: false, received12mEur: "0", source: "none",
+    },
+  ],
+  received12mEur: "13.05",
+  projected12mEur: "13.60",
+  portfolioValueEur: "3305.40",
+  notes: [],
+};
+
+const phoneAccess = {
+  enabled: true,
+  port: 8787,
+  listening: true,
+  addresses: [
+    { url: "http://192.168.1.20:8787", kind: "wifi" },
+    { url: "http://100.101.102.103:8787", kind: "tailscale" },
+  ],
+  pairing: {
+    code: "K7QX3MPA",
+    expiresAt: "2099-01-01T00:00:00Z",
+    urls: ["http://192.168.1.20:8787/__helios/pair?code=K7QX3MPA"],
+  },
+  devices: [
+    { id: 1, name: "iPhone", createdAt: "2024-04-28T18:00:00Z", lastSeenAt: "2024-04-29T08:15:00Z" },
+  ],
+};
+
 const storageStatus = {
   databaseBytes: 25_165_824,
   walBytes: 1_048_576,
@@ -1058,6 +1141,12 @@ const storageStatus = {
 const ROUTES = {
   "/health": health,
   "/api/v1/storage": storageStatus,
+  "/api/v1/devices": phoneAccess,
+  "/api/v1/calendar": marketCalendar,
+  "/api/v1/allocation/targets": [
+    { ticker: "AAPL_US_EQ", weight: "0.5" },
+    { ticker: "SHEL_EQ", weight: "0.5" },
+  ],
   "/api/v1/backups": backupStatus,
   "/api/v1/ai/weekly/latest": weeklyReview,
   "/api/v1/watchlist": watchlist,
@@ -1125,6 +1214,10 @@ const MUTATIONS = {
   "POST /api/v1/watchlist": { action: "watchlist-write", body: watchlist },
   "DELETE /api/v1/watchlist/{ticker}": { action: "watchlist-write", body: null },
   "DELETE /api/v1/alerts/{id}": { action: "alerts-write", body: null },
+  "DELETE /api/v1/devices/{id}": { action: "device-revoke", body: null },
+  "POST /api/v1/devices/pairing": { action: "device-pair", body: phoneAccess },
+  "POST /api/v1/calendar/refresh": { action: "calendar-refresh", body: marketCalendar },
+  "PUT /api/v1/allocation/targets": { action: "targets-write", body: [] },
   "PUT /api/v1/card/budgets": {
     action: "card-budget",
     body: [{ category: "MEMBERSHIPS", monthlyLimit: "80.00" }],
@@ -1222,6 +1315,9 @@ function mutationKey(method, path) {
   }
   if (/^\/api\/v1\/alerts\/[^/]+$/.test(path) && method === "DELETE") {
     return "DELETE /api/v1/alerts/{id}";
+  }
+  if (/^\/api\/v1\/devices\/\d+$/.test(path) && method === "DELETE") {
+    return "DELETE /api/v1/devices/{id}";
   }
   return `${method} ${path}`;
 }

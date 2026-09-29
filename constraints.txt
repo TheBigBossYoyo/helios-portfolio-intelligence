@@ -87,3 +87,4 @@ tzdata==2026.3
 tzlocal==5.4.4
 uvicorn==0.52.1
 virtualenv==21.7.1
+zstandard==0.25.0

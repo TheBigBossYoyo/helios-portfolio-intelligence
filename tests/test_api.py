@@ -439,6 +439,12 @@ MUTATING_ROUTES: list[tuple[str, str, str]] = [
     ("POST", "/api/v1/ai/weekly", "ai-weekly"),
     ("POST", "/api/v1/backups", "backup"),
     ("POST", "/api/v1/storage/compact", "storage-compact"),
+    ("POST", "/api/v1/devices/pairing", "device-pair"),
+    ("POST", "/api/v1/devices/claim", "device-claim"),
+    ("POST", "/api/v1/devices/verify", "device-verify"),
+    ("DELETE", "/api/v1/devices/1", "device-revoke"),
+    ("POST", "/api/v1/calendar/refresh", "calendar-refresh"),
+    ("PUT", "/api/v1/allocation/targets", "targets-write"),
     ("DELETE", "/api/v1/watchlist/AAPL_US_EQ", "watchlist-write"),
     ("DELETE", "/api/v1/alerts/1", "alerts-write"),
     ("POST", "/api/v1/notifications/1/delivered", "notifications-ack"),
@@ -508,6 +514,12 @@ def test_guard_covers_every_mutating_route_the_router_declares(tmp_path: Path) -
         ("POST", "/api/v1/ai/weekly"),
         ("POST", "/api/v1/backups"),
         ("POST", "/api/v1/storage/compact"),
+        ("POST", "/api/v1/devices/pairing"),
+        ("POST", "/api/v1/devices/claim"),
+        ("POST", "/api/v1/devices/verify"),
+        ("DELETE", "/api/v1/devices/{device_id}"),
+        ("POST", "/api/v1/calendar/refresh"),
+        ("PUT", "/api/v1/allocation/targets"),
         ("DELETE", "/api/v1/watchlist/{ticker}"),
         ("DELETE", "/api/v1/alerts/{alert_id}"),
         ("POST", "/api/v1/notifications/{notification_id}/delivered"),
@@ -1217,3 +1229,51 @@ def test_storage_status_and_compact(tmp_path: Path) -> None:
     assert "No data was removed" in body["detail"]
     assert body["vacuumed"] is True
     assert body["status"]["freeBytes"] == 0
+
+
+def test_allocation_targets_replace_the_plan_and_refuse_more_than_everything(
+    tmp_path: Path,
+) -> None:
+    app = create_app(Settings(data_dir=tmp_path))
+    header = {"X-Helios-Local-Action": "targets-write"}
+    with TestClient(app) as client:
+        saved = client.put(
+            "/api/v1/allocation/targets",
+            json={
+                "targets": [
+                    {"ticker": "AAPL_US_EQ", "weight": "0.6"},
+                    {"ticker": "VWRPl_EQ", "weight": "0.4"},
+                ]
+            },
+            headers=header,
+        )
+        too_much = client.put(
+            "/api/v1/allocation/targets",
+            json={
+                "targets": [
+                    {"ticker": "AAPL_US_EQ", "weight": "0.7"},
+                    {"ticker": "VWRPl_EQ", "weight": "0.4"},
+                ]
+            },
+            headers=header,
+        )
+        replaced = client.put(
+            "/api/v1/allocation/targets",
+            json={
+                "targets": [
+                    {"ticker": "VWRPl_EQ", "weight": "1"},
+                    {"ticker": "AAPL_US_EQ", "weight": "0"},
+                ]
+            },
+            headers=header,
+        )
+        read = client.get("/api/v1/allocation/targets")
+
+    assert saved.status_code == 200
+    assert [(row["ticker"], row["weight"]) for row in saved.json()] == [
+        ("AAPL_US_EQ", "0.6"),
+        ("VWRPl_EQ", "0.4"),
+    ]
+    assert too_much.status_code == 400 and "110.0%" in too_much.json()["detail"]
+    assert replaced.status_code == 200
+    assert [(row["ticker"], row["weight"]) for row in read.json()] == [("VWRPl_EQ", "1")]

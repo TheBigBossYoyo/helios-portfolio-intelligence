@@ -20,6 +20,11 @@ interface DataTableProps<T> {
    * kilometre of rows.
    */
   maxHeight?: number;
+  /**
+   * On a phone, show one card per row instead of a sideways-scrolling table. Defaults to on for
+   * tables of four or more columns, which do not fit a phone's width.
+   */
+  stackOnPhone?: boolean;
 }
 
 /**
@@ -35,17 +40,19 @@ export function DataTable<T>({
   empty,
   caption,
   maxHeight,
+  stackOnPhone,
 }: DataTableProps<T>) {
   if (rows.length === 0) {
     return <p className="px-1 py-8 text-center text-sm text-ink-3">{empty ?? "No rows"}</p>;
   }
 
+  const stack = stackOnPhone ?? columns.length >= 4;
   return (
     <div
       className="overflow-auto rounded-xl border border-border"
       style={maxHeight ? { maxHeight } : undefined}
     >
-      <table className="w-full min-w-full border-collapse text-sm">
+      <table className={`w-full min-w-full border-collapse text-sm ${stack ? "stack-sm" : ""}`}>
         {caption ? <caption className="sr-only">{caption}</caption> : null}
         <thead className="sticky top-0 z-10 bg-surface-2">
           <tr className="border-b border-border">
@@ -73,6 +80,7 @@ export function DataTable<T>({
                   className={`whitespace-nowrap px-3 py-2.5 text-ink-2 ${
                     column.numeric ? "tabular-nums text-right text-ink" : "text-left"
                   }`}
+                  data-label={column.header}
                   key={column.key}
                 >
                   {column.render(row)}

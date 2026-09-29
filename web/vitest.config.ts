@@ -13,6 +13,8 @@ export default defineConfig({
       // `revalidatePath` needs an active Next request store. The actions' contract with the
       // API is what these tests check; Next's cache bookkeeping is the framework's own.
       "next/cache": fileURLToPath(new URL("./tests/stubs/next-cache.ts", import.meta.url)),
+      // `headers()` likewise needs a request; the stub lets a test play a paired phone.
+      "next/headers": fileURLToPath(new URL("./tests/stubs/next-headers.ts", import.meta.url)),
     },
   },
   test: {

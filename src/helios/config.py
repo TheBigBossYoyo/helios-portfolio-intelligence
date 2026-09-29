@@ -148,6 +148,10 @@ class Settings(BaseSettings):
     backup_interval_hours: int = 24
     # Daily lossless compaction: returns free space to the disk, never drops data.
     storage_compact_enabled: bool = True
+    # Phones on the same network (or Tailscale) can open Helios through the gateway once
+    # paired from Settings. Off by default: the gateway then listens on loopback only.
+    phone_access_enabled: bool = False
+    phone_access_port: int = 8787
     sync_lease_minutes: int = 15
     ecb_base_url: str = "https://data-api.ecb.europa.eu/service/data"
     market_data_provider: str = "disabled"

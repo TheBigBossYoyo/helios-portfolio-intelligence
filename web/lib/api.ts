@@ -9,6 +9,9 @@ import type {
   JournalEntry,
   AppNotification,
   BackupStatus,
+  AllocationTarget,
+  MarketCalendar,
+  PhoneAccess,
   StorageStatus,
   CardHistory,
   InstrumentDetail,
@@ -392,6 +395,22 @@ export function getInstrumentDetail(ticker: string): Promise<ApiResult<Instrumen
 
 export function parseList<T>(value: unknown): T[] | null {
   return Array.isArray(value) ? (value as T[]) : null;
+}
+
+export function getAllocationTargets(): Promise<ApiResult<AllocationTarget[]>> {
+  return getJson("/api/v1/allocation/targets", parseList<AllocationTarget>);
+}
+
+export function getCalendar(): Promise<ApiResult<MarketCalendar>> {
+  return getJson("/api/v1/calendar", (value) =>
+    parseShape<MarketCalendar>(value, ["asOf", "events", "months", "holdings"]),
+  );
+}
+
+export function getPhoneAccess(): Promise<ApiResult<PhoneAccess>> {
+  return getJson("/api/v1/devices", (value) =>
+    parseShape<PhoneAccess>(value, ["enabled", "port", "addresses", "devices"]),
+  );
 }
 
 export function getStorageStatus(): Promise<ApiResult<StorageStatus>> {

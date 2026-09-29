@@ -18,6 +18,8 @@ import {
 import {
   backupNowAction,
   compactStorageAction,
+  createPairingAction,
+  revokeDeviceAction,
   connectTrading212Action,
   createDatabaseAction,
   restartApiAction,
@@ -25,7 +27,10 @@ import {
   saveSettingAction,
   switchDatabaseAction,
 } from "@/lib/actions";
-import { getBackupStatus, getDatabases, getSettings, getStorageStatus } from "@/lib/api";
+import { getBackupStatus, getDatabases, getPhoneAccess, getSettings, getStorageStatus } from "@/lib/api";
+import { isRemoteRequest } from "@/lib/remote";
+import { PhonePanel } from "@/components/phone-panel";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { formatDateTime } from "@/lib/format";
 import type { DatabaseInfo } from "@/lib/types";
 
@@ -60,11 +65,39 @@ const AI_CREDENTIAL_FIELDS = ["anthropic_api_key"];
 const NEWS_CREDENTIAL_FIELDS = ["news_marketaux_api_key"];
 
 export default async function SettingsPage() {
-  const [settings, databases, backups, storage] = await Promise.all([
+  if (await isRemoteRequest()) {
+    // A paired phone reads everything but changes nothing here: keys, databases and pairing
+    // stay on the computer running Helios.
+    return (
+      <>
+        <PageHeader title="Settings" />
+        <Panel
+          subtitle="Keys, databases, backups and phone pairing are managed on the computer running Helios."
+          title="On this phone"
+        >
+          <div className="flex flex-col gap-4" data-testid="settings-remote">
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-ink">Theme</span>
+              <div className="max-w-xs">
+                <ThemeToggle />
+              </div>
+            </div>
+            <Note>
+              To add Helios to your home screen, use your browser&apos;s share menu and choose{" "}
+              <b>Add to Home Screen</b>. It then opens full screen, like an app.
+            </Note>
+          </div>
+        </Panel>
+      </>
+    );
+  }
+
+  const [settings, databases, backups, storage, phone] = await Promise.all([
     getSettings(),
     getDatabases(),
     getBackupStatus(),
     getStorageStatus(),
+    getPhoneAccess(),
   ]);
 
   if (!settings.ok) {
@@ -272,6 +305,14 @@ export default async function SettingsPage() {
             />
           </div>
         </Panel>
+
+        <PhonePanel
+          createPairing={createPairingAction}
+          current={snapshot.editable.phone_access_enabled ?? "false"}
+          phone={phone}
+          revokeDevice={revokeDeviceAction}
+          saveSetting={saveSettingAction}
+        />
 
         <Panel
           actions={

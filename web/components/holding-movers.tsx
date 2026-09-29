@@ -266,7 +266,7 @@ function HoldingTable({ holdings }: { holdings: HoldingMovement[] }) {
   };
   return (
     <div className="overflow-x-auto rounded-xl border border-border">
-      <table className="w-full border-collapse whitespace-nowrap text-sm">
+      <table className="stack-sm w-full border-collapse whitespace-nowrap text-sm">
         <caption className="sr-only">Each holding&apos;s result over the period</caption>
         <thead className="bg-surface-2">
           <tr className="border-b border-border text-xs text-ink-3">
@@ -296,7 +296,7 @@ function HoldingTable({ holdings }: { holdings: HoldingMovement[] }) {
             const result = decimalToNumber(item.resultEur);
             return (
               <tr className="border-b border-border last:border-b-0" key={item.ticker}>
-                <td className="px-3 py-2">
+                <td data-label="Holding" className="px-3 py-2">
                   <a
                     className="font-medium text-ink hover:text-accent hover:underline"
                     href={holdingHref(item.ticker)}
@@ -305,18 +305,18 @@ function HoldingTable({ holdings }: { holdings: HoldingMovement[] }) {
                   </a>
                   {item.name ? <span className="ml-1.5 text-ink-3">{item.name}</span> : null}
                 </td>
-                <td className="tabular-nums px-3 py-2 text-right text-ink-2">
+                <td data-label="Value at start" className="tabular-nums px-3 py-2 text-right text-ink-2">
                   {money(item.startValueEur)}
                 </td>
-                <td className="tabular-nums px-3 py-2 text-right text-ink-2">{money(item.boughtEur)}</td>
-                <td className="tabular-nums px-3 py-2 text-right text-ink-2">{money(item.soldEur)}</td>
-                <td className="tabular-nums px-3 py-2 text-right text-ink-2">
+                <td data-label="Bought" className="tabular-nums px-3 py-2 text-right text-ink-2">{money(item.boughtEur)}</td>
+                <td data-label="Sold" className="tabular-nums px-3 py-2 text-right text-ink-2">{money(item.soldEur)}</td>
+                <td data-label="Dividends" className="tabular-nums px-3 py-2 text-right text-ink-2">
                   {money(item.dividendsEur)}
                 </td>
-                <td className="tabular-nums px-3 py-2 text-right text-ink-2">
+                <td data-label="Value at end" className="tabular-nums px-3 py-2 text-right text-ink-2">
                   {money(item.endValueEur)}
                 </td>
-                <td
+                <td data-label="Result"
                   className={`tabular-nums px-3 py-2 text-right font-medium ${
                     result === null || result === 0
                       ? "text-ink-2"
@@ -327,10 +327,10 @@ function HoldingTable({ holdings }: { holdings: HoldingMovement[] }) {
                 >
                   {signedEur(result)}
                 </td>
-                <td className="tabular-nums px-3 py-2 text-right text-ink-2">
+                <td data-label="Return" className="tabular-nums px-3 py-2 text-right text-ink-2">
                   {item.returnPct !== null ? formatSignedPercent(item.returnPct, 1) : EMPTY}
                 </td>
-                <td className="tabular-nums px-3 py-2 text-right text-ink-2">
+                <td data-label="Price move" className="tabular-nums px-3 py-2 text-right text-ink-2">
                   {item.priceChangePct !== null ? formatSignedPercent(item.priceChangePct, 1) : EMPTY}
                 </td>
               </tr>

@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { apiBaseUrl } from "./api";
+import { isRemoteRequest } from "./remote";
 
 /**
  * Server actions for every mutating Helios operation.
@@ -50,7 +51,22 @@ type LocalAction =
   | "thesis-write"
   | "journal-write"
   | "settings-write"
+  | "device-pair"
+  | "calendar-refresh"
+  | "targets-write"
+  | "device-revoke"
   | "restart";
+
+/**
+ * What a paired phone may not do: change credentials, databases or settings, restart Helios,
+ * or pair and unpair devices. Those stay on the computer running Helios.
+ */
+const DESKTOP_ONLY: ReadonlySet<LocalAction> = new Set([
+  "settings-write",
+  "device-pair",
+  "device-revoke",
+  "restart",
+]);
 
 interface MutateOptions {
   method?: "POST" | "PATCH" | "PUT" | "DELETE";
@@ -109,6 +125,14 @@ async function mutate(
   options: MutateOptions,
 ): Promise<ActionResult> {
   const timestamp = () => new Date().toISOString();
+  if (DESKTOP_ONLY.has(action) && (await isRemoteRequest())) {
+    return {
+      ok: false,
+      error: "Change this on the computer running Helios.",
+      status: 403,
+      timestamp: timestamp(),
+    };
+  }
   try {
     const response = await fetch(`${apiBaseUrl()}${path}`, {
       method: options.method ?? "POST",
@@ -310,6 +334,49 @@ export async function compactStorageAction(): Promise<ActionResult> {
     messageFromResponse: true,
     revalidate: ["/settings"],
     timeoutMs: 120_000,
+  });
+}
+
+/** Replace the target allocation. Planning only: nothing is ever traded. */
+export async function saveTargetsAction(
+  targets: { ticker: string; weight: string }[],
+): Promise<ActionResult> {
+  return mutate("/api/v1/allocation/targets", "targets-write", {
+    method: "PUT",
+    body: { targets },
+    successMessage: "Targets saved.",
+    revalidate: ["/targets"],
+    timeoutMs: 15_000,
+  });
+}
+
+/** Ask Alpha Vantage for earnings dates and declared dividends now. */
+export async function refreshCalendarAction(): Promise<ActionResult> {
+  return mutate("/api/v1/calendar/refresh", "calendar-refresh", {
+    successMessage: "Calendar updated.",
+    revalidate: ["/calendar", "/"],
+  });
+}
+
+/** A fresh one-time code for pairing a phone. */
+export async function createPairingAction(): Promise<ActionResult> {
+  return mutate("/api/v1/devices/pairing", "device-pair", {
+    successMessage: "Scan the QR code with your phone, or type the code.",
+    revalidate: ["/settings"],
+    timeoutMs: 15_000,
+  });
+}
+
+/** Unpair a phone: its next request is turned away. */
+export async function revokeDeviceAction(id: number): Promise<ActionResult> {
+  if (!Number.isInteger(id) || id <= 0) {
+    return { ok: false, error: "Unknown device", status: null, timestamp: new Date().toISOString() };
+  }
+  return mutate(`/api/v1/devices/${id}`, "device-revoke", {
+    method: "DELETE",
+    successMessage: "Unpaired.",
+    revalidate: ["/settings"],
+    timeoutMs: 15_000,
   });
 }
 

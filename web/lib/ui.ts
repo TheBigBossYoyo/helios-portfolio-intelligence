@@ -32,3 +32,10 @@ export const CARD = "rounded-2xl border border-border bg-surface shadow-card";
 export const LINK = "font-medium text-accent hover:text-accent-hover hover:underline underline-offset-4";
 
 export const EYEBROW = "text-xs font-medium text-ink-3";
+
+/**
+ * A segmented control's track. On a phone it scrolls sideways rather than wrapping onto a
+ * second line; its items never shrink.
+ */
+export const SEGMENTED =
+  "no-scrollbar flex max-w-full gap-1 overflow-x-auto rounded-xl bg-surface-3 p-1 *:shrink-0";

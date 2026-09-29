@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import socket
 import subprocess
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
 
@@ -56,6 +58,7 @@ from .dependencies import (
     get_t212_service,
     get_thesis_service,
 )
+from .devices import is_tailscale, lan_addresses
 from .housekeeping import BackupError, BackupStatus
 from .instrument_detail import InstrumentDetailService, UnknownInstrumentError
 from .logging import get_logger
@@ -73,7 +76,10 @@ from .reporting import NoQualityReportDataError, PortfolioQualityReportService
 from .schemas import (
     AccountSummary,
     AiAnalysisModel,
+    AllocationTargetModel,
+    AllocationTargetsRequest,
     BackupStatusModel,
+    CalendarModel,
     CardBudgetModel,
     CardBudgetWriteRequest,
     CardHistoryModel,
@@ -85,6 +91,9 @@ from .schemas import (
     DatabaseInfoModel,
     DatabaseListModel,
     DatabaseSwitchRequest,
+    DeviceClaimModel,
+    DeviceClaimRequest,
+    DeviceVerifyRequest,
     EditableSettingRequest,
     EditableSettingResponse,
     HealthResponse,
@@ -95,8 +104,12 @@ from .schemas import (
     NewsItemModel,
     NewsSyncSummaryModel,
     NotificationModel,
+    PairedDeviceModel,
+    PairingModel,
     PerformanceReplaySummaryModel,
     PerformanceReportModel,
+    PhoneAccessModel,
+    PhoneAddressModel,
     PortfolioSyncSummary,
     Position,
     PriceAlertCreateRequest,
@@ -497,6 +510,166 @@ async def compact_storage(
         detail=detail,
         status=await asyncio.to_thread(_storage_model, container),
     )
+
+
+def _gateway_listening(port: int, addresses: list[str]) -> bool:
+    """Whether the phone gateway answers on a network address (it binds loopback when off)."""
+
+    for address in addresses[:1]:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.3)
+            if probe.connect_ex((address, port)) == 0:
+                return True
+    return False
+
+
+async def _phone_access_model(container: Container) -> PhoneAccessModel:
+    settings = container.settings
+    port = settings.phone_access_port
+    addresses = await asyncio.to_thread(lan_addresses)
+    urls = [f"http://{address}:{port}" for address in addresses]
+    pairing = await container.device_service.active_pairing()
+    return PhoneAccessModel(
+        enabled=settings.phone_access_enabled,
+        port=port,
+        listening=settings.phone_access_enabled
+        and await asyncio.to_thread(_gateway_listening, port, addresses),
+        addresses=[
+            PhoneAddressModel(url=url, kind="tailscale" if is_tailscale(address) else "wifi")
+            for url, address in zip(urls, addresses, strict=True)
+        ],
+        pairing=None
+        if pairing is None
+        else PairingModel(
+            code=pairing.code,
+            expires_at=pairing.expires_at,
+            urls=[f"{url}/__helios/pair?code={pairing.code}" for url in urls],
+        ),
+        devices=[
+            PairedDeviceModel(
+                id=device.id,
+                name=device.name,
+                created_at=device.created_at,
+                last_seen_at=device.last_seen_at,
+            )
+            for device in await container.device_service.devices()
+        ],
+    )
+
+
+@router.get("/api/v1/devices", response_model=PhoneAccessModel)
+async def get_phone_access(
+    container: Annotated[Container, Depends(get_container)],
+) -> PhoneAccessModel:
+    return await _phone_access_model(container)
+
+
+@router.post("/api/v1/devices/pairing", response_model=PhoneAccessModel)
+async def create_device_pairing(
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("device-pair"))],
+) -> PhoneAccessModel:
+    """A new one-time code for pairing a phone; any earlier unused code stops working."""
+
+    await container.device_service.create_pairing()
+    return await _phone_access_model(container)
+
+
+@router.post("/api/v1/devices/claim", response_model=DeviceClaimModel)
+async def claim_device(
+    payload: DeviceClaimRequest,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("device-claim"))],
+) -> DeviceClaimModel:
+    """Called by the gateway when a phone presents a pairing code."""
+
+    claimed = await container.device_service.claim(payload.code, payload.name)
+    if claimed is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="That code is wrong or has expired. Make a new one on the computer.",
+        )
+    return DeviceClaimModel(id=claimed.id, token=claimed.token)
+
+
+@router.post("/api/v1/devices/verify", response_model=PairedDeviceModel)
+async def verify_device(
+    payload: DeviceVerifyRequest,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("device-verify"))],
+) -> PairedDeviceModel:
+    """Called by the gateway on each phone request (it caches the answer briefly)."""
+
+    device = await container.device_service.verify(payload.token)
+    if device is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not paired")
+    return PairedDeviceModel(
+        id=device.id,
+        name=device.name,
+        created_at=device.created_at,
+        last_seen_at=device.last_seen_at,
+    )
+
+
+@router.delete("/api/v1/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_device(
+    device_id: int,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("device-revoke"))],
+) -> None:
+    if not await container.device_service.revoke(device_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such device")
+
+
+@router.get("/api/v1/calendar", response_model=CalendarModel)
+async def get_calendar(
+    container: Annotated[Container, Depends(get_container)],
+) -> CalendarModel:
+    """Upcoming earnings and dividends, and dividend income received and expected."""
+
+    return CalendarModel.model_validate(await container.market_events_service.calendar())
+
+
+@router.post("/api/v1/calendar/refresh", response_model=CalendarModel)
+async def refresh_calendar(
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("calendar-refresh"))],
+) -> CalendarModel:
+    """Ask Alpha Vantage again now (spends free-plan requests: one, plus one per company)."""
+
+    await container.market_events_service.refresh(force=True)
+    return CalendarModel.model_validate(await container.market_events_service.calendar())
+
+
+@router.get("/api/v1/allocation/targets", response_model=list[AllocationTargetModel])
+async def get_allocation_targets(
+    container: Annotated[Container, Depends(get_container)],
+) -> list[AllocationTargetModel]:
+    return [
+        AllocationTargetModel(ticker=row.t212_ticker, weight=row.target_weight)
+        for row in await container.portfolio_repository.list_allocation_targets()
+    ]
+
+
+@router.put("/api/v1/allocation/targets", response_model=list[AllocationTargetModel])
+async def set_allocation_targets(
+    payload: AllocationTargetsRequest,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("targets-write"))],
+) -> list[AllocationTargetModel]:
+    """Replace the target allocation. Planning only: Helios never places an order."""
+
+    targets: dict[str, Decimal] = {}
+    for item in payload.targets:
+        targets[item.ticker] = targets.get(item.ticker, Decimal(0)) + item.weight
+    total = sum(targets.values(), Decimal(0))
+    if total > Decimal("1.0001"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Targets add up to {total * 100:.1f}%; they can be at most 100%.",
+        )
+    await container.portfolio_repository.replace_allocation_targets(targets, now=datetime.now(UTC))
+    return await get_allocation_targets(container)
 
 
 @router.get("/api/v1/alerts", response_model=list[PriceAlertModel])

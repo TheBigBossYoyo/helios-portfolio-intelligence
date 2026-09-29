@@ -111,6 +111,21 @@ class FakeStorage:
 
 
 @dataclass
+class FakeEvents:
+    refreshes: int = 0
+    notices: int = 0
+
+    async def refresh(self, *, force: bool = False) -> None:
+        del force
+        self.refreshes += 1
+
+    async def notify(self, sink: object) -> list[object]:
+        del sink
+        self.notices += 1
+        return []
+
+
+@dataclass
 class FakeContainer:
     sync_service: FakeSyncService
     replay_service: FakeReplayService = field(default_factory=FakeReplayService)
@@ -122,6 +137,7 @@ class FakeContainer:
     backups: FakeBackups = field(default_factory=FakeBackups)
     budgets: FakeBudgets = field(default_factory=FakeBudgets)
     storage: FakeStorage = field(default_factory=FakeStorage)
+    events: FakeEvents = field(default_factory=FakeEvents)
     startup_calls: int = 0
     shutdown_calls: int = 0
 
@@ -164,6 +180,14 @@ class FakeContainer:
     @property
     def storage_service(self) -> FakeStorage:
         return self.storage
+
+    @property
+    def market_events_service(self) -> FakeEvents:
+        return self.events
+
+    @property
+    def portfolio_repository(self) -> object:
+        return object()
 
     async def startup(self) -> None:
         self.startup_calls += 1
@@ -230,6 +254,7 @@ async def test_worker_starts_without_credentials(tmp_path: Path) -> None:
             "price-alerts",
             "daily-summary",
             "backup",
+            "market-events",
             "storage-compact",
             "news-sync",
         ]
@@ -267,6 +292,7 @@ async def test_worker_registers_interval_job_and_runs_initial_sync(tmp_path: Pat
             "price-alerts",
             "daily-summary",
             "backup",
+            "market-events",
             "storage-compact",
             "news-sync",
         ]

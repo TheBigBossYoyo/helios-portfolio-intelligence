@@ -8,6 +8,7 @@ import { getNews, getPositions } from "@/lib/api";
 import { paginate, parsePageParam } from "@/lib/pagination";
 import { displayTicker } from "@/lib/format";
 import type { NewsItem } from "@/lib/types";
+import { SEGMENTED } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -64,7 +65,7 @@ export default async function NewsPage({
 
       <Panel
         actions={
-          <nav aria-label="Which stories" className="flex gap-1 rounded-xl bg-surface-3 p-1">
+          <nav aria-label="Which stories" className={SEGMENTED}>
             <ScopeTab active={!everything} href={query({ ticker })} label="About my holdings" />
             <ScopeTab active={everything} href={query({ ticker, show: "all" })} label="Everything" />
           </nav>

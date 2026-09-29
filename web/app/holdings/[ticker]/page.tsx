@@ -1,4 +1,4 @@
-import { ArrowDownRight, ArrowLeft, ArrowUpRight } from "lucide-react";
+import { ArrowDownRight, ArrowLeft, ArrowUpRight, Coins, Megaphone } from "lucide-react";
 import Link from "next/link";
 import { ActionButton } from "@/components/action-button";
 import { AlertForm } from "@/components/alert-form";
@@ -10,6 +10,7 @@ import { signedEur } from "@/components/period-change";
 import { Note, PageHeader, Panel, Unavailable } from "@/components/panel";
 import {
   getAccountSummary,
+  getCalendar,
   getInstrumentDetail,
   getNews,
   getAlerts,
@@ -35,7 +36,7 @@ import {
   watchTickerAction,
 } from "@/lib/actions";
 import type { InstrumentDetail } from "@/lib/types";
-import { CARD, LINK } from "@/lib/ui";
+import { CARD, LINK, SEGMENTED } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -197,7 +198,7 @@ export default async function HoldingDetailPage({
   const range: RangeKey = RANGES.some((item) => item.key === rawRange)
     ? (rawRange as RangeKey)
     : "6M";
-  const [result, positions, account, news, theses, alerts, watchlist] = await Promise.all([
+  const [result, positions, account, news, theses, alerts, watchlist, calendar] = await Promise.all([
     getInstrumentDetail(ticker),
     getPositions(),
     getAccountSummary(),
@@ -205,7 +206,11 @@ export default async function HoldingDetailPage({
     getTheses(),
     getAlerts(ticker),
     getWatchlist(),
+    getCalendar(),
   ]);
+  const upcoming = calendar.ok ? calendar.data.events.filter((event) => event.ticker === ticker) : [];
+  const nextReport = upcoming.find((event) => event.kind === "earnings");
+  const nextDividend = upcoming.find((event) => event.kind === "dividend");
 
   const back = (
     <Link className={`${LINK} inline-flex items-center gap-1 text-sm`} href="/holdings">
@@ -314,6 +319,35 @@ export default async function HoldingDetailPage({
               ? `${formatSignedPercent(dayChange)} on the last close (${formatDay(closes.at(-1)?.asOfDate)})`
               : "No price history yet"}
           </span>
+          {nextReport || nextDividend ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {nextReport ? (
+                <Link
+                  className="inline-flex items-center gap-1.5 rounded-full bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent-ink"
+                  href="/calendar"
+                >
+                  <Megaphone aria-hidden="true" size={13} />
+                  Results {formatDay(nextReport.day)}
+                  {nextReport.timeOfDay === "pre-market"
+                    ? ", before the open"
+                    : nextReport.timeOfDay === "post-market"
+                      ? ", after the close"
+                      : ""}
+                </Link>
+              ) : null}
+              {nextDividend ? (
+                <Link
+                  className="inline-flex items-center gap-1.5 rounded-full bg-positive-soft px-2.5 py-1 text-xs font-medium text-positive"
+                  href="/calendar"
+                >
+                  <Coins aria-hidden="true" size={13} />
+                  Dividend {formatDay(nextDividend.day)}
+                  {nextDividend.amountEur ? ` · ${formatEur(nextDividend.amountEur)}` : ""}
+                  {nextDividend.confirmed ? "" : " (estimate)"}
+                </Link>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         {everOwned ? (
         <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:col-span-2">
@@ -354,7 +388,7 @@ export default async function HoldingDetailPage({
 
       <Panel
         actions={
-          <nav aria-label="Price range" className="flex gap-1 rounded-xl bg-surface-3 p-1">
+          <nav aria-label="Price range" className={SEGMENTED}>
             {RANGES.map((item) => (
               <a
                 aria-current={item.key === range ? "true" : undefined}

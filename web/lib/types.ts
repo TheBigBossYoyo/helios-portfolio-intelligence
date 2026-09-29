@@ -386,6 +386,83 @@ export interface BackupStatus {
   count: number;
 }
 
+export interface AllocationTarget {
+  ticker: string;
+  /** Share of the planned portfolio, "0".."1". */
+  weight: string;
+}
+
+export interface CalendarEvent {
+  day: string;
+  kind: "earnings" | "dividend";
+  ticker: string;
+  name: string | null;
+  held: boolean;
+  /** Declared by the company (or a scheduled report); false for Helios's own estimate. */
+  confirmed: boolean;
+  timeOfDay: string | null;
+  estimateEps: string | null;
+  epsCurrency: string | null;
+  exDate: string | null;
+  amountPerShare: string | null;
+  currencyCode: string | null;
+  amountEur: string | null;
+  afterTax: boolean;
+}
+
+export interface IncomeMonth {
+  month: string;
+  receivedEur: string;
+  projectedEur: string;
+}
+
+export interface HoldingIncome {
+  ticker: string;
+  name: string | null;
+  shares: string;
+  paymentsPerYear: number | null;
+  amountPerShare: string | null;
+  currencyCode: string | null;
+  annualEur: string | null;
+  yieldPct: number | null;
+  nextExDate: string | null;
+  nextPaymentDate: string | null;
+  nextConfirmed: boolean;
+  afterTax: boolean;
+  received12mEur: string;
+  source: "declared" | "history" | "none";
+}
+
+export interface MarketCalendar {
+  asOf: string;
+  providerAvailable: boolean;
+  earningsFetchedAt: string | null;
+  events: CalendarEvent[];
+  months: IncomeMonth[];
+  holdings: HoldingIncome[];
+  received12mEur: string;
+  projected12mEur: string;
+  portfolioValueEur: string | null;
+  notes: string[];
+}
+
+export interface PairedDevice {
+  id: number;
+  name: string;
+  createdAt: string;
+  lastSeenAt: string | null;
+}
+
+export interface PhoneAccess {
+  enabled: boolean;
+  port: number;
+  /** Reachable from the network right now; false until Helios restarts after switching on. */
+  listening: boolean;
+  addresses: { url: string; kind: "wifi" | "tailscale" }[];
+  pairing: { code: string; expiresAt: string; urls: string[] } | null;
+  devices: PairedDevice[];
+}
+
 export interface StorageStatus {
   databaseBytes: number;
   walBytes: number;
