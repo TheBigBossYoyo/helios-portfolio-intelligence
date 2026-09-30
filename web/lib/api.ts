@@ -10,6 +10,10 @@ import type {
   AppNotification,
   BackupStatus,
   AllocationTarget,
+  CompanyFacts,
+  Exposure,
+  Goal,
+  PushStatus,
   MarketCalendar,
   PhoneAccess,
   StorageStatus,
@@ -395,6 +399,26 @@ export function getInstrumentDetail(ticker: string): Promise<ApiResult<Instrumen
 
 export function parseList<T>(value: unknown): T[] | null {
   return Array.isArray(value) ? (value as T[]) : null;
+}
+
+export function getCompanyFacts(ticker: string): Promise<ApiResult<CompanyFacts>> {
+  return getJson(`/api/v1/instruments/${encodeURIComponent(ticker)}/facts`, (value) =>
+    parseShape<CompanyFacts>(value, ["ticker", "figures", "derived"]),
+  );
+}
+
+export function getExposure(): Promise<ApiResult<Exposure>> {
+  return getJson("/api/v1/exposure", (value) =>
+    parseShape<Exposure>(value, ["totalEur", "companies", "countries", "sectors"]),
+  );
+}
+
+export function getGoals(): Promise<ApiResult<Goal[]>> {
+  return getJson("/api/v1/goals", parseList<Goal>);
+}
+
+export function getPushStatus(): Promise<ApiResult<PushStatus>> {
+  return getJson("/api/v1/push", (value) => parseShape<PushStatus>(value, ["publicKey", "subscriptions"]));
 }
 
 export function getAllocationTargets(): Promise<ApiResult<AllocationTarget[]>> {

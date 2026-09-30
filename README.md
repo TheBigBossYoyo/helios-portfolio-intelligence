@@ -22,8 +22,11 @@ Trading 212's app shows you positions and a simple return figure, but nothing li
 - Keeps a calendar of earnings reports and dividends for what you hold and watch (Alpha Vantage's free earnings calendar and declared dividends), estimates the dividends nobody has announced yet from each company's own rhythm and your own after-tax payments, and shows dividend income month by month, received and expected. A notification comes the day before a holding reports and when a dividend lands.
 - Lets you set a target share for each holding, shows how far you have drifted, splits your next deposit so only what is below target gets bought, and lists the trades that would put you exactly on target. It is a plan for you to act on: Helios never places an order.
 - Lets you record an investment thesis before you know the outcome, then journal updates and later mark it validated, invalidated or closed.
-- Works on your phone: an app-style layout with a tab bar, installable to the home screen, reached over your Wi-Fi or Tailscale once you pair the phone from Settings.
-- Ships a dashboard (overview, holdings, watchlist, performance, card, calendar, plan, targets, news, insights, journal, data-quality, settings) that reads the same API as the CLI, and runs as a desktop app with a tray icon.
+- Works on your phone: an app-style layout with a tab bar, installable to the home screen, reached over your Wi-Fi or Tailscale once you pair the phone from Settings. Alerts, results, dividends and the evening summary arrive as real push notifications (encrypted end to end per RFC 8291, signed with Helios's own VAPID key), and the last pages you saw stay readable when the computer is off.
+- Shows what you really own: your ETFs opened up into their companies (from the SEC's quarterly N-PORT holdings of a US fund tracking the same index), merged with the stocks you hold directly, by company, country and sector, with a warning when one company is too big a share.
+- Gives each stock page the company's own figures from its SEC filings: trailing revenue, profit, margins, earnings per share, growth on the year before, market value, P/E and where the price sits in its 52-week range.
+- Tracks goals (a portfolio value or a monthly dividend income by a date): progress, where your saving rate lands you, and what it would take if you are behind.
+- Ships a dashboard (overview, holdings, watchlist, performance, card, calendar, plan, targets, what you own, news, insights, journal, data-quality, settings) that reads the same API as the CLI, and runs as a desktop app with a tray icon.
 
 ## How it works
 

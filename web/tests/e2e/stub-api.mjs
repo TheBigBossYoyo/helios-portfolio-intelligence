@@ -1112,6 +1112,76 @@ const marketCalendar = {
   notes: [],
 };
 
+const appleFacts = {
+  ticker: "AAPL_US_EQ",
+  name: "Apple Inc.",
+  cik: 320193,
+  industry: "Electronic Computers",
+  sector: "Technology",
+  country: "US",
+  fiscalYearEnd: "0928",
+  fetchedAt: "2024-04-29T06:00:00Z",
+  figures: {
+    currency: "USD",
+    revenue_ttm: 381623000000,
+    revenue_ttm_end: "2024-03-30",
+    revenue_quarter: 90753000000,
+    revenue_quarter_end: "2024-03-30",
+    revenue_growth: -0.043,
+    net_income_ttm: 100389000000,
+    net_income_margin: 0.263,
+    operating_income_ttm: 114301000000,
+    operating_income_margin: 0.2995,
+    eps_ttm: 6.43,
+    eps_growth: -0.021,
+    shares_outstanding: 15441883000,
+  },
+  derived: {
+    price: 182.4,
+    price_date: "2024-04-29",
+    price_currency: "USD",
+    high_52w: 198.1,
+    low_52w: 164.1,
+    market_cap: 2816599459200,
+    pe: 28.37,
+  },
+};
+
+const exposure = {
+  asOf: "2024-04-29T06:00:00Z",
+  totalEur: 3405.4,
+  companies: [
+    { key: "037833100", name: "Apple Inc.", ticker: "AAPL_US_EQ", directEur: 2065.3, via: [{ ticker: "VUAGl_EQ", eur: 21.4 }], totalEur: 2086.7, pct: 0.6128, other: false },
+    { key: "SHEL", name: "Shell plc", ticker: "SHEL_EQ", directEur: 1240.1, via: [], totalEur: 1240.1, pct: 0.3642, other: false },
+    { key: "594918104", name: "Microsoft Corp", ticker: null, directEur: 0, via: [{ ticker: "VUAGl_EQ", eur: 20.1 }], totalEur: 20.1, pct: 0.0059, other: false },
+    { key: "other:VUAGl_EQ", name: "Other holdings of Vanguard S&P 500", ticker: "VUAGl_EQ", directEur: 0, via: [{ ticker: "VUAGl_EQ", eur: 58.5 }], totalEur: 58.5, pct: 0.0172, other: true },
+  ],
+  countries: [
+    { key: "US", eur: 2165.3, pct: 0.636 },
+    { key: "GB", eur: 1240.1, pct: 0.364 },
+  ],
+  sectors: [
+    { key: "Technology", eur: 2126.8, pct: 0.6245 },
+    { key: "Energy", eur: 1240.1, pct: 0.3642 },
+    { key: "Unclassified", eur: 38.5, pct: 0.0113 },
+  ],
+  funds: [
+    { ticker: "VUAGl_EQ", name: "Vanguard S&P 500", proxy: "VOO", proxyLabel: "Vanguard S&P 500 ETF (VOO), same index", reportDate: "2024-03-31", holdingsCount: 504, valueEur: 100 },
+  ],
+  warnings: ["Apple Inc. is 61.3% of everything you hold (60.6% directly, the rest through your funds)."],
+  notes: [],
+};
+
+const goals = [
+  { id: 1, kind: "value", name: "€10,000 invested", targetAmount: "10000", targetDate: "2030-12-31" },
+  { id: 2, kind: "income", name: "€20 a month in dividends", targetAmount: "20", targetDate: "2032-06-30" },
+];
+
+const pushStatus = {
+  publicKey: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U",
+  subscriptions: 0,
+};
+
 const phoneAccess = {
   enabled: true,
   port: 8787,
@@ -1152,6 +1222,10 @@ const ROUTES = {
   "/api/v1/storage": storageStatus,
   "/api/v1/devices": phoneAccess,
   "/api/v1/calendar": marketCalendar,
+  "/api/v1/instruments/AAPL_US_EQ/facts": appleFacts,
+  "/api/v1/exposure": exposure,
+  "/api/v1/goals": goals,
+  "/api/v1/push": pushStatus,
   "/api/v1/allocation/targets": [
     { ticker: "AAPL_US_EQ", weight: "0.5" },
     { ticker: "SHEL_EQ", weight: "0.5" },
@@ -1227,6 +1301,12 @@ const MUTATIONS = {
   "POST /api/v1/devices/pairing": { action: "device-pair", body: phoneAccess },
   "POST /api/v1/calendar/refresh": { action: "calendar-refresh", body: marketCalendar },
   "PUT /api/v1/allocation/targets": { action: "targets-write", body: [] },
+  "POST /api/v1/exposure/refresh": { action: "sec-refresh", body: exposure },
+  "POST /api/v1/goals": { action: "goals-write", body: goals[0] },
+  "DELETE /api/v1/goals/{id}": { action: "goals-write", body: null },
+  "POST /api/v1/push/subscriptions": { action: "push-subscribe", body: { ...pushStatus, subscriptions: 1 } },
+  "POST /api/v1/push/unsubscribe": { action: "push-subscribe", body: pushStatus },
+  "POST /api/v1/push/test": { action: "push-subscribe", body: { sent: 1, failed: 0, removed: 0 } },
   "PUT /api/v1/card/budgets": {
     action: "card-budget",
     body: [{ category: "MEMBERSHIPS", monthlyLimit: "80.00" }],
@@ -1327,6 +1407,9 @@ function mutationKey(method, path) {
   }
   if (/^\/api\/v1\/devices\/\d+$/.test(path) && method === "DELETE") {
     return "DELETE /api/v1/devices/{id}";
+  }
+  if (/^\/api\/v1\/goals\/\d+$/.test(path) && method === "DELETE") {
+    return "DELETE /api/v1/goals/{id}";
   }
   return `${method} ${path}`;
 }

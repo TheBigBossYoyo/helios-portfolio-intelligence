@@ -392,3 +392,14 @@ def test_a_payment_due_today_stays_until_it_arrives() -> None:
 
     paid = calendar_with([_own("AVGO_US_EQ", TODAY, "0.99", "2", "0.65")])
     assert [(event.day, event.received) for event in paid.events] == [(TODAY, True)]
+
+
+def test_provider_messages_never_keep_an_api_key() -> None:
+    from helios.performance import _classify_alphavantage_payload, redact_provider_message
+
+    quoted = "We have detected your API key as ABCD1234EFGH5678 and our standard limit is 25."
+    assert "ABCD1234EFGH5678" not in redact_provider_message(quoted)
+    assert "API key as [redacted]" in redact_provider_message(quoted)
+    assert redact_provider_message("url?apikey=SECRET12345") == "url?apikey=[redacted]"
+    classified = _classify_alphavantage_payload({"Information": quoted})
+    assert classified is not None and "ABCD1234EFGH5678" not in classified[1]

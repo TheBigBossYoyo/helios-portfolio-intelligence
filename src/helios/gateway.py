@@ -52,6 +52,7 @@ PUBLIC_PATHS = frozenset(
         "/icon-512.png",
         "/icon-maskable-512.png",
         "/favicon.ico",
+        "/sw.js",
     }
 )
 HOP_BY_HOP = frozenset(

@@ -25,9 +25,11 @@ anthropic==0.125.0
 anyio==4.14.2
 APScheduler==3.11.3
 certifi==2026.7.22
+cffi==2.1.1
 cfgv==3.5.0
 click==8.4.2
 colorama==0.4.6
+cryptography==46.0.7
 defusedxml==0.7.1
 distlib==0.4.3
 distro==1.9.0
@@ -60,6 +62,7 @@ pillow==12.3.0
 platformdirs==4.11.0
 pluggy==1.6.0
 pre_commit==4.6.1
+pycparser==3.0
 pydantic-settings==2.14.2
 pydantic==2.13.4
 pydantic_core==2.46.4

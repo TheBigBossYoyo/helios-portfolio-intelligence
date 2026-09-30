@@ -22,6 +22,7 @@ import {
   PeriodTabs,
   periodRange,
 } from "@/components/period-change";
+import { GoalsBoard } from "@/components/goals";
 import { MetricTile } from "@/components/metric-tile";
 import { NewsFeed } from "@/components/news-feed";
 import { Note, PageHeader, Panel, Unavailable } from "@/components/panel";
@@ -35,6 +36,8 @@ import {
 } from "@/lib/actions";
 import {
   getAccountSummary,
+  getCalendar,
+  getGoals,
   getHealth,
   getLatestAiAnalysis,
   getNotifications,
@@ -64,6 +67,7 @@ import {
   toDrawdownRows,
   toNavRows,
 } from "@/lib/series";
+import { goalInputs } from "@/lib/goal-inputs";
 import type { NewsItem, Position } from "@/lib/types";
 import { CARD, LINK } from "@/lib/ui";
 
@@ -81,7 +85,7 @@ export default async function OverviewPage({
   searchParams: Promise<{ period?: string }>;
 }) {
   const { period: requestedPeriod } = await searchParams;
-  const [health, report, positions, news, insight, quality, account, notifications] = await Promise.all([
+  const [health, report, positions, news, insight, quality, account, notifications, goals, calendar] = await Promise.all([
     getHealth(),
     getPerformanceReport(),
     getPositions(),
@@ -92,6 +96,8 @@ export default async function OverviewPage({
     getQualityReport(),
     getAccountSummary(),
     getNotifications(6),
+    getGoals(),
+    getCalendar(),
   ]);
 
   const navSeries = report.ok ? report.data.navSeries : [];
@@ -367,6 +373,28 @@ export default async function OverviewPage({
           trend={drawdownTrend}
         />
       </section>
+
+      {goals.ok && goals.data.length > 0 ? (
+        <Panel
+          actions={
+            <Link className={`${LINK} text-sm`} href="/plan#goals">
+              Goals ↗
+            </Link>
+          }
+          subtitle="Where you stand on what you are aiming for."
+          title="Your goals"
+        >
+          <GoalsBoard
+            goals={goals.data}
+            inputs={goalInputs({
+              navSeries,
+              liveTotal: account.ok ? decimalToNumber(account.data.totalValue) : null,
+              calendar: calendar.ok ? calendar.data : null,
+              today: new Date().toISOString().slice(0, 10),
+            })}
+          />
+        </Panel>
+      ) : null}
 
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Panel subtitle="Current value by holding, live from Trading 212." title="Allocation">

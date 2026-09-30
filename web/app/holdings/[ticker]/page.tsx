@@ -1,4 +1,5 @@
 import { ArrowDownRight, ArrowLeft, ArrowUpRight, Coins, Megaphone } from "lucide-react";
+import { CompanyFactsPanel } from "@/components/company-facts";
 import Link from "next/link";
 import { ActionButton } from "@/components/action-button";
 import { AlertForm } from "@/components/alert-form";
@@ -11,6 +12,7 @@ import { Note, PageHeader, Panel, Unavailable } from "@/components/panel";
 import {
   getAccountSummary,
   getCalendar,
+  getCompanyFacts,
   getInstrumentDetail,
   getNews,
   getAlerts,
@@ -198,7 +200,7 @@ export default async function HoldingDetailPage({
   const range: RangeKey = RANGES.some((item) => item.key === rawRange)
     ? (rawRange as RangeKey)
     : "6M";
-  const [result, positions, account, news, theses, alerts, watchlist, calendar] = await Promise.all([
+  const [result, positions, account, news, theses, alerts, watchlist, calendar, facts] = await Promise.all([
     getInstrumentDetail(ticker),
     getPositions(),
     getAccountSummary(),
@@ -207,6 +209,7 @@ export default async function HoldingDetailPage({
     getAlerts(ticker),
     getWatchlist(),
     getCalendar(),
+    getCompanyFacts(ticker),
   ]);
   const upcoming = calendar.ok ? calendar.data.events.filter((event) => event.ticker === ticker) : [];
   const nextReport = upcoming.find((event) => event.kind === "earnings");
@@ -432,6 +435,8 @@ export default async function HoldingDetailPage({
           </p>
         ) : null}
       </Panel>
+
+      {facts.ok ? <CompanyFactsPanel facts={facts.data} /> : null}
 
       {everOwned ? (
       <>

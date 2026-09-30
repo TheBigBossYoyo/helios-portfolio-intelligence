@@ -22,6 +22,8 @@ STORAGE_COMPACT_MINUTES = 24 * 60
 STORAGE_STARTUP_DELAY_SECONDS = 300
 #: How often the worker checks whether a calendar source is due.
 EVENTS_CHECK_MINUTES = 180
+#: How often the worker checks whether SEC company facts or fund holdings are due.
+SEC_DATA_CHECK_MINUTES = 360
 
 
 class SyncService(Protocol):
@@ -40,6 +42,14 @@ class EventsRefresher(Protocol):
     async def refresh(self, *, force: bool = False) -> object: ...
 
     async def notify(self, sink: Any) -> Sequence[object]: ...
+
+
+class SecRefresher(Protocol):
+    async def refresh(self, *, force: bool = False) -> object: ...
+
+
+class PushDeliverer(Protocol):
+    async def deliver_pending(self) -> object: ...
 
 
 class StorageCompactor(Protocol):
@@ -111,6 +121,12 @@ class WorkerContainer(Protocol):
 
     @property
     def portfolio_repository(self) -> Any: ...
+
+    @property
+    def sec_data_service(self) -> SecRefresher: ...
+
+    @property
+    def push_service(self) -> PushDeliverer: ...
 
     async def startup(self) -> None: ...
 
@@ -230,6 +246,15 @@ class HeliosWorker:
                 max_instances=1,
                 coalesce=True,
             )
+            # Company facts weekly and fund holdings when a fund files: most runs ask nothing.
+            self._scheduler.add_job(
+                self._run_scheduled_sec_data,
+                trigger="interval",
+                minutes=SEC_DATA_CHECK_MINUTES,
+                id="sec-data",
+                max_instances=1,
+                coalesce=True,
+            )
             if self._settings.storage_compact_enabled:
                 self._scheduler.add_job(
                     self._run_scheduled_compact,
@@ -312,11 +337,28 @@ class HeliosWorker:
         except Exception as exc:
             self._logger.warning("worker_budgets_failed", error=exc.__class__.__name__)
         try:
-            await self._container.market_events_service.notify(
-                self._container.portfolio_repository
-            )
+            await self._container.market_events_service.notify(self._container.portfolio_repository)
         except Exception as exc:
             self._logger.warning("worker_event_notices_failed", error=exc.__class__.__name__)
+        await self._push_pending()
+
+    async def _push_pending(self) -> None:
+        """Send what was just written (and the evening summary) to subscribed phones."""
+
+        if self._container is None:
+            return
+        try:
+            await self._container.push_service.deliver_pending()
+        except Exception as exc:
+            self._logger.warning("worker_push_failed", error=exc.__class__.__name__)
+
+    async def _run_scheduled_sec_data(self) -> None:
+        if self._container is None:
+            return
+        try:
+            await self._container.sec_data_service.refresh()
+        except Exception as exc:
+            self._logger.warning("worker_sec_data_failed", error=exc.__class__.__name__)
 
     async def _run_scheduled_events(self) -> None:
         if self._container is None:

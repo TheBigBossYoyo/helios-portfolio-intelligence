@@ -2,7 +2,10 @@ import { CashflowChart } from "@/components/charts/cashflow-chart";
 import { ProjectionChart } from "@/components/charts/projection-chart";
 import { DataTable, type Column } from "@/components/data-table";
 import { Note, PageHeader, Panel, Unavailable } from "@/components/panel";
-import { getAccountSummary, getPerformanceReport } from "@/lib/api";
+import { GoalsBoard } from "@/components/goals";
+import { createGoalAction, deleteGoalAction } from "@/lib/actions";
+import { getAccountSummary, getCalendar, getGoals, getPerformanceReport } from "@/lib/api";
+import { goalInputs } from "@/lib/goal-inputs";
 import { decimalToNumber, formatEur, formatPercent } from "@/lib/format";
 import {
   type CashflowMonth,
@@ -66,7 +69,12 @@ export default async function PlanPage({
   searchParams: Promise<{ monthly?: string; years?: string; ret?: string; vol?: string }>;
 }) {
   const params = await searchParams;
-  const [report, account] = await Promise.all([getPerformanceReport(), getAccountSummary()]);
+  const [report, account, goals, calendar] = await Promise.all([
+    getPerformanceReport(),
+    getAccountSummary(),
+    getGoals(),
+    getCalendar(),
+  ]);
 
   if (!report.ok) {
     return (
@@ -124,6 +132,26 @@ export default async function PlanPage({
           label="Card share"
           value={avgIn > 0 ? formatPercent(avgCard / avgIn, 0) : "—"}
         />
+      </section>
+
+      <section id="goals">
+        <Panel subtitle="What you are aiming for, and whether the way you save gets you there." title="Goals">
+          {goals.ok ? (
+            <GoalsBoard
+              create={createGoalAction}
+              goals={goals.data}
+              inputs={goalInputs({
+                navSeries: report.data.navSeries,
+                liveTotal,
+                calendar: calendar.ok ? calendar.data : null,
+                today: new Date().toISOString().slice(0, 10),
+              })}
+              remove={deleteGoalAction}
+            />
+          ) : (
+            <Unavailable detail={goals.error} reason="Goals unavailable" />
+          )}
+        </Panel>
       </section>
 
       <Panel subtitle="Month by month: money in, card spending out, and what stayed invested." title="Money in and out">

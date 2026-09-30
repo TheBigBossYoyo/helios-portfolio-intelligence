@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
+import { OfflineBanner, ServiceWorker } from "@/components/service-worker";
 import { SiteNav, type AccountStatus } from "@/components/site-nav";
 import { THEME_BOOT_SCRIPT } from "@/components/theme-toggle";
 import { getHealth } from "@/lib/api";
@@ -63,10 +64,12 @@ export default async function RootLayout({
       <body
         className={`${inter.variable} ${jetbrainsMono.variable} min-h-screen font-sans antialiased`}
       >
+        <ServiceWorker />
         <div className="flex min-h-screen flex-col lg:flex-row">
           <SiteNav account={account} />
           <div className="flex min-w-0 flex-1 flex-col">
             <main className="mx-auto flex w-full max-w-[1360px] flex-1 flex-col gap-5 px-4 py-5 sm:gap-6 sm:px-6 sm:py-6 lg:px-10 lg:py-9">
+              <OfflineBanner />
               {children}
             </main>
             <footer className="mx-auto w-full max-w-[1360px] px-4 pb-[calc(env(safe-area-inset-bottom)+6rem)] text-xs leading-relaxed text-ink-4 sm:px-6 lg:px-10 lg:pb-8">

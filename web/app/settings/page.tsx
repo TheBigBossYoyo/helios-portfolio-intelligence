@@ -20,6 +20,9 @@ import {
   compactStorageAction,
   createPairingAction,
   revokeDeviceAction,
+  subscribePushAction,
+  testPushAction,
+  unsubscribePushAction,
   connectTrading212Action,
   createDatabaseAction,
   restartApiAction,
@@ -27,7 +30,8 @@ import {
   saveSettingAction,
   switchDatabaseAction,
 } from "@/lib/actions";
-import { getBackupStatus, getDatabases, getPhoneAccess, getSettings, getStorageStatus } from "@/lib/api";
+import { getBackupStatus, getDatabases, getPhoneAccess, getPushStatus, getSettings, getStorageStatus } from "@/lib/api";
+import { PushToggle } from "@/components/push-toggle";
 import { isRemoteRequest } from "@/lib/remote";
 import { PhonePanel } from "@/components/phone-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -66,6 +70,7 @@ const NEWS_CREDENTIAL_FIELDS = ["news_marketaux_api_key"];
 
 export default async function SettingsPage() {
   if (await isRemoteRequest()) {
+    const push = await getPushStatus();
     // A paired phone reads everything but changes nothing here: keys, databases and pairing
     // stay on the computer running Helios.
     return (
@@ -76,6 +81,14 @@ export default async function SettingsPage() {
           title="On this phone"
         >
           <div className="flex flex-col gap-4" data-testid="settings-remote">
+            {push.ok ? (
+              <PushToggle
+                publicKey={push.data.publicKey}
+                subscribe={subscribePushAction}
+                test={testPushAction}
+                unsubscribe={unsubscribePushAction}
+              />
+            ) : null}
             <div className="flex flex-col gap-2">
               <span className="text-sm font-medium text-ink">Theme</span>
               <div className="max-w-xs">

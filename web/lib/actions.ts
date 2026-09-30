@@ -54,6 +54,9 @@ type LocalAction =
   | "device-pair"
   | "calendar-refresh"
   | "targets-write"
+  | "sec-refresh"
+  | "goals-write"
+  | "push-subscribe"
   | "device-revoke"
   | "restart";
 
@@ -334,6 +337,74 @@ export async function compactStorageAction(): Promise<ActionResult> {
     messageFromResponse: true,
     revalidate: ["/settings"],
     timeoutMs: 120_000,
+  });
+}
+
+/** Ask the SEC again for company facts and fund holdings (free; takes a minute). */
+export async function refreshExposureAction(): Promise<ActionResult> {
+  return mutate("/api/v1/exposure/refresh", "sec-refresh", {
+    successMessage: "Updated from the SEC.",
+    revalidate: ["/exposure"],
+    timeoutMs: 240_000,
+  });
+}
+
+export async function createGoalAction(form: FormData): Promise<ActionResult> {
+  const kind = String(form.get("kind") ?? "value");
+  const name = String(form.get("name") ?? "").trim();
+  const amount = Number(String(form.get("targetAmount") ?? "").replace(",", "."));
+  const date = String(form.get("targetDate") ?? "");
+  const now = () => new Date().toISOString();
+  if (!name) return { ok: false, error: "Give the goal a name.", status: null, timestamp: now() };
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ok: false, error: "The target must be a positive amount.", status: null, timestamp: now() };
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return { ok: false, error: "Pick a date.", status: null, timestamp: now() };
+  }
+  return mutate("/api/v1/goals", "goals-write", {
+    body: { kind, name, targetAmount: String(amount), targetDate: date },
+    successMessage: "Goal added.",
+    revalidate: ["/plan", "/"],
+    timeoutMs: 15_000,
+  });
+}
+
+export async function deleteGoalAction(id: number): Promise<ActionResult> {
+  return mutate(`/api/v1/goals/${id}`, "goals-write", {
+    method: "DELETE",
+    successMessage: "Goal removed.",
+    revalidate: ["/plan", "/"],
+    timeoutMs: 15_000,
+  });
+}
+
+/** This phone's push subscription, as its browser produced it. */
+export async function subscribePushAction(subscription: {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  label: string;
+}): Promise<ActionResult> {
+  return mutate("/api/v1/push/subscriptions", "push-subscribe", {
+    body: subscription,
+    successMessage: "Notifications are on for this phone.",
+    timeoutMs: 15_000,
+  });
+}
+
+export async function unsubscribePushAction(endpoint: string): Promise<ActionResult> {
+  return mutate("/api/v1/push/unsubscribe", "push-subscribe", {
+    body: { endpoint },
+    successMessage: "Notifications are off for this phone.",
+    timeoutMs: 15_000,
+  });
+}
+
+export async function testPushAction(endpoint: string): Promise<ActionResult> {
+  return mutate("/api/v1/push/test", "push-subscribe", {
+    body: { endpoint },
+    successMessage: "Sent: it should appear in a few seconds.",
+    timeoutMs: 20_000,
   });
 }
 

@@ -19,6 +19,7 @@ const PAGES = [
   { path: "/calendar", name: "calendar" },
   { path: "/plan", name: "plan" },
   { path: "/targets", name: "targets" },
+  { path: "/exposure", name: "exposure" },
   { path: "/watchlist?q=apple", name: "watchlist" },
   { path: "/news", name: "news" },
   { path: "/insights", name: "insights" },

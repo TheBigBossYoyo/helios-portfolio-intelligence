@@ -386,6 +386,98 @@ export interface BackupStatus {
   count: number;
 }
 
+/** Reported figures, snake_case as the SEC-derived payload names them. */
+export interface CompanyFigures {
+  currency?: string;
+  revenue_ttm?: number;
+  revenue_ttm_end?: string;
+  revenue_quarter?: number;
+  revenue_quarter_end?: string;
+  revenue_growth?: number;
+  net_income_ttm?: number;
+  net_income_ttm_end?: string;
+  net_income_margin?: number;
+  net_income_growth?: number;
+  operating_income_ttm?: number;
+  operating_income_margin?: number;
+  eps_ttm?: number;
+  eps_ttm_end?: string;
+  eps_quarter?: number;
+  eps_growth?: number;
+  shares_outstanding?: number;
+  shares_as_of?: string;
+}
+
+export interface CompanyFacts {
+  ticker: string;
+  name: string | null;
+  cik: number | null;
+  industry: string | null;
+  sector: string | null;
+  country: string | null;
+  fiscalYearEnd: string | null;
+  fetchedAt: string;
+  figures: CompanyFigures;
+  derived: {
+    price: number | null;
+    price_date: string | null;
+    price_currency: string | null;
+    high_52w: number | null;
+    low_52w: number | null;
+    market_cap: number | null;
+    pe: number | null;
+  };
+}
+
+export interface ExposureCompany {
+  key: string;
+  name: string;
+  ticker: string | null;
+  directEur: number;
+  via: { ticker: string; eur: number }[];
+  totalEur: number;
+  pct: number;
+  other: boolean;
+}
+
+export interface ExposureSlice {
+  key: string;
+  eur: number;
+  pct: number;
+}
+
+export interface Exposure {
+  asOf: string;
+  totalEur: number;
+  companies: ExposureCompany[];
+  countries: ExposureSlice[];
+  sectors: ExposureSlice[];
+  funds: {
+    ticker: string;
+    name: string;
+    proxy: string;
+    proxyLabel: string;
+    reportDate: string | null;
+    holdingsCount: number | null;
+    valueEur: number;
+  }[];
+  warnings: string[];
+  notes: string[];
+}
+
+export interface Goal {
+  id: number;
+  kind: "value" | "income";
+  name: string;
+  targetAmount: string;
+  targetDate: string;
+}
+
+export interface PushStatus {
+  publicKey: string;
+  subscriptions: number;
+}
+
 export interface AllocationTarget {
   ticker: string;
   /** Share of the planned portfolio, "0".."1". */

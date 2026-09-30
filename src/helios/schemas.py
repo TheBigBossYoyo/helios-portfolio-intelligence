@@ -575,6 +575,105 @@ class AllocationTargetsRequest(DTOModel):
     targets: list[AllocationTargetModel] = Field(max_length=200)
 
 
+class CompanyFactsModel(DTOModel):
+    ticker: str
+    name: str | None = None
+    cik: int | None = None
+    industry: str | None = None
+    sector: str | None = None
+    country: str | None = None
+    fiscal_year_end: str | None = Field(default=None, alias="fiscalYearEnd")
+    fetched_at: datetime = Field(alias="fetchedAt")
+    #: Reported figures (snake_case keys, see helios.sec_data.extract_figures).
+    figures: dict[str, object]
+    #: Price-based figures: price, market_cap, pe, high_52w, low_52w.
+    derived: dict[str, object]
+
+
+class ExposureViaModel(DTOModel):
+    ticker: str
+    eur: float
+
+
+class ExposureCompanyModel(DTOModel):
+    key: str
+    name: str
+    ticker: str | None = None
+    direct_eur: float = Field(alias="directEur")
+    via: list[ExposureViaModel]
+    total_eur: float = Field(alias="totalEur")
+    pct: float
+    other: bool
+
+
+class ExposureSliceModel(DTOModel):
+    key: str
+    eur: float
+    pct: float
+
+
+class ExposureFundModel(DTOModel):
+    ticker: str
+    name: str
+    proxy: str
+    proxy_label: str = Field(alias="proxyLabel")
+    report_date: str | None = Field(default=None, alias="reportDate")
+    holdings_count: int | None = Field(default=None, alias="holdingsCount")
+    value_eur: float = Field(alias="valueEur")
+
+
+class ExposureModel(DTOModel):
+    as_of: datetime = Field(alias="asOf")
+    total_eur: float = Field(alias="totalEur")
+    companies: list[ExposureCompanyModel]
+    countries: list[ExposureSliceModel]
+    sectors: list[ExposureSliceModel]
+    funds: list[ExposureFundModel]
+    warnings: list[str]
+    notes: list[str]
+
+
+class GoalModel(DTOModel):
+    id: int
+    kind: Literal["value", "income"]
+    name: str
+    target_amount: Decimal = Field(alias="targetAmount")
+    target_date: date = Field(alias="targetDate")
+
+
+class GoalRequest(DTOModel):
+    kind: Literal["value", "income"]
+    name: str = Field(min_length=1, max_length=120)
+    target_amount: Decimal = Field(alias="targetAmount", gt=0, le=Decimal("1000000000"))
+    target_date: date = Field(alias="targetDate")
+
+
+class PushKeysModel(DTOModel):
+    p256dh: str = Field(min_length=20, max_length=200)
+    auth: str = Field(min_length=10, max_length=64)
+
+
+class PushSubscribeRequest(DTOModel):
+    endpoint: str = Field(min_length=10, max_length=2000)
+    keys: PushKeysModel
+    label: str | None = Field(default=None, max_length=120)
+
+
+class PushUnsubscribeRequest(DTOModel):
+    endpoint: str = Field(min_length=10, max_length=2000)
+
+
+class PushStatusModel(DTOModel):
+    public_key: str = Field(alias="publicKey")
+    subscriptions: int
+
+
+class PushResultModel(DTOModel):
+    sent: int
+    failed: int
+    removed: int
+
+
 class PriceAlertModel(DTOModel):
     id: int
     ticker: str

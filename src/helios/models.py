@@ -514,6 +514,8 @@ class Notification(Base):
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    #: Sent to paired phones' push subscriptions (separately from the desktop toast).
+    pushed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     dedupe_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
 
 
@@ -644,3 +646,70 @@ class AllocationTarget(Base):
     t212_ticker: Mapped[str] = mapped_column(String(64), primary_key=True)
     target_weight: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class CompanyFacts(Base):
+    """What a company reports to the SEC, reduced to the figures a stock page shows."""
+
+    __tablename__ = "company_facts"
+
+    t212_ticker: Mapped[str] = mapped_column(String(64), primary_key=True)
+    cik: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sic: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    industry: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sector: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    fiscal_year_end: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    #: The derived figures (TTM revenue, margins, EPS, growth...), computed from XBRL facts.
+    figures: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class FundHoldings(Base):
+    """A fund's holdings from its latest SEC N-PORT report (a US proxy for a UCITS ETF)."""
+
+    __tablename__ = "fund_holdings"
+
+    proxy_symbol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    series_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    accession: Mapped[str] = mapped_column(String(32), nullable=False)
+    report_date: Mapped[date | None] = mapped_column(nullable=True)
+    holdings_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: The largest holdings: name, cusip, isin, pct (of net assets), country, category.
+    holdings: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    #: Every holding summed by country, in percent of net assets.
+    countries: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    #: Sector per holding, keyed by CUSIP, where the SEC's industry code names one.
+    sectors: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class Goal(Base):
+    """Something to aim for: a portfolio value, or a monthly dividend income, by a date."""
+
+    __tablename__ = "goals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # "value" | "income"
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_amount: Mapped[Decimal] = mapped_column(MONEY_NUMERIC, nullable=False)
+    target_date: Mapped[date] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class PushSubscription(Base):
+    """A phone's Web Push subscription: where to send notifications, and its keys."""
+
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    endpoint: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    p256dh: Mapped[str] = mapped_column(String(255), nullable=False)
+    auth: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    last_success_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

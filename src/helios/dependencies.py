@@ -33,9 +33,11 @@ from .performance import (
 )
 from .portfolio_repository import PortfolioRepository
 from .portfolio_sync import PortfolioSyncService
+from .push import PushService
 from .raw_snapshots import RawSnapshotRepository
 from .reporting import PortfolioQualityReportService
 from .resolver import OpenFigiResolver
+from .sec_data import SecDataService
 from .services import Trading212Service
 from .storage import StorageService
 from .t212_reparse import T212ReparseService
@@ -72,6 +74,8 @@ class Container:
     storage_service: StorageService
     device_service: DeviceService
     market_events_service: MarketEventsService
+    sec_data_service: SecDataService
+    push_service: PushService
     daily_summary_service: DailySummaryService
     market_data_provider: object
     fx_rate_provider: object
@@ -214,6 +218,8 @@ def build_container(settings: Settings | None = None) -> Container:
         storage_service=StorageService(resolved_settings),
         device_service=DeviceService(session_factory),
         market_events_service=MarketEventsService(session_factory, resolved_settings),
+        sec_data_service=SecDataService(session_factory, resolved_settings),
+        push_service=PushService(session_factory, resolved_settings),
         budget_notifier=BudgetNotifier(portfolio_repository),
         daily_summary_service=daily_summary_service,
         market_data_provider=market_data_provider,

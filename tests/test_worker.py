@@ -126,6 +126,23 @@ class FakeEvents:
 
 
 @dataclass
+class FakeSec:
+    calls: int = 0
+
+    async def refresh(self, *, force: bool = False) -> None:
+        del force
+        self.calls += 1
+
+
+@dataclass
+class FakePush:
+    calls: int = 0
+
+    async def deliver_pending(self) -> None:
+        self.calls += 1
+
+
+@dataclass
 class FakeContainer:
     sync_service: FakeSyncService
     replay_service: FakeReplayService = field(default_factory=FakeReplayService)
@@ -138,6 +155,8 @@ class FakeContainer:
     budgets: FakeBudgets = field(default_factory=FakeBudgets)
     storage: FakeStorage = field(default_factory=FakeStorage)
     events: FakeEvents = field(default_factory=FakeEvents)
+    sec: FakeSec = field(default_factory=FakeSec)
+    push: FakePush = field(default_factory=FakePush)
     startup_calls: int = 0
     shutdown_calls: int = 0
 
@@ -188,6 +207,14 @@ class FakeContainer:
     @property
     def portfolio_repository(self) -> object:
         return object()
+
+    @property
+    def sec_data_service(self) -> FakeSec:
+        return self.sec
+
+    @property
+    def push_service(self) -> FakePush:
+        return self.push
 
     async def startup(self) -> None:
         self.startup_calls += 1
@@ -255,6 +282,7 @@ async def test_worker_starts_without_credentials(tmp_path: Path) -> None:
             "daily-summary",
             "backup",
             "market-events",
+            "sec-data",
             "storage-compact",
             "news-sync",
         ]
@@ -293,6 +321,7 @@ async def test_worker_registers_interval_job_and_runs_initial_sync(tmp_path: Pat
             "daily-summary",
             "backup",
             "market-events",
+            "sec-data",
             "storage-compact",
             "news-sync",
         ]

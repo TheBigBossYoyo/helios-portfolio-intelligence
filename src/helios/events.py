@@ -49,7 +49,12 @@ from .models import (
     PositionLive,
     WatchlistItem,
 )
-from .performance import RequestPacer, _alphavantage_symbol, _provider_get
+from .performance import (
+    RequestPacer,
+    _alphavantage_symbol,
+    _provider_get,
+    redact_provider_message,
+)
 from .rate_limit import Clock, SystemClock
 
 
@@ -642,7 +647,12 @@ class MarketEventsService:
     async def _record(self, key: str, status: str, detail: str | None = None) -> None:
         async with self._session_factory() as session, session.begin():
             await session.merge(
-                EventFetch(key=key, fetched_at=self._clock.utcnow(), status=status, detail=detail)
+                EventFetch(
+                    key=key,
+                    fetched_at=self._clock.utcnow(),
+                    status=status,
+                    detail=None if detail is None else redact_provider_message(detail),
+                )
             )
 
     async def refresh(self, *, force: bool = False) -> dict[str, int]:

@@ -21,6 +21,7 @@ from .models import (
     Dividend,
     FactorReturnDaily,
     FxRateDaily,
+    Goal,
     Instrument,
     JournalEntry,
     MarketPriceDaily,
@@ -634,6 +635,22 @@ class PortfolioRepository:
                     for ticker, weight in targets.items()
                     if weight > 0
                 )
+
+    async def list_goals(self) -> list[Goal]:
+        async with self._session_factory() as session:
+            return list(await session.scalars(select(Goal).order_by(Goal.target_date, Goal.id)))
+
+    async def add_goal(self, goal: Goal) -> Goal:
+        async with self._session_factory() as session:
+            async with session.begin():
+                session.add(goal)
+            return goal
+
+    async def delete_goal(self, goal_id: int) -> bool:
+        async with self._session_factory() as session:
+            async with session.begin():
+                result = await session.execute(delete(Goal).where(Goal.id == goal_id))
+            return bool(getattr(result, "rowcount", 0))
 
     async def list_withdrawals_since(self, since: datetime) -> list[Transaction]:
         """Cash leaving the account from ``since`` on, with anything sharing their instants."""

@@ -24,7 +24,7 @@ test.describe("phone", () => {
     await expect(tabs.getByRole("button", { name: "More" })).toHaveClass(/text-accent-ink/);
   });
 
-  for (const path of ["/", "/holdings", "/holdings/AAPL_US_EQ", "/performance", "/card", "/calendar", "/plan", "/targets", "/news", "/settings"]) {
+  for (const path of ["/", "/holdings", "/holdings/AAPL_US_EQ", "/performance", "/card", "/calendar", "/plan", "/targets", "/exposure", "/news", "/settings"]) {
     test(`${path} never scrolls sideways`, async ({ page }) => {
       await page.goto(path);
       await page.waitForLoadState("networkidle");

@@ -62,7 +62,7 @@ from .devices import is_tailscale, lan_addresses, tailscale_status
 from .housekeeping import BackupError, BackupStatus
 from .instrument_detail import InstrumentDetailService, UnknownInstrumentError
 from .logging import get_logger
-from .models import PriceAlert
+from .models import Goal, PriceAlert
 from .news import NewsSyncService
 from .performance import (
     MarketDataProviderError,
@@ -84,6 +84,7 @@ from .schemas import (
     CardBudgetWriteRequest,
     CardHistoryModel,
     CardRefreshModel,
+    CompanyFactsModel,
     CredentialWriteRequest,
     CredentialWriteResponse,
     DatabaseActionResponse,
@@ -96,6 +97,9 @@ from .schemas import (
     DeviceVerifyRequest,
     EditableSettingRequest,
     EditableSettingResponse,
+    ExposureModel,
+    GoalModel,
+    GoalRequest,
     HealthResponse,
     InstrumentDetailModel,
     InstrumentMatchModel,
@@ -114,6 +118,10 @@ from .schemas import (
     Position,
     PriceAlertCreateRequest,
     PriceAlertModel,
+    PushResultModel,
+    PushStatusModel,
+    PushSubscribeRequest,
+    PushUnsubscribeRequest,
     QualityReport,
     RestartResponse,
     SettingsSnapshotModel,
@@ -682,6 +690,151 @@ async def set_allocation_targets(
         )
     await container.portfolio_repository.replace_allocation_targets(targets, now=datetime.now(UTC))
     return await get_allocation_targets(container)
+
+
+@router.get("/api/v1/instruments/{ticker}/facts", response_model=CompanyFactsModel)
+async def get_company_facts(
+    ticker: str,
+    container: Annotated[Container, Depends(get_container)],
+) -> CompanyFactsModel:
+    """What the company reports to the SEC, with price-based figures from Helios's own closes."""
+
+    facts = await container.sec_data_service.company(ticker)
+    if facts is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No SEC filings on record for this"
+        )
+    return CompanyFactsModel.model_validate(facts)
+
+
+@router.get("/api/v1/exposure", response_model=ExposureModel)
+async def get_exposure(
+    container: Annotated[Container, Depends(get_container)],
+) -> ExposureModel:
+    """What you really own: companies (through your funds too), countries and sectors."""
+
+    return ExposureModel.model_validate(await container.sec_data_service.exposure())
+
+
+@router.post("/api/v1/exposure/refresh", response_model=ExposureModel)
+async def refresh_exposure(
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("sec-refresh"))],
+) -> ExposureModel:
+    await container.sec_data_service.refresh(force=True)
+    return ExposureModel.model_validate(await container.sec_data_service.exposure())
+
+
+def _goal_model(goal: Goal) -> GoalModel:
+    return GoalModel(
+        id=goal.id,
+        kind=goal.kind,
+        name=goal.name,
+        target_amount=goal.target_amount,
+        target_date=goal.target_date,
+    )
+
+
+@router.get("/api/v1/goals", response_model=list[GoalModel])
+async def list_goals(
+    container: Annotated[Container, Depends(get_container)],
+) -> list[GoalModel]:
+    return [_goal_model(goal) for goal in await container.portfolio_repository.list_goals()]
+
+
+@router.post("/api/v1/goals", response_model=GoalModel, status_code=status.HTTP_201_CREATED)
+async def create_goal(
+    payload: GoalRequest,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("goals-write"))],
+) -> GoalModel:
+    goal = await container.portfolio_repository.add_goal(
+        Goal(
+            kind=payload.kind,
+            name=payload.name.strip(),
+            target_amount=payload.target_amount,
+            target_date=payload.target_date,
+            created_at=datetime.now(UTC),
+        )
+    )
+    return _goal_model(goal)
+
+
+@router.delete("/api/v1/goals/{goal_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_goal(
+    goal_id: int,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("goals-write"))],
+) -> None:
+    if not await container.portfolio_repository.delete_goal(goal_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such goal")
+
+
+@router.get("/api/v1/push", response_model=PushStatusModel)
+async def get_push_status(
+    container: Annotated[Container, Depends(get_container)],
+) -> PushStatusModel:
+    """The key a phone subscribes with (public), and how many phones are subscribed."""
+
+    return PushStatusModel(
+        public_key=await asyncio.to_thread(lambda: container.push_service.public_key),
+        subscriptions=await container.push_service.count(),
+    )
+
+
+@router.post("/api/v1/push/subscriptions", response_model=PushStatusModel)
+async def subscribe_push(
+    payload: PushSubscribeRequest,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("push-subscribe"))],
+) -> PushStatusModel:
+    try:
+        await container.push_service.subscribe(
+            endpoint=payload.endpoint,
+            p256dh=payload.keys.p256dh,
+            auth=payload.keys.auth,
+            label=payload.label,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return await get_push_status(container)
+
+
+@router.post("/api/v1/push/unsubscribe", response_model=PushStatusModel)
+async def unsubscribe_push(
+    payload: PushUnsubscribeRequest,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("push-subscribe"))],
+) -> PushStatusModel:
+    await container.push_service.unsubscribe(payload.endpoint)
+    return await get_push_status(container)
+
+
+@router.post("/api/v1/push/test", response_model=PushResultModel)
+async def test_push(
+    payload: PushUnsubscribeRequest,
+    container: Annotated[Container, Depends(get_container)],
+    _guard: Annotated[None, Depends(require_local_action("push-subscribe"))],
+) -> PushResultModel:
+    """Send a test notification to one subscription (the phone asking)."""
+
+    rows = [
+        row
+        for row in await container.push_service.subscriptions()
+        if row.endpoint == payload.endpoint
+    ]
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not subscribed")
+    result = await container.push_service.send(
+        {
+            "title": "Helios",
+            "body": "Notifications work. Alerts, results and dividends will arrive here.",
+            "url": "/",
+            "tag": "helios-test",
+        },
+        rows,
+    )
+    return PushResultModel(sent=result.sent, failed=result.failed, removed=result.removed)
 
 
 @router.get("/api/v1/alerts", response_model=list[PriceAlertModel])
