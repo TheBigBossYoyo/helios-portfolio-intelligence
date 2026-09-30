@@ -837,17 +837,30 @@ def parse_ken_french_csv(payload: bytes) -> dict[date, dict[str, Decimal]]:
 #: * ``"Note"`` / ``"Information"`` -- the free key's request-rate or daily-quota ceiling (5
 #:   requests/minute, 25 requests/day at the time of writing) was hit, or the endpoint needs a
 #:   paid plan. Every other request in this batch would fail the same way: raised.
+_API_KEY_IN_TEXT = re.compile(r"(?i)(api[ _-]?key(?:\s+as|\s*[=:])?\s*)[A-Za-z0-9_\-]{8,}")
+
+
+def redact_provider_message(text: str) -> str:
+    """A provider's message with any API key in it replaced.
+
+    Alpha Vantage's rate-limit answer quotes the caller's key back ("We have detected your API
+    key as ABC123..."); that sentence reaches the dashboard, the logs and the database.
+    """
+
+    return _API_KEY_IN_TEXT.sub(r"\1[redacted]", text)
+
+
 def _classify_alphavantage_payload(payload: Mapping[str, object]) -> tuple[str, str] | None:
     """Return ("account"|"symbol", reason), or None when ``payload`` is not an error at all."""
     error_message = payload.get("Error Message")
     if isinstance(error_message, str) and error_message:
-        return "symbol", error_message
+        return "symbol", redact_provider_message(error_message)
     note = payload.get("Note")
     if isinstance(note, str) and note:
-        return "account", note
+        return "account", redact_provider_message(note)
     information = payload.get("Information")
     if isinstance(information, str) and information:
-        return "account", information
+        return "account", redact_provider_message(information)
     return None
 
 
@@ -1482,9 +1495,7 @@ class PerformanceReplayService:
         )
         return summary
 
-    async def _replay_without_lease(
-        self, *, as_of: date | None = None
-    ) -> PerformanceReplaySummary:
+    async def _replay_without_lease(self, *, as_of: date | None = None) -> PerformanceReplaySummary:
         replay_input = await self._repository.load_replay_inputs()
         start_date = _min_event_date(replay_input)
         end_date = as_of or self._clock.utcnow().date()
@@ -1535,9 +1546,7 @@ class PerformanceReplayService:
         )
         price_map = _merge_market_price_maps(cached_prices, fetched_prices, price_requests)
 
-        currencies = _required_currencies(
-            instruments_by_ticker, benchmarks, replay_input
-        ) | {
+        currencies = _required_currencies(instruments_by_ticker, benchmarks, replay_input) | {
             request.currency_code.upper()
             for request in sector_proxy_requests
             if request.currency_code and request.currency_code.upper() != BASE_CURRENCY
@@ -2443,8 +2452,7 @@ def ff5_momentum_regression(
             window = ""
             if portfolio_returns:
                 window = (
-                    f" for {portfolio_returns[0].as_of_date} to "
-                    f"{portfolio_returns[-1].as_of_date}"
+                    f" for {portfolio_returns[0].as_of_date} to {portfolio_returns[-1].as_of_date}"
                 )
             detail = (
                 f"Factor provider '{factor_provider}' is configured and reachable but published "
