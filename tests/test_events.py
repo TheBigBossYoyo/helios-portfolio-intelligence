@@ -15,6 +15,7 @@ from sqlalchemy.pool import NullPool
 from helios.config import Settings
 from helios.db import migrate_database
 from helios.events import (
+    Calendar,
     MarketEventsService,
     build_calendar,
     parse_dividends_json,
@@ -177,12 +178,26 @@ def test_the_calendar_confirms_declared_payments_and_estimates_the_rest() -> Non
         earnings_fetched_at=NOW,
     )
 
-    jpm_payments = [event for event in calendar.events if event.kind == "dividend"]
-    # The declared October payment is confirmed. January's, projected from the rhythm, is past
-    # the calendar's 120 days but still counts in the year's income below.
-    assert [(event.day, event.confirmed) for event in jpm_payments] == [(date(2026, 10, 31), True)]
-    assert jpm_payments[0].amount_eur == D("11.48")  # 10 x 1.50 x 0.9 x 0.85
-    assert jpm_payments[0].after_tax is True
+    jpm_payments = [
+        event
+        for event in calendar.events
+        if event.kind == "dividend" and event.ticker == "JPM_US_EQ"
+    ]
+    # July's arrived (the amount Trading 212 booked); October's is declared; January's on
+    # is projected from the quarterly rhythm.
+    assert [(event.day, event.confirmed, event.past) for event in jpm_payments][:3] == [
+        (date(2026, 7, 31), True, True),
+        (date(2026, 10, 31), True, False),
+        (date(2027, 1, 31), False, False),
+    ]
+    assert jpm_payments[0].received is True and jpm_payments[0].amount_eur == D("10.71")
+    assert jpm_payments[1].amount_eur == D("11.48")  # 10 x 1.50 x 0.9 x 0.85
+    assert jpm_payments[1].after_tax is True
+    assert jpm_payments[1].id == "dividend:JPM_US_EQ:2026-10-31"
+    # The ex-dividend date is its own event: the day to own the shares by.
+    assert [event.day for event in calendar.events if event.kind == "ex-dividend"] == [
+        date(2026, 10, 6)
+    ]
 
     reports = [event for event in calendar.events if event.kind == "earnings"]
     # Held and watched companies only; MSFT is neither.
@@ -286,7 +301,8 @@ async def test_refresh_spends_the_quota_once_and_stores_what_it_learned(tmp_path
     assert again == {"earnings": 0, "dividends": 0}
 
     calendar = await service.calendar()
-    assert [(event.kind, event.ticker) for event in calendar.events][:2] == [
+    assert [(event.kind, event.ticker) for event in calendar.events][:3] == [
+        ("ex-dividend", "JPM_US_EQ"),
         ("earnings", "JPM_US_EQ"),
         ("dividend", "JPM_US_EQ"),
     ]
@@ -345,3 +361,34 @@ async def test_earnings_tomorrow_and_a_fresh_dividend_notify_once(tmp_path: Path
     assert "before the market opens" in first[0].body and "4.85 USD" in first[0].body
     assert first[1].body == "€10.71 arrived in your account."
     assert second == []
+
+
+def test_a_payment_due_today_stays_until_it_arrives() -> None:
+    declared = [
+        DividendEvent(
+            t212_ticker="AVGO_US_EQ",
+            ex_date=date(2026, 9, 22),
+            payment_date=TODAY,
+            amount_per_share=D("0.65"),
+        )
+    ]
+
+    def calendar_with(own: list[Dividend]) -> Calendar:
+        return build_calendar(
+            today=TODAY,
+            positions=[_position("AVGO_US_EQ", "2", "600")],
+            watched=[],
+            instruments={},
+            own_dividends=own,
+            declared=declared,
+            earnings=[],
+            fx={"USD": [_fx("USD", "0.9")]},
+            provider_available=True,
+            earnings_fetched_at=NOW,
+        )
+
+    waiting = calendar_with([])
+    assert [(event.day, event.past) for event in waiting.events] == [(TODAY, False)]
+
+    paid = calendar_with([_own("AVGO_US_EQ", TODAY, "0.99", "2", "0.65")])
+    assert [(event.day, event.received) for event in paid.events] == [(TODAY, True)]

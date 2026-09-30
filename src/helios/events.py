@@ -65,7 +65,9 @@ DIVIDENDS_REFRESH = timedelta(days=7)
 #: Companies whose dividends are refreshed per run: the rest wait for the next run.
 DIVIDEND_FETCHES_PER_RUN = 4
 #: How far ahead the calendar looks.
-HORIZON_DAYS = 120
+HORIZON_DAYS = 366
+#: How far back the calendar shows what already happened (reports, dividends received).
+LOOKBACK_DAYS = 62
 #: Gap (days) -> payments a year. Anything else is "irregular".
 CADENCES = ((25, 40, 12), (80, 105, 4), (160, 200, 2), (330, 400, 1))
 #: How many payments back the rhythm is read from.
@@ -155,7 +157,7 @@ def parse_dividends_json(payload: object) -> list[dict[str, object]]:
 @dataclass(frozen=True)
 class CalendarEvent:
     day: date
-    kind: str  # "earnings" | "dividend"
+    kind: str  # "earnings" | "dividend" | "ex-dividend"
     ticker: str
     name: str | None
     held: bool
@@ -168,6 +170,15 @@ class CalendarEvent:
     currency_code: str | None = None
     amount_eur: Decimal | None = None
     after_tax: bool = False
+    #: Already happened: a report published, a dividend that arrived.
+    past: bool = False
+    #: A dividend Trading 212 actually paid into the account (the amount is what arrived).
+    received: bool = False
+    fiscal_date_ending: date | None = None
+
+    @property
+    def id(self) -> str:
+        return f"{self.kind}:{self.ticker}:{self.day.isoformat()}"
 
 
 @dataclass(frozen=True)
@@ -207,6 +218,8 @@ class Calendar:
     projected_12m_eur: Decimal
     portfolio_value_eur: Decimal | None
     notes: list[str] = field(default_factory=list)
+    window_start: date | None = None
+    window_end: date | None = None
 
 
 @dataclass(frozen=True)
@@ -340,7 +353,8 @@ def _rhythm(own: Sequence[Dividend], declared: Sequence[DividendEvent]) -> _Rhyt
 def _upcoming(rhythm: _Rhythm, today: date, until: date) -> list[tuple[_Payment, bool]]:
     """Announced payments still to come, then the rhythm projected forward (estimates)."""
 
-    upcoming = [(payment, True) for payment in rhythm.payments if payment.pay_date > today]
+    # A payment due today still counts until Trading 212 books it (then the arrival replaces it).
+    upcoming = [(payment, True) for payment in rhythm.payments if payment.pay_date >= today]
     if rhythm.per_year and rhythm.latest_amount and rhythm.payments:
         step = 12 // rhythm.per_year
         next_date = _add_months(max(payment.pay_date for payment in rhythm.payments), step)
@@ -366,6 +380,7 @@ def build_calendar(
     earnings_fetched_at: datetime | None,
 ) -> Calendar:
     horizon = today + timedelta(days=HORIZON_DAYS)
+    lookback = today - timedelta(days=LOOKBACK_DAYS)
     year_ahead = _add_months(today, 12)
     year_back = _add_months(today, -12)
     held = {row.t212_ticker: row for row in positions if row.quantity > 0}
@@ -416,6 +431,13 @@ def build_calendar(
         net_share = _net_share(own, fx, currency)
         rhythm = _rhythm(own, declared_by_ticker.get(ticker, []))
         upcoming = _upcoming(rhythm, today, year_ahead)
+        # Already arrived: a declared payment whose money is in the account is not still to come.
+        arrived = [_paid_date(item) for item in own]
+        upcoming = [
+            item
+            for item in upcoming
+            if not any(abs((item[0].pay_date - day).days) <= 5 for day in arrived)
+        ]
 
         annual = Decimal(0)
         for payment, confirmed in upcoming:
@@ -446,6 +468,44 @@ def build_calendar(
                         after_tax=net_share is not None,
                     )
                 )
+            # The date that matters for getting the dividend: shares held at its start qualify.
+            if payment.ex_date is not None and today <= payment.ex_date <= horizon:
+                events.append(
+                    CalendarEvent(
+                        day=payment.ex_date,
+                        kind="ex-dividend",
+                        ticker=ticker,
+                        name=names.get(ticker),
+                        held=True,
+                        confirmed=confirmed,
+                        ex_date=payment.ex_date,
+                        amount_per_share=payment.amount,
+                        currency_code=currency,
+                        amount_eur=amount,
+                        after_tax=net_share is not None,
+                    )
+                )
+
+        # What already arrived recently, as Trading 212 booked it.
+        for dividend in own:
+            paid = _paid_date(dividend)
+            if lookback <= paid <= today and dividend.amount_in_euro is not None:
+                events.append(
+                    CalendarEvent(
+                        day=paid,
+                        kind="dividend",
+                        ticker=ticker,
+                        name=names.get(ticker),
+                        held=True,
+                        confirmed=True,
+                        amount_per_share=dividend.gross_amount_per_share,
+                        currency_code=currency,
+                        amount_eur=dividend.amount_in_euro,
+                        after_tax=True,
+                        past=True,
+                        received=True,
+                    )
+                )
 
         value = position.wallet_current_value
         first = upcoming[0] if upcoming else None
@@ -472,7 +532,7 @@ def build_calendar(
 
     for report in earnings:
         followed = report.t212_ticker in held or report.t212_ticker in watched
-        if followed and today <= report.report_date <= horizon:
+        if followed and lookback <= report.report_date <= horizon:
             events.append(
                 CalendarEvent(
                     day=report.report_date,
@@ -484,9 +544,12 @@ def build_calendar(
                     time_of_day=report.time_of_day,
                     estimate_eps=report.estimate_eps,
                     eps_currency=report.currency_code,
+                    past=report.report_date < today,
+                    fiscal_date_ending=report.fiscal_date_ending,
                 )
             )
-    events.sort(key=lambda item: (item.day, item.kind != "earnings", item.ticker))
+    order = {"earnings": 0, "ex-dividend": 1, "dividend": 2}
+    events.sort(key=lambda item: (item.day, order.get(item.kind, 3), item.ticker))
 
     months: list[IncomeMonth] = []
     cursor = _add_months(date(today.year, today.month, 1), -11)
@@ -521,6 +584,8 @@ def build_calendar(
         projected_12m_eur=sum(projected.values(), Decimal(0)),
         portfolio_value_eur=sum(values, Decimal(0)) if values else None,
         notes=notes,
+        window_start=lookback,
+        window_end=horizon,
     )
 
 
@@ -750,7 +815,7 @@ class MarketEventsService:
                 await session.scalars(
                     select(EarningsEvent).where(
                         EarningsEvent.t212_ticker.in_(tickers),
-                        EarningsEvent.report_date >= today,
+                        EarningsEvent.report_date >= today - timedelta(days=LOOKBACK_DAYS),
                     )
                 )
             )

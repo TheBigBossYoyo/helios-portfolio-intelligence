@@ -472,6 +472,15 @@ class PairingModel(DTOModel):
     urls: list[str]
 
 
+class TailscaleModel(DTOModel):
+    installed: bool
+    connected: bool
+    dns_name: str | None = Field(default=None, alias="dnsName")
+    ip: str | None = None
+    serve_url: str | None = Field(default=None, alias="serveUrl")
+    serve_command: str = Field(alias="serveCommand")
+
+
 class PhoneAccessModel(DTOModel):
     enabled: bool
     port: int
@@ -480,6 +489,7 @@ class PhoneAccessModel(DTOModel):
     addresses: list[PhoneAddressModel]
     pairing: PairingModel | None = None
     devices: list[PairedDeviceModel]
+    tailscale: TailscaleModel
 
 
 class DeviceClaimRequest(DTOModel):
@@ -497,6 +507,7 @@ class DeviceVerifyRequest(DTOModel):
 
 
 class CalendarEventModel(DTOModel):
+    id: str
     day: date
     kind: str
     ticker: str
@@ -511,6 +522,9 @@ class CalendarEventModel(DTOModel):
     currency_code: str | None = Field(default=None, alias="currencyCode")
     amount_eur: Decimal | None = Field(default=None, alias="amountEur")
     after_tax: bool = Field(default=False, alias="afterTax")
+    past: bool = False
+    received: bool = False
+    fiscal_date_ending: date | None = Field(default=None, alias="fiscalDateEnding")
 
 
 class IncomeMonthModel(DTOModel):
@@ -547,6 +561,8 @@ class CalendarModel(DTOModel):
     projected_12m_eur: Decimal = Field(alias="projected12mEur")
     portfolio_value_eur: Decimal | None = Field(default=None, alias="portfolioValueEur")
     notes: list[str]
+    window_start: date | None = Field(default=None, alias="windowStart")
+    window_end: date | None = Field(default=None, alias="windowEnd")
 
 
 class AllocationTargetModel(DTOModel):

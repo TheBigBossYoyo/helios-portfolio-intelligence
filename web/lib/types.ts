@@ -393,8 +393,9 @@ export interface AllocationTarget {
 }
 
 export interface CalendarEvent {
+  id: string;
   day: string;
-  kind: "earnings" | "dividend";
+  kind: "earnings" | "dividend" | "ex-dividend";
   ticker: string;
   name: string | null;
   held: boolean;
@@ -408,6 +409,11 @@ export interface CalendarEvent {
   currencyCode: string | null;
   amountEur: string | null;
   afterTax: boolean;
+  /** Already happened: a report published, a dividend that arrived. */
+  past: boolean;
+  /** Paid into the account by Trading 212; the amount is what arrived. */
+  received: boolean;
+  fiscalDateEnding: string | null;
 }
 
 export interface IncomeMonth {
@@ -444,6 +450,8 @@ export interface MarketCalendar {
   projected12mEur: string;
   portfolioValueEur: string | null;
   notes: string[];
+  windowStart: string | null;
+  windowEnd: string | null;
 }
 
 export interface PairedDevice {
@@ -461,6 +469,15 @@ export interface PhoneAccess {
   addresses: { url: string; kind: "wifi" | "tailscale" }[];
   pairing: { code: string; expiresAt: string; urls: string[] } | null;
   devices: PairedDevice[];
+  tailscale: {
+    installed: boolean;
+    connected: boolean;
+    dnsName: string | null;
+    ip: string | null;
+    /** The HTTPS address `tailscale serve` gives the gateway, once set up. */
+    serveUrl: string | null;
+    serveCommand: string;
+  };
 }
 
 export interface StorageStatus {

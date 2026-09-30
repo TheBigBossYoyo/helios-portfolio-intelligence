@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
+import os
 import secrets
+import shutil
 import socket
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -218,3 +222,93 @@ __all__ = [
     "is_tailscale",
     "lan_addresses",
 ]
+
+
+# --- Tailscale: phone access away from home -----------------------------------------------------
+
+TAILSCALE_PATHS = (
+    r"C:\Program Files\Tailscale\tailscale.exe",
+    "/usr/bin/tailscale",
+    "/usr/local/bin/tailscale",
+    "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+)
+
+
+@dataclass(frozen=True)
+class TailscaleStatus:
+    installed: bool
+    connected: bool
+    #: This computer's name on the tailnet, e.g. "helios-pc.tail1234.ts.net".
+    dns_name: str | None
+    ip: str | None
+    #: The HTTPS address when ``tailscale serve`` forwards to the phone gateway.
+    serve_url: str | None
+
+
+def _tailscale_binary() -> str | None:
+    found = shutil.which("tailscale")
+    if found:
+        return found
+    return next((path for path in TAILSCALE_PATHS if os.path.isfile(path)), None)
+
+
+def _run_json(command: list[str]) -> object | None:
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=4,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        parsed: object = json.loads(completed.stdout or b"null")
+    except ValueError:
+        return None
+    return parsed
+
+
+def serve_url_for(serve: object, port: int) -> str | None:
+    """The https:// address ``tailscale serve`` publishes for the gateway's port, if any."""
+
+    if not isinstance(serve, dict):
+        return None
+    web = serve.get("Web")
+    if not isinstance(web, dict):
+        return None
+    for host_port, config in web.items():
+        handlers = config.get("Handlers") if isinstance(config, dict) else None
+        if not isinstance(handlers, dict):
+            continue
+        for handler in handlers.values():
+            proxy = handler.get("Proxy") if isinstance(handler, dict) else None
+            if isinstance(proxy, str) and proxy.rstrip("/").endswith(f":{port}"):
+                host, _, listen = str(host_port).rpartition(":")
+                return f"https://{host}" if listen in {"443", ""} else f"https://{host}:{listen}"
+    return None
+
+
+def tailscale_status(port: int) -> TailscaleStatus:
+    binary = _tailscale_binary()
+    if binary is None:
+        return TailscaleStatus(False, False, None, None, None)
+    status = _run_json([binary, "status", "--json"])
+    if not isinstance(status, dict):
+        return TailscaleStatus(True, False, None, None, None)
+    connected = status.get("BackendState") == "Running"
+    this = status.get("Self") if isinstance(status.get("Self"), dict) else {}
+    assert isinstance(this, dict)
+    dns = str(this.get("DNSName") or "").rstrip(".") or None
+    ips = [ip for ip in this.get("TailscaleIPs") or [] if isinstance(ip, str) and ":" not in ip]
+    serve = _run_json([binary, "serve", "status", "--json"]) if connected else None
+    return TailscaleStatus(
+        installed=True,
+        connected=connected,
+        dns_name=dns,
+        ip=ips[0] if ips else None,
+        serve_url=serve_url_for(serve, port),
+    )

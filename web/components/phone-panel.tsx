@@ -1,8 +1,9 @@
-import { Smartphone, Wifi } from "lucide-react";
+import { CheckCircle2, Circle, Globe, Smartphone, Wifi } from "lucide-react";
 import QRCode from "qrcode";
 
 import { ActionButton } from "@/components/action-button";
 import { Note, Panel, Unavailable } from "@/components/panel";
+import { CopyButton } from "@/components/copy-button";
 import { ChoiceSettingForm } from "@/components/settings-forms";
 import type { ActionResult } from "@/lib/actions";
 import { formatDateTime } from "@/lib/format";
@@ -102,6 +103,8 @@ export async function PhonePanel({
           </Note>
         ) : null}
 
+        {data?.enabled ? <AwayFromHome phone={data} /> : null}
+
         {pairing && qr ? (
           <div className="flex flex-col items-center gap-5 rounded-2xl border border-border bg-surface-2 p-5 sm:flex-row sm:items-center">
             <div
@@ -160,5 +163,112 @@ export async function PhonePanel({
         )}
       </div>
     </Panel>
+  );
+}
+
+function Step({ done, title, children }: { done: boolean; title: string; children: React.ReactNode }) {
+  const Icon = done ? CheckCircle2 : Circle;
+  return (
+    <li className="flex gap-3">
+      <Icon
+        aria-hidden="true"
+        className={`mt-0.5 shrink-0 ${done ? "text-positive" : "text-ink-4"}`}
+        size={18}
+        strokeWidth={2}
+      />
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <span className="text-sm font-medium text-ink">
+          {title}
+          {done ? <span className="sr-only"> (done)</span> : null}
+        </span>
+        <div className="text-sm leading-relaxed text-ink-3">{children}</div>
+      </div>
+    </li>
+  );
+}
+
+/**
+ * Away from home, through Tailscale: a private network between this computer and the phone.
+ * Nothing is opened to the internet; `tailscale serve` hands the phone an HTTPS address that
+ * only devices signed in to the same Tailscale account can reach.
+ */
+function AwayFromHome({ phone }: { phone: PhoneAccess }) {
+  const tailscale = phone.tailscale;
+  const serving = Boolean(tailscale.serveUrl);
+  return (
+    <section
+      aria-label="Away from home"
+      className="flex flex-col gap-4 rounded-2xl border border-border p-4 sm:p-5"
+      data-testid="away-from-home"
+    >
+      <div className="flex items-start gap-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft text-accent-ink">
+          <Globe aria-hidden="true" size={18} />
+        </span>
+        <div>
+          <h3 className="text-sm font-semibold text-ink">Away from home</h3>
+          <p className="text-sm text-ink-3">
+            {serving
+              ? "Ready: your phone reaches Helios from anywhere at the address below."
+              : "Four steps, once. Tailscale is free and links only your own devices; nothing is opened to the internet."}
+          </p>
+        </div>
+      </div>
+      <ol className="flex flex-col gap-4">
+        <Step done={tailscale.installed} title="Install Tailscale on this computer">
+          {tailscale.installed ? (
+            "Installed."
+          ) : (
+            <>
+              Download it from{" "}
+              <a className="font-medium text-accent hover:underline" href="https://tailscale.com/download/windows" rel="noreferrer" target="_blank">
+                tailscale.com/download
+              </a>{" "}
+              and run the installer.
+            </>
+          )}
+        </Step>
+        <Step done={tailscale.connected} title="Sign in">
+          {tailscale.connected ? (
+            <>
+              Connected as <code className="text-ink">{tailscale.dnsName ?? tailscale.ip}</code>.
+            </>
+          ) : (
+            "Click the Tailscale icon in the taskbar, Log in, and use a Google, Microsoft or Apple account. Remember which: the phone signs in with the same one."
+          )}
+        </Step>
+        <Step done={serving} title="Give Helios an HTTPS address on your Tailscale network">
+          {serving ? (
+            <span className="flex flex-wrap items-center gap-2">
+              <code className="rounded-md bg-surface-2 px-2 py-0.5 text-ink">{tailscale.serveUrl}</code>
+              <CopyButton label="Copy address" text={tailscale.serveUrl ?? ""} />
+            </span>
+          ) : (
+            <span className="flex flex-col gap-2">
+              <span>Open Terminal (or PowerShell) and run this once. It keeps working after restarts:</span>
+              <span className="flex flex-wrap items-center gap-2">
+                <code className="rounded-md bg-surface-2 px-2 py-1 font-mono text-ink">{tailscale.serveCommand}</code>
+                <CopyButton text={tailscale.serveCommand} />
+              </span>
+              <span>
+                If it prints a link asking to enable HTTPS, open it, press Enable, and run the command
+                again. Then reload this page.
+              </span>
+            </span>
+          )}
+        </Step>
+        <Step done={serving && phone.devices.length > 0} title="On your phone">
+          Install the Tailscale app from the App Store or Play Store and sign in with the same
+          account. Then press <b>Pair a phone</b> above and scan the code
+          {serving ? (
+            <>
+              {" "}
+              (it opens <code className="text-ink">{tailscale.serveUrl}</code>)
+            </>
+          ) : null}
+          . Add it to your home screen; it works on Wi‑Fi and mobile data alike.
+        </Step>
+      </ol>
+    </section>
   );
 }

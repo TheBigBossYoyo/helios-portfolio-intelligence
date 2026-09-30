@@ -159,7 +159,9 @@ test.describe("pipeline controls", () => {
 
     await expect(page.getByTestId("pairing-code")).toHaveText("K7QX3MPA");
     await expect(page.getByRole("img", { name: "QR code for pairing a phone" })).toBeVisible();
-    await expect(page.getByText("http://100.101.102.103:8787")).toBeVisible();
+    const away = page.getByTestId("away-from-home");
+    await expect(away.getByText("Connected as helios-pc.tail1234.ts.net.")).toBeVisible();
+    await expect(away.getByText("tailscale serve --bg 8787")).toBeVisible();
 
     await page.getByRole("button", { name: "Pair a phone" }).click();
     await expect(page.getByText("Scan the QR code with your phone, or type the code.")).toBeVisible();
@@ -173,20 +175,40 @@ test.describe("pipeline controls", () => {
     expect(revoke?.action).toBe("device-revoke");
   });
 
-  test("the calendar shows declared and estimated events, and refreshing names its action", async ({
+  test("the calendar: next up, a month grid with days to pick, a list, filters and .ics", async ({
     page,
     request,
   }) => {
     await page.goto("/calendar");
 
-    const upcoming = page.getByRole("region", { name: "May 2024" });
-    await expect(upcoming.getByText("Apple Inc. reports results")).toBeVisible();
-    await expect(upcoming.getByText("After the close · analysts expect 1.5 USD a share")).toBeVisible();
-    await expect(upcoming.getByText("Declared")).toBeVisible();
-    await expect(upcoming.getByText("Watching")).toBeVisible();
-    await expect(page.getByRole("region", { name: "June 2024" }).getByText("Estimate")).toBeVisible();
-    await expect(page.getByText("€13.60")).toBeVisible();
-    await expect(page.getByRole("cell", { name: "Quarterly" }).first()).toBeVisible();
+    const hero = page.getByRole("region", { name: "Next up" });
+    await expect(hero.getByText("Apple Inc. goes ex-dividend")).toBeVisible();
+    await expect(hero.getByText("Today", { exact: true })).toBeVisible();
+
+    // The month opens on today; picking another day shows that day's events.
+    await expect(page.getByRole("heading", { name: "April 2024" })).toBeVisible();
+    await page.getByRole("link", { name: "2 May, 1 event", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "May 2024" })).toBeVisible();
+    const day = page.locator("#day");
+    await expect(day.getByText("Apple Inc. reports results")).toBeVisible();
+    await expect(day.getByText("After the close · quarter to Mar 2024 · analysts expect 1.5 USD a share")).toBeVisible();
+
+    // Filters narrow the grid to one kind of date.
+    await page.getByRole("link", { name: "Dividends", exact: true }).click();
+    await expect(page.locator("#day").getByText("Nothing on this day.")).toBeVisible();
+
+    await page.getByRole("link", { name: "All", exact: true }).click();
+    await page.getByRole("navigation", { name: "View" }).getByRole("link", { name: "List" }).click();
+    await expect(page.getByRole("heading", { name: "This week" })).toBeVisible();
+    await expect(page.getByText("Estimate").first()).toBeVisible();
+    await expect(page.locator("#calendar").getByText("Nvidia reports results")).toBeVisible();
+    await expect(page.getByText("Watching").first()).toBeVisible();
+
+    const ics = await request.get("/calendar/export.ics");
+    expect(ics.headers()["content-type"]).toContain("text/calendar");
+    const text = await ics.text();
+    expect(text).toContain("SUMMARY:Apple Inc. reports results");
+    expect(text).not.toContain("Shell plc reported"); // past events stay out of the export
 
     await page.getByRole("button", { name: "Refresh" }).click();
     await expect(page.getByText("Calendar updated.")).toBeVisible();

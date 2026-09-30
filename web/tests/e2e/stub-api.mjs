@@ -1061,32 +1061,33 @@ for (let index = 0; index < 24; index += 1) {
   });
 }
 
+function calendarEvent(day, kind, ticker, name, extra = {}) {
+  return {
+    id: `${kind}:${ticker}:${day}`, day, kind, ticker, name, held: true, confirmed: true,
+    timeOfDay: null, estimateEps: null, epsCurrency: null, exDate: null, amountPerShare: null,
+    currencyCode: null, amountEur: null, afterTax: false, past: false, received: false,
+    fiscalDateEnding: null, ...extra,
+  };
+}
+
 const marketCalendar = {
   asOf: "2024-04-29",
   providerAvailable: true,
   earningsFetchedAt: "2024-04-29T06:00:00Z",
   events: [
-    {
-      day: "2024-05-02", kind: "earnings", ticker: "AAPL_US_EQ", name: "Apple Inc.", held: true, confirmed: true,
-      timeOfDay: "post-market", estimateEps: "1.50", epsCurrency: "USD", exDate: null, amountPerShare: null,
-      currencyCode: null, amountEur: null, afterTax: false,
-    },
-    {
-      day: "2024-05-16", kind: "dividend", ticker: "AAPL_US_EQ", name: "Apple Inc.", held: true, confirmed: true,
-      timeOfDay: null, estimateEps: null, epsCurrency: null, exDate: "2024-05-10", amountPerShare: "0.25",
-      currencyCode: "USD", amountEur: "2.47", afterTax: true,
-    },
-    {
-      day: "2024-05-21", kind: "earnings", ticker: "NVDA_US_EQ", name: "Nvidia", held: false, confirmed: true,
-      timeOfDay: null, estimateEps: "5.59", epsCurrency: "USD", exDate: null, amountPerShare: null,
-      currencyCode: null, amountEur: null, afterTax: false,
-    },
-    {
-      day: "2024-06-24", kind: "dividend", ticker: "SHEL_EQ", name: "Shell plc", held: true, confirmed: false,
-      timeOfDay: null, estimateEps: null, epsCurrency: null, exDate: null, amountPerShare: "0.344",
-      currencyCode: "USD", amountEur: "0.93", afterTax: false,
-    },
+    calendarEvent("2024-04-10", "dividend", "SHEL_EQ", "Shell plc", { past: true, received: true, amountEur: "0.91", amountPerShare: "0.344", currencyCode: "USD", afterTax: true }),
+    calendarEvent("2024-04-25", "earnings", "SHEL_EQ", "Shell plc", { past: true, timeOfDay: "pre-market", fiscalDateEnding: "2024-03-31" }),
+    calendarEvent("2024-04-29", "ex-dividend", "AAPL_US_EQ", "Apple Inc.", { amountEur: "2.47", amountPerShare: "0.25", currencyCode: "USD", afterTax: true, exDate: "2024-04-29" }),
+    calendarEvent("2024-05-02", "earnings", "AAPL_US_EQ", "Apple Inc.", { timeOfDay: "post-market", estimateEps: "1.50", epsCurrency: "USD", fiscalDateEnding: "2024-03-31" }),
+    calendarEvent("2024-05-16", "dividend", "AAPL_US_EQ", "Apple Inc.", { amountEur: "2.47", amountPerShare: "0.25", currencyCode: "USD", afterTax: true, exDate: "2024-04-29" }),
+    calendarEvent("2024-05-21", "earnings", "NVDA_US_EQ", "Nvidia", { held: false, estimateEps: "5.59", epsCurrency: "USD", fiscalDateEnding: "2024-04-30" }),
+    calendarEvent("2024-06-24", "dividend", "SHEL_EQ", "Shell plc", { confirmed: false, amountEur: "0.93", amountPerShare: "0.344", currencyCode: "USD" }),
+    calendarEvent("2024-08-15", "dividend", "AAPL_US_EQ", "Apple Inc.", { confirmed: false, amountEur: "2.47", amountPerShare: "0.25", currencyCode: "USD", afterTax: true }),
+    calendarEvent("2024-09-23", "dividend", "SHEL_EQ", "Shell plc", { confirmed: false, amountEur: "0.93", amountPerShare: "0.344", currencyCode: "USD" }),
+    calendarEvent("2024-11-14", "dividend", "AAPL_US_EQ", "Apple Inc.", { confirmed: false, amountEur: "2.47", amountPerShare: "0.25", currencyCode: "USD", afterTax: true }),
   ],
+  windowStart: "2024-02-27",
+  windowEnd: "2025-04-30",
   months: calendarMonths,
   holdings: [
     {
@@ -1127,6 +1128,14 @@ const phoneAccess = {
   devices: [
     { id: 1, name: "iPhone", createdAt: "2024-04-28T18:00:00Z", lastSeenAt: "2024-04-29T08:15:00Z" },
   ],
+  tailscale: {
+    installed: true,
+    connected: true,
+    dnsName: "helios-pc.tail1234.ts.net",
+    ip: "100.101.102.103",
+    serveUrl: null,
+    serveCommand: "tailscale serve --bg 8787",
+  },
 };
 
 const storageStatus = {

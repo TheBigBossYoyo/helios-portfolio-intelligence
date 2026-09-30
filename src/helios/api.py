@@ -58,7 +58,7 @@ from .dependencies import (
     get_t212_service,
     get_thesis_service,
 )
-from .devices import is_tailscale, lan_addresses
+from .devices import is_tailscale, lan_addresses, tailscale_status
 from .housekeeping import BackupError, BackupStatus
 from .instrument_detail import InstrumentDetailService, UnknownInstrumentError
 from .logging import get_logger
@@ -119,6 +119,7 @@ from .schemas import (
     SettingsSnapshotModel,
     StorageCompactModel,
     StorageStatusModel,
+    TailscaleModel,
     ThesisCreateRequest,
     ThesisDetailModel,
     ThesisEditRequest,
@@ -528,6 +529,9 @@ async def _phone_access_model(container: Container) -> PhoneAccessModel:
     port = settings.phone_access_port
     addresses = await asyncio.to_thread(lan_addresses)
     urls = [f"http://{address}:{port}" for address in addresses]
+    tailscale = await asyncio.to_thread(tailscale_status, port)
+    # Away from home the phone reaches Helios through Tailscale's HTTPS address: pair with it.
+    pair_bases = ([tailscale.serve_url] if tailscale.serve_url else []) + urls
     pairing = await container.device_service.active_pairing()
     return PhoneAccessModel(
         enabled=settings.phone_access_enabled,
@@ -543,7 +547,7 @@ async def _phone_access_model(container: Container) -> PhoneAccessModel:
         else PairingModel(
             code=pairing.code,
             expires_at=pairing.expires_at,
-            urls=[f"{url}/__helios/pair?code={pairing.code}" for url in urls],
+            urls=[f"{url}/__helios/pair?code={pairing.code}" for url in pair_bases],
         ),
         devices=[
             PairedDeviceModel(
@@ -554,6 +558,14 @@ async def _phone_access_model(container: Container) -> PhoneAccessModel:
             )
             for device in await container.device_service.devices()
         ],
+        tailscale=TailscaleModel(
+            installed=tailscale.installed,
+            connected=tailscale.connected,
+            dns_name=tailscale.dns_name,
+            ip=tailscale.ip,
+            serve_url=tailscale.serve_url,
+            serve_command=f"tailscale serve --bg {port}",
+        ),
     )
 
 

@@ -234,11 +234,31 @@ Helios from there.</p>""",
 # --- the app -----------------------------------------------------------------------------------
 
 
+def _from_local_proxy(request: Request) -> bool:
+    """A request relayed by a proxy on this computer, i.e. ``tailscale serve``.
+
+    Only such a proxy's X-Forwarded-* headers are believed; from anywhere else they are
+    whatever the sender chose to write.
+    """
+
+    host = request.client.host if request.client else ""
+    return host in {"127.0.0.1", "::1"}
+
+
+def _scheme(request: Request) -> str:
+    if _from_local_proxy(request) and request.headers.get("x-forwarded-proto") == "https":
+        return "https"
+    return request.url.scheme
+
+
 def _forward_headers(request: Request, remote_host: str) -> list[tuple[str, str]]:
+    trusted = _from_local_proxy(request)
     headers = [
         (key, value)
         for key, value in request.headers.items()
-        if key.lower() not in HOP_BY_HOP and key.lower() not in STRIPPED_REQUEST_HEADERS
+        if key.lower() not in HOP_BY_HOP
+        and key.lower() not in STRIPPED_REQUEST_HEADERS
+        and (trusted or not key.lower().startswith("x-forwarded-"))
     ]
     # The dashboard's own cookies pass through; the device token never leaves the gateway.
     cookie = SimpleCookie()
@@ -253,8 +273,9 @@ def _forward_headers(request: Request, remote_host: str) -> list[tuple[str, str]
     if "accept-encoding" not in request.headers:
         headers.append(("accept-encoding", "identity"))
     headers.append((REMOTE_HEADER, "1"))
-    headers.append(("x-forwarded-for", request.client.host if request.client else ""))
-    headers.append(("x-forwarded-proto", request.url.scheme))
+    if not trusted:
+        headers.append(("x-forwarded-for", request.client.host if request.client else ""))
+        headers.append(("x-forwarded-proto", request.url.scheme))
     return headers
 
 
@@ -279,7 +300,11 @@ def create_app(
         if request.method == "GET":
             # A GET never spends the code (link previews and prefetchers issue GETs).
             return pair_form(request.query_params.get("code", ""))
-        who = request.client.host if request.client else "?"
+        who = (
+            request.headers.get("x-forwarded-for", "?")
+            if _from_local_proxy(request)
+            else (request.client.host if request.client else "?")
+        )
         if failures.blocked(who):
             return pair_form(error="Too many wrong codes. Wait ten minutes.", status_code=429)
         fields = parse_qs((await request.body())[:1024].decode("utf-8", "replace"))
@@ -299,8 +324,7 @@ def create_app(
             max_age=COOKIE_MAX_AGE,
             httponly=True,
             samesite="lax",
-            secure=request.url.scheme == "https"
-            or request.headers.get("x-forwarded-proto") == "https",
+            secure=_scheme(request) == "https",
             path="/",
         )
         return response

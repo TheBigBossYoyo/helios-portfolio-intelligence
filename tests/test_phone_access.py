@@ -15,7 +15,13 @@ from starlette.testclient import TestClient as StarletteClient
 from helios.app import create_app as create_api
 from helios.config import Settings
 from helios.db import migrate_database
-from helios.devices import CODE_LENGTH, DeviceService, normalise_code, pick_addresses
+from helios.devices import (
+    CODE_LENGTH,
+    DeviceService,
+    normalise_code,
+    pick_addresses,
+    serve_url_for,
+)
 from helios.gateway import COOKIE, REMOTE_HEADER, create_app, device_name
 from helios.rate_limit import Clock
 
@@ -90,6 +96,18 @@ def test_only_the_routed_address_and_tailscale_are_offered() -> None:
     assert pick_addresses("192.168.1.9", others) == ["192.168.1.9", "100.101.102.103"]
     assert pick_addresses(None, others) == ["100.101.102.103"]
     assert pick_addresses("8.8.8.8", []) == []  # a public address is not a home network
+
+
+def test_the_tailscale_serve_address_is_found_for_the_gateway_port() -> None:
+    serve = {
+        "TCP": {"443": {"HTTPS": True}},
+        "Web": {
+            "helios-pc.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8787"}}}
+        },
+    }
+    assert serve_url_for(serve, 8787) == "https://helios-pc.tail1234.ts.net"
+    assert serve_url_for(serve, 9999) is None
+    assert serve_url_for(None, 8787) is None
 
 
 def test_device_names_come_from_the_user_agent() -> None:
@@ -170,6 +188,56 @@ def test_pairing_sets_the_cookie_and_a_paired_phone_is_forwarded_marked_remote()
     assert "good-token" not in forwarded.headers.get("cookie", "")
     # Compression exactly as the phone asked for it.
     assert forwarded.headers["accept-encoding"] == "br"
+
+
+def test_behind_tailscale_serve_the_https_address_is_kept() -> None:
+    """``tailscale serve`` relays from this computer: its forwarded headers are believed."""
+    seen: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, stream=httpx.ByteStream(b"ok"))
+
+    async def verify(token: str) -> bool:
+        return token == "good-token"
+
+    async def claim(code: str, name: str) -> str | None:
+        return "good-token"
+
+    app = create_app(
+        enabled=True,
+        upstream="http://web.test",
+        verify=verify,
+        claim=claim,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(upstream)),
+    )
+    relayed = {
+        "host": "helios-pc.tail1234.ts.net",
+        "x-forwarded-host": "helios-pc.tail1234.ts.net",
+        "x-forwarded-proto": "https",
+        "x-forwarded-for": "100.64.0.7",
+    }
+    local = StarletteClient(app, base_url="http://127.0.0.1:8787", client=("127.0.0.1", 50000))
+    paired = local.post(
+        "/__helios/pair",
+        content="code=ABCDEFGH",
+        headers={**relayed, "content-type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+    assert "Secure" in paired.headers["set-cookie"]  # the phone is on HTTPS
+    local.cookies.set(COOKIE, "good-token")
+    local.get("/", headers=relayed)
+    assert seen[-1].headers["x-forwarded-proto"] == "https"
+    assert seen[-1].headers["x-forwarded-host"] == "helios-pc.tail1234.ts.net"
+
+    # The same headers from a phone on the Wi-Fi are its own invention and are dropped.
+    remote = StarletteClient(
+        app, base_url="http://192.168.1.9:8787", client=("192.168.1.30", 50000)
+    )
+    remote.cookies.set(COOKIE, "good-token")
+    remote.get("/", headers=relayed)
+    assert seen[-1].headers["x-forwarded-proto"] == "http"
+    assert "x-forwarded-host" not in seen[-1].headers
 
 
 def test_wrong_codes_are_refused_and_rate_limited() -> None:
