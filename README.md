@@ -2,6 +2,22 @@
 
 Helios is a local-first, read-only portfolio tracker for Trading 212: a Python backend that syncs your positions and computes performance/risk analytics, plus a self-hosted Next.js dashboard on top of it. Everything lives in your own SQLite database, on your own machine.
 
+## Screenshots
+
+These three pages are captured from the dashboard running against a stub API that returns made-up data (two fictional-looking positions, dates in April 2024). None of it is my real portfolio.
+
+![Overview page showing a portfolio value, period returns and a value chart, with demo data](docs/screenshots/overview.png)
+
+Overview, demo data: the value of the portfolio, what the investments made over a period kept apart from money added, and every period side by side.
+
+![Holdings page with an allocation chart and a positions table, with demo data](docs/screenshots/holdings.png)
+
+Holdings, demo data: allocation, currency exposure and the open positions.
+
+![Performance page with return and risk metrics, with demo data](docs/screenshots/performance.png)
+
+Performance, demo data: time-weighted and money-weighted return, volatility, drawdown and returns by period.
+
 ## Why I built it
 
 Trading 212's app shows you positions and a simple return figure, but nothing like proper time-weighted return, drawdown, factor exposure, or a "you, but if you'd just bought a world index instead" comparison. I wanted those numbers computed correctly from my own trade history rather than approximated, and I wanted a place to record *why* I bought something before I find out whether I was right, since that's the part that's easy to forget in hindsight.
@@ -63,7 +79,17 @@ make dev                  # docker compose up --build
 - Dashboard: http://127.0.0.1:3001
 - API: http://127.0.0.1:8001
 
-Both bind to loopback only; override with `HELIOS_WEB_PORT` / `HELIOS_API_PORT`. To run the backend directly instead of in Docker, `pip install -e ".[dev]"` (Python 3.12+) gives you the `helios` CLI and `helios-worker`; `make test`, `make lint` and `make typecheck` run pytest, ruff and mypy. The dashboard has its own commands under `web/`: `npm run dev`, `npm run lint`, `npm run typecheck`, `npm test` (Vitest), and `npm run test:e2e` (Playwright against a stubbed API, no real credentials needed).
+Both bind to loopback only; override with `HELIOS_WEB_PORT` / `HELIOS_API_PORT`. To run the backend directly instead of in Docker, `pip install -e ".[dev]"` (Python 3.12+) gives you the `helios` CLI and `helios-worker`; `make test`, `make lint` and `make typecheck` run pytest, ruff and mypy, and `make check` runs everything CI runs. The dashboard has its own commands under `web/`: `npm run dev`, `npm run lint`, `npm run typecheck`, `npm test` (Vitest), and `npm run test:e2e` (Playwright against a stubbed API, no real credentials needed).
+
+### Sector attribution
+
+Helios can split the gap between your return and the passive benchmark's into allocation, selection and interaction effects, by sector. It only does this from inputs you declare. Each holding's `sector` goes in `config/instrument_overrides.yaml`, and the benchmark's sector weights go in `config/benchmark_sectors.yaml`, with the date and source you read them from and a sector ETF to stand in for that sector's return. Both files ship empty. Weights that do not sum to 1 are rejected, and if more than 10% of the portfolio has no sector the panel says `insufficient_data` instead of guessing. The result is a single-period approximation, so the report also shows the residual that the decomposition does not explain.
+
+### Backups and replaying stored data
+
+`helios backup` (or `make backup`) copies the SQLite database with SQLite's online backup API, so it is safe while the app is running, checks the copy with `PRAGMA integrity_check` and deletes it if the check fails. `--dest` and `--keep` set where it goes and how many to keep. Restoring is manual on purpose: stop everything, copy a backup over the live file, delete any `-wal` and `-shm` files, start again.
+
+Because every raw response is stored first, two commands can rebuild data offline after a parser fix: `helios news-reparse` re-parses stored news feeds, and `helios t212-reparse` rebuilds orders, dividends, cash transactions and instrument metadata from stored Trading 212 responses. Neither makes a network call, and both can be run twice safely.
 
 ## Accounts and cost
 
@@ -92,7 +118,7 @@ Trading 212 access is read-only: every request is a GET, with one exception. Car
 
 ## Limitations and what I'd improve
 
-- Sector-level (Brinson-Fachler) attribution isn't implemented yet: there's no licensed index-constituent feed wired in, so that panel reports `unavailable`.
+- Sector attribution (Brinson-Fachler) only works from sectors and benchmark sector weights that you type in yourself, because I have no licensed index-constituent feed. Until you fill in `config/instrument_overrides.yaml` and `config/benchmark_sectors.yaml`, that panel reports `unavailable`.
 - Full price history for non-US holdings needs a paid provider (EODHD); the free sources cover the last few months at best.
 - The factor regression trails real time by about a month, since the Kenneth French library is only published monthly.
 - Card payments made since the last daily export show up as "not labelled yet" until the next export names the merchant; the transactions API alone can't tell a card payment from a bank withdrawal.
