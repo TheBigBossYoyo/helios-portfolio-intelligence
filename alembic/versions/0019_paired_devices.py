@@ -8,7 +8,6 @@ Create Date: 2026-09-29 23:00:00
 from __future__ import annotations
 
 import sqlalchemy as sa
-
 from alembic import op
 
 revision = "0019_paired_devices"

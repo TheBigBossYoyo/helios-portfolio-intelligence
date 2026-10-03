@@ -15,7 +15,6 @@ from __future__ import annotations
 import zlib
 
 import sqlalchemy as sa
-
 from alembic import op
 
 revision = "0017_compress_raw"

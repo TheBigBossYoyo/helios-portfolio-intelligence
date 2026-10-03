@@ -13,7 +13,6 @@ Create Date: 2026-09-27 23:00:00
 from __future__ import annotations
 
 import sqlalchemy as sa
-
 from alembic import op
 
 revision = "0012_card_history"

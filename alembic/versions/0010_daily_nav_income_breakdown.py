@@ -14,7 +14,6 @@ Create Date: 2026-09-27 20:00:00
 from __future__ import annotations
 
 import sqlalchemy as sa
-
 from alembic import op
 
 revision = "0010_daily_nav_income_breakdown"

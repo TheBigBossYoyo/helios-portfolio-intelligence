@@ -8,7 +8,6 @@ Create Date: 2026-09-28 14:00:00
 from __future__ import annotations
 
 import sqlalchemy as sa
-
 from alembic import op
 
 revision = "0014_alerts_notifications"

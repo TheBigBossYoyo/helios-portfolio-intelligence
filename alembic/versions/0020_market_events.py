@@ -8,7 +8,6 @@ Create Date: 2026-09-30 01:00:00
 from __future__ import annotations
 
 import sqlalchemy as sa
-
 from alembic import op
 
 revision = "0020_market_events"
